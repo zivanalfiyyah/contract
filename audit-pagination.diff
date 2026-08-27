@@ -1,0 +1,81 @@
+--- a/src/App.tsx	2026-08-21 07:43:04.064568392 +0000
++++ b/src/App.tsx	2026-08-21 07:43:37.840570399 +0000
+@@ -1771,7 +1771,8 @@
+   const [monitorHealth, setMonitorHealth] = useState<"" | "expired" | "critical" | "warning" | "healthy">("");
+   const [contractSort, setContractSort] = useState<SortState>({ key: "sisa", dir: "asc" });
+   // Audit trail table — search + sortable columns.
+-  const [auditSearch, setAuditSearch] = useState("");
++  const [auditSearch, setAuditSearch] = useState("");
++  const [auditPage, setAuditPage] = useState(1);
+   // Kalender Legal — filter tampilan (view murni, tidak ada state server).
+   const [kalenderFilter, setKalenderFilter] = useState<"7" | "30" | "90" | "semua">("30");
+   const [kalenderKategori, setKalenderKategori] = useState("Semua");
+@@ -17231,7 +17232,7 @@
+                     <div className="relative">
+                       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                       <input
+-                        type="text" value={auditSearch} onChange={(e) => setAuditSearch(e.target.value)}
++                        type="text" value={auditSearch} onChange={(e) => { setAuditSearch(e.target.value); setAuditPage(1); }}
+                         placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
+                         className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-72"
+                       />
+@@ -17254,7 +17255,12 @@
+                       waktu: (a) => new Date(a.timestamp).getTime(),
+                     });
+                     const onSort = (k: string) => setAuditSort((s) => nextSort(s, k));
++                    const AUDIT_PAGE_SIZE = 10;
++                    const totalPages = Math.max(1, Math.ceil(rows.length / AUDIT_PAGE_SIZE));
++                    const safePage = Math.min(auditPage, totalPages);
++                    const pageRows = rows.slice((safePage - 1) * AUDIT_PAGE_SIZE, safePage * AUDIT_PAGE_SIZE);
+                     return (
++                  <>
+                   <div className="overflow-x-auto">
+                     <table className="w-full text-left border-collapse">
+                       <thead>
+@@ -17267,10 +17273,10 @@
+                         </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-850">
+-                        {rows.length === 0 && (
++                        {pageRows.length === 0 && (
+                           <tr><td colSpan={5} className="py-8 text-center text-slate-500 italic">Tidak ada log yang cocok.</td></tr>
+                         )}
+-                        {rows.map((a, i) => (
++                        {pageRows.map((a, i) => (
+                           <tr
+                             key={a.id || i}
+                             className="hover:bg-slate-900/40 transition"
+@@ -17305,6 +17311,33 @@
+                       </tbody>
+                     </table>
+                   </div>
++                  {rows.length > AUDIT_PAGE_SIZE && (
++                    <div className="flex items-center justify-between pt-2 text-[11px] text-slate-400">
++                      <span>
++                        Menampilkan {(safePage - 1) * AUDIT_PAGE_SIZE + 1}–{Math.min(safePage * AUDIT_PAGE_SIZE, rows.length)} dari {rows.length} log
++                      </span>
++                      <div className="flex items-center gap-1.5">
++                        <button
++                          onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
++                          disabled={safePage <= 1}
++                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
++                        >
++                          Sebelumnya
++                        </button>
++                        <span className="px-2 font-semibold text-slate-300">
++                          {safePage} / {totalPages}
++                        </span>
++                        <button
++                          onClick={() => setAuditPage((p) => Math.min(totalPages, p + 1))}
++                          disabled={safePage >= totalPages}
++                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
++                        >
++                          Berikutnya
++                        </button>
++                      </div>
++                    </div>
++                  )}
++                  </>
+                     ); })()}
+                 </div>
+ 

@@ -1,0 +1,102 @@
+--- a/src/App.tsx	2026-08-21 08:18:28.320564086 +0000
++++ b/src/App.tsx	2026-08-21 08:18:56.152565740 +0000
+@@ -1623,7 +1623,8 @@
+   // framing biner yang diminta — bukan filter per-status granular).
+   const [allDocsStatusFilter, setAllDocsStatusFilter] = useState<"all" | "aktif" | "nonaktif">("all");
+   const [allDocsSearch, setAllDocsSearch] = useState("");
+-  const [allDocsSort, setAllDocsSort] = useState<SortState>({ key: "judul", dir: "asc" });
++  const [allDocsSort, setAllDocsSort] = useState<SortState>({ key: "judul", dir: "asc" });
++  const [allDocsPage, setAllDocsPage] = useState(1);
+ 
+   // Data States
+   const [contracts, setContracts] = useState<Contract[]>([]);
+@@ -13009,6 +13010,20 @@
+             ), allDocsSort, { tipe: () => "DCS", judul: (d) => d.title, status: (d) => (dcsIsControlled(d) ? "Aktif" : "Non-Aktif") });
+             const totalCount = contracts.length + dcsDocs.length;
+             const aktifCount = contracts.filter((c) => c.status === "Aktif").length + dcsDocs.filter(dcsIsControlled).length;
++            // Pagination atas GABUNGAN kontrak + DCS, dalam urutan tampil yang
++            // sama seperti render (kontrak dulu, baru DCS) — supaya nomor
++            // halaman konsisten dengan apa yang terlihat di layar.
++            const ALL_DOCS_PAGE_SIZE = 10;
++            const allDocsTotal = visibleContracts.length + visibleDcsDocs.length;
++            const allDocsTotalPages = Math.max(1, Math.ceil(allDocsTotal / ALL_DOCS_PAGE_SIZE));
++            const allDocsSafePage = Math.min(allDocsPage, allDocsTotalPages);
++            const allDocsStart = (allDocsSafePage - 1) * ALL_DOCS_PAGE_SIZE;
++            const allDocsEnd = allDocsSafePage * ALL_DOCS_PAGE_SIZE;
++            const pageContracts = visibleContracts.slice(allDocsStart, Math.min(visibleContracts.length, allDocsEnd));
++            const pageDcsDocs = visibleDcsDocs.slice(
++              Math.max(0, allDocsStart - visibleContracts.length),
++              Math.max(0, allDocsEnd - visibleContracts.length)
++            );
+             // Register GABUNGAN: kontrak & DCS dalam satu berkas, dengan kolom
+             // "Jenis Sistem" sebagai pembeda. Kolom yang tidak berlaku untuk
+             // salah satu jenis dibiarkan kosong, bukan diisi tanda hubung —
+@@ -13044,7 +13059,7 @@
+                   <div className="relative">
+                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                     <input
+-                      type="text" value={allDocsSearch} onChange={(e) => setAllDocsSearch(e.target.value)}
++                      type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
+                       placeholder="Cari nomor, judul, atau ISI pasal…"
+                       title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
+                       className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-60"
+@@ -13074,7 +13089,7 @@
+                   </button>
+                   <select
+                     value={allDocsStatusFilter}
+-                    onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); }}
++                    onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); setAllDocsPage(1); }}
+                     className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                   >
+                     <option value="all">Semua Status ({totalCount})</option>
+@@ -13129,7 +13144,7 @@
+                       </tr>
+                     </thead>
+                     <tbody className="divide-y divide-slate-800/50">
+-                      {visibleContracts.map(c => {
++                      {pageContracts.map(c => {
+                         const pendingStep = c.status === "OnReview" ? c.approvalSteps?.find((s) => s.decision === "pending") : undefined;
+                         return (
+                         <tr key={c.id} className={`hover:bg-slate-800/20 transition ${selectedContractIds.includes(c.id) ? "bg-indigo-500/5" : ""}`}>
+@@ -13193,7 +13208,7 @@
+                         </tr>
+                         );
+                       })}
+-                      {visibleDcsDocs.map(d => {
++                      {pageDcsDocs.map(d => {
+                         const latest = d.versions[0];
+                         const controlled = dcsIsControlled(d);
+                         return (
+@@ -13236,6 +13251,32 @@
+                     </tbody>
+                   </table>
+                 </div>
++                {allDocsTotal > ALL_DOCS_PAGE_SIZE && (
++                  <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 border-t border-slate-800 text-[11px] text-slate-400">
++                    <span>
++                      Menampilkan {allDocsStart + 1}–{Math.min(allDocsEnd, allDocsTotal)} dari {allDocsTotal} dokumen
++                    </span>
++                    <div className="flex items-center gap-1.5">
++                      <button
++                        onClick={() => setAllDocsPage((p) => Math.max(1, p - 1))}
++                        disabled={allDocsSafePage <= 1}
++                        className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
++                      >
++                        Sebelumnya
++                      </button>
++                      <span className="px-2 font-semibold text-slate-300">
++                        {allDocsSafePage} / {allDocsTotalPages}
++                      </span>
++                      <button
++                        onClick={() => setAllDocsPage((p) => Math.min(allDocsTotalPages, p + 1))}
++                        disabled={allDocsSafePage >= allDocsTotalPages}
++                        className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
++                      >
++                        Berikutnya
++                      </button>
++                    </div>
++                  </div>
++                )}
+               </div>
+             </div>
+             );

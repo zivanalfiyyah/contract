@@ -4096,18 +4096,29 @@ export default function App() {
   // Save changes to draft within Workspace
   const handleUpdateContractDraft = async (
     comment: string = "Pembaruan isi draf kontrak",
+    contractOverride?: Contract,
   ) => {
-    if (!selectedContract) return;
+    // contractOverride: dipakai saat pemanggil BARU SAJA memanggil
+    // setSelectedContract(...) di baris sebelumnya lalu langsung memanggil
+    // fungsi ini secara sinkron (mis. handleSetDocumentLanguage) — pada
+    // titik itu React BELUM sempat re-render, jadi variabel `selectedContract`
+    // di closure fungsi ini masih menunjuk versi LAMA (state update React
+    // bersifat async). Tanpa parameter ini, PUT mengirim balik data lama ke
+    // server (server "berhasil" simpan tapi tidak ada yang benar-benar
+    // berubah), lalu respons lama itu menimpa balik update optimistis di
+    // layar — persis gejala "toast tersimpan, tapi tampilan gak berubah".
+    const target = contractOverride || selectedContract;
+    if (!target) return;
 
     try {
-      const res = await fetch(`/api/contracts/${selectedContract.id}`, {
+      const res = await fetch(`/api/contracts/${target.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         // editorId/editorName sengaja TIDAK dikirim: server memakai identitas
         // dari token auth (updatedBy: req.user.name). Dulu di sini terkirim
         // "u-1"/"Ahmad GA" hardcoded — payload mati yang menyesatkan seolah
         // riwayat versi bisa diatribusikan dari klien.
-        body: JSON.stringify({ ...selectedContract, comment }),
+        body: JSON.stringify({ ...target, comment }),
       });
       const data = await res.json();
       if (data.success) {
@@ -4116,7 +4127,7 @@ export default function App() {
         setDraftSavedSnapshot(JSON.stringify(data.contract));
         // Refresh version list
         const resVersions = await fetch(
-          `/api/contracts/${selectedContract.id}/versions`,
+          `/api/contracts/${target.id}/versions`,
         );
         const versions = await resVersions.json();
         setContractVersions(versions);
@@ -4359,18 +4370,84 @@ export default function App() {
 
       el.style.maxHeight = "none";
       el.style.overflow = "visible";
-      // Force a layout recalc, then wait a full paint cycle — without this,
-      // html2canvas can start snapshotting before the browser has actually
-      // repainted the newly-expanded (previously scroll-clipped) lower part
-      // of the document, producing a visible seam partway down the exported
-      // PDF where the stale/half-painted frame was captured.
+      // Force a layout recalc, lalu tunggu sampai TINGGI elemen berhenti
+      // berubah antar frame (bukan cuma 2x RAF tetap) — dokumen kontrak yang
+      // panjang + kolom dwibahasa butuh beberapa siklus reflow untuk benar2
+      // selesai repaint, kalau screenshot diambil di tengah reflow itu hasilnya
+      // "sobek"/belang terang-gelap separuh halaman (persis yang dilaporkan).
       void el.offsetHeight;
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      let lastHeight = -1;
+      for (let i = 0; i < 12; i++) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        const currentHeight = el.scrollHeight;
+        if (currentHeight === lastHeight) break;
+        lastHeight = currentHeight;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+
+      // html2canvas mengklon dokumen ke "jendela virtual" offscreen untuk
+      // capture-nya. Kalau cuma windowHeight yang di-override (seperti
+      // sebelumnya) sementara windowWidth dibiarkan default, defaultnya itu
+      // ambil lebar window/dokumen APA ADANYA saat itu — TAPI proses klon +
+      // reflow ini rawan tidak persis sama dengan yang tampil di layar,
+      // apalagi dengan layout responsive (`xl:grid-cols-12` di panel kiri
+      // vs kanan). Hasilnya: dua kolom yang di layar sejajar rapi malah
+      // ke-capture dengan lebar/posisi sedikit berbeda — persis gejala
+      // "garis vertikal belang" yang dilaporkan (dua area dengan warna latar
+      // BEDA yang bukan berasal dari CSS section manapun, karena memang
+      // bukan soal warna CSS, tapi dua PANEL BERBEDA yang ke-render
+      // tumpang tindih di kanvas yang sama). Kunci windowWidth ke lebar
+      // window NYATA saat ini supaya klon offscreen-nya reflow identik
+      // dengan yang di layar.
+      const elWidthPx = el.offsetWidth;
+      const elHeightPx = el.scrollHeight;
+      const windowWidth = document.documentElement.clientWidth;
+      const windowHeight = Math.max(document.documentElement.clientHeight, elHeightPx);
+
+      // Jaring pengaman tambahan (bukan penyebab utama, tapi murah untuk
+      // dijaga): html2canvas-pro membatasi kanvas internalnya 3–5 megapiksel
+      // tergantung RAM perangkat (lihat FAQ resminya) — turunkan scale kalau
+      // dokumennya sangat panjang supaya tidak pernah mendekati batas itu.
+      const SAFE_CANVAS_MEGAPIXELS = 4_000_000;
+      const requestedScale = 2;
+      const maxSafeScale = Math.sqrt(SAFE_CANVAS_MEGAPIXELS / (elWidthPx * elHeightPx));
+      const scale = Math.max(1, Math.min(requestedScale, maxSafeScale));
+
+      // Catat batas bawah tiap CHILD LANGSUNG dari previewRef (kop surat,
+      // header dokumen, narasi pembuka, kalimat penutup, blok tanda tangan
+      // — semua dipisah `space-y-6`) DITAMBAH batas tiap pasal individual
+      // (elemen `.group/clause`) — soalnya semua pasal itu bersarang di
+      // DALAM SATU div pembungkus daftar pasal (bukan child langsung dari
+      // previewRef), jadi tanpa ini cuma batas SETELAH pasal terakhir yang
+      // ketangkep, bukan batas ANTAR tiap pasal (persis kenapa "Pasal 5:
+      // Kerahasiaan Informasi (Non-" masih kepotong dari "Disclosure)").
+      // Ini semua batas SEMANTIK asli dari DOM, bukan tebakan dari piksel
+      // kosong — pendekatan piksel sebelumnya masih salah (sempat motong
+      // pas di antara label "BAHASA INDONESIA" dengan paragrafnya sendiri).
+      // Potongan halaman PDF nanti HANYA boleh jatuh di salah satu batas ini.
+      const elTopCss = el.getBoundingClientRect().top;
+      const breakBoundaryElements = [
+        ...Array.from(el.children),
+        ...Array.from(el.querySelectorAll(".group\\/clause")),
+      ];
+      const safeBreakPointsPx: number[] = breakBoundaryElements.map(
+        (child) => ((child as HTMLElement).getBoundingClientRect().bottom - elTopCss) * scale,
+      );
 
       const canvas = await html2canvas(el, {
-        scale: 2,
-        windowHeight: el.scrollHeight,
+        scale,
+        windowWidth,
+        windowHeight,
         height: el.scrollHeight,
+        // WAJIB diisi eksplisit: tanpa ini, elemen mana pun yang warna
+        // latarnya gagal di-parse html2canvas-pro (palet slate app ini
+        // didefinisikan via CSS variable di @theme, bukan warna Tailwind
+        // baku) jatuh jadi transparan penuh alih-alih putih. PNG dengan
+        // piksel transparan itu lalu dikompositkan beda-beda oleh tiap
+        // pembaca PDF (ada yang jadi putih, ada yang jadi abu-abu/hitam) —
+        // itulah kenapa hasil export kelihatan belang terang-gelap padahal
+        // di layar warnanya rata.
+        backgroundColor: "#ffffff",
       });
 
       const pdf = new jsPDF({
@@ -4390,19 +4467,57 @@ export default function App() {
       let pageIndex = 0;
 
       while (renderedHeightPx < canvas.height) {
-        const sliceHeightPx = Math.min(
+        let sliceHeightPx = Math.min(
           pageHeightPx,
           canvas.height - renderedHeightPx,
         );
+        // Kalau ini bukan potongan terakhir (masih ada sisa konten di bawah),
+        // geser titik potongnya ke batas SEMANTIK (akhir kop surat/header/
+        // narasi pembuka/kalimat penutup/tiap pasal/blok tanda tangan) yang
+        // paling dekat dengan titik potong ideal — supaya tidak pernah motong
+        // di tengah satu blok. Minimal 40% tinggi halaman harus terisi supaya
+        // tidak ada halaman yang jadi nyaris kosong gara-gara satu blok
+        // sebelumnya pas² sedikit lebih panjang dari sisa halaman.
+        const isLastSlice = renderedHeightPx + sliceHeightPx >= canvas.height;
+        if (!isLastSlice) {
+          const idealCutY = renderedHeightPx + sliceHeightPx;
+          const minCutY = renderedHeightPx + pageHeightPx * 0.4;
+          let bestBreak = -1;
+          for (const bp of safeBreakPointsPx) {
+            if (bp <= idealCutY && bp > minCutY && bp > bestBreak) bestBreak = bp;
+          }
+          if (bestBreak > 0) {
+            sliceHeightPx = bestBreak - renderedHeightPx;
+          }
+          // Kalau tidak ketemu batas semantik yang cocok (mis. satu pasal
+          // kebetulan lebih panjang dari satu halaman penuh), sliceHeightPx
+          // tetap pakai potongan tetap di atas — jarang terjadi, tapi lebih
+          // baik daripada halaman kosong sama sekali.
+        }
+        // Bulatkan ke atas: pageCanvas.height (integer, dibulatkan browser)
+        // TIDAK BOLEH lebih kecil dari area yang mau digambar — kalau lebih
+        // kecil, sisa barisnya ketinggalan transparan (lihat fillRect di
+        // bawah untuk kenapa transparan ini yang bikin belang).
+        const sliceHeightPxRounded = Math.ceil(sliceHeightPx);
 
         const pageCanvas = document.createElement("canvas");
         pageCanvas.width = canvas.width;
-        pageCanvas.height = sliceHeightPx;
+        pageCanvas.height = sliceHeightPxRounded;
         const ctx = pageCanvas.getContext("2d");
         if (!ctx) {
           showToast("Gagal membuat konteks kanvas untuk PDF — halaman mungkin terpotong.", "warning");
           break;
         }
+        // WAJIB: kanvas baru selalu mulai TRANSPARAN, bukan putih. Kalau
+        // drawImage di bawah tidak menutupi 100% area kanvas ini persis
+        // piksel-per-piksel (sisa pembulatan, atau canvas sumber sedikit
+        // lebih pendek dari yang diharapkan), baris yang tersisa tetap
+        // transparan — lalu setiap pembaca PDF mengkompositkan piksel
+        // transparan itu BEDA-BEDA (ada yang jadi putih, ada yang jadi
+        // abu-abu/hitam). Itu penyebab hasil export belang terang-gelap,
+        // BUKAN warna latar elemen HTML-nya (yang sudah benar semua putih).
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
         ctx.drawImage(
           canvas,
           0,
@@ -4542,11 +4657,22 @@ export default function App() {
   // tersimpan di kontrak (lihat /translate).
   const handleSetDocumentLanguage = async (lang: "id" | "en" | "bilingual") => {
     if (!selectedContract) return;
-    const needsTranslation = lang !== "id" && !selectedContract.clauses.some((c) => c.contentEn);
+    // needsTranslation juga true kalau titleEn/docTypeEn belum ada — ini
+    // indikasi kontrak ini diterjemahkan pakai versi server yang LEBIH LAMA
+    // (sebelum header + format tanggal/bold ikut diterjemahkan). Tanpa cek
+    // ini, kontrak yang sudah py contentEn dari terjemahan lama tidak akan
+    // PERNAH manggil /translate lagi walau tombol EN/ID+EN diklik ulang —
+    // cuma toggle documentLanguage, jadi header & narasi pembuka permanen
+    // ketinggalan format lama (tanggal ISO, tanpa bold, tanpa versi Inggris).
+    const needsTranslation = lang !== "id" && (
+      !selectedContract.clauses.some((c) => c.contentEn)
+      || !selectedContract.titleEn
+      || !selectedContract.docTypeEn
+    );
     if (!needsTranslation) {
       const updated = { ...selectedContract, documentLanguage: lang };
       setSelectedContract(updated);
-      await handleUpdateContractDraft(`Ubah bahasa dokumen ke ${lang}`);
+      await handleUpdateContractDraft(`Ubah bahasa dokumen ke ${lang}`, updated);
       return;
     }
     if (selectedContract.clauses.length === 0) {
@@ -13886,8 +14012,8 @@ export default function App() {
                     {/* Standard Indonesian Style Document Formatting */}
                     <div
                       ref={previewRef}
-                      style={docTypographyStyle()}
-                      className="space-y-6 max-h-[600px] overflow-y-auto bg-slate-900 p-6 rounded-xl border border-slate-850 text-slate-300 shadow-inner"
+                      style={{ ...docTypographyStyle(), backgroundColor: "#ffffff" }}
+                      className="space-y-6 max-h-[600px] overflow-y-auto p-6 border border-slate-850 text-slate-300"
                     >
                       {/* Kop Surat (Letterhead) — logo + identitas perusahaan, sumber
                           data sama dengan yang dipakai kop surat dokumen DCS
@@ -13937,9 +14063,8 @@ export default function App() {
                           </div>
                           {/* Garis pembatas ganda (double rule) mengikuti gaya kop surat
                               formal — dua garis tipis berdekatan, bukan satu garis tebal. */}
-                          <div className="mt-3 space-y-[3px]">
+                          <div className="mt-3">
                             <div className="border-t-2 border-slate-600" />
-                            <div className="border-t border-slate-700" />
                           </div>
                         </div>
                         );
@@ -13947,10 +14072,10 @@ export default function App() {
                       {/* Document Header Title — mengikuti jenis dokumen kontrak,
                           atau format Addendum kalau kontrak ini mengamandemen
                           kontrak lain (amendsContractId terisi) */}
-                      <div className="text-center space-y-1 pb-4 border-b border-slate-800/60">
+                      <div className="text-center space-y-1 pb-4">
                         {selectedContractAddendumInfo ? (
                           <>
-                            <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase underline underline-offset-4 decoration-slate-500">
+                            <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
                               ADDENDUM {selectedContractAddendumInfo.ordinal.toUpperCase()}
                             </h4>
                             <p className="text-xs text-slate-400 uppercase">
@@ -13959,17 +14084,60 @@ export default function App() {
                             <p className="text-xs text-slate-400">{selectedContract.title}</p>
                             <p className="text-xs tracking-wider">No: {selectedContract.contractNumber}</p>
                           </>
-                        ) : (
-                          <>
-                            <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase underline underline-offset-4 decoration-slate-500">
-                              {(selectedContract.docType || "Surat Perjanjian Kerjasama").toUpperCase()}
-                            </h4>
-                            <p className="text-xs text-slate-400">{selectedContract.title}</p>
-                            <p className="text-xs tracking-wider">
-                              NOMOR: {selectedContract.contractNumber}
-                            </p>
-                          </>
-                        )}
+                        ) : (() => {
+                          const docLang = selectedContract.documentLanguage || "id";
+                          // docTypeEn/titleEn diisi server saat /translate — sebelumnya tidak
+                          // pernah dibaca di sini, jadi header (jenis surat + judul) selalu
+                          // Bahasa Indonesia walau mode dokumen sudah "en"/"bilingual".
+                          const docTypeId = (selectedContract.docType || "Surat Perjanjian Kerjasama").toUpperCase();
+                          const docTypeEn = (selectedContract.docTypeEn || selectedContract.docType || "Cooperation Agreement Letter").toUpperCase();
+                          const titleEn = selectedContract.titleEn || selectedContract.title;
+                          const hasHeaderEn = !!(selectedContract.titleEn || selectedContract.docTypeEn);
+                          if (docLang === "en" && hasHeaderEn) {
+                            return (
+                              <>
+                                <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
+                                  {docTypeEn}
+                                </h4>
+                                <p className="text-xs text-slate-400">{titleEn}</p>
+                                <p className="text-xs tracking-wider">NUMBER: {selectedContract.contractNumber}</p>
+                              </>
+                            );
+                          }
+                          if (docLang === "bilingual" && hasHeaderEn) {
+                            return (
+                              <div className="flex gap-3 text-center">
+                                <div className="flex-1 min-w-0 space-y-1">
+                                  <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Bahasa Indonesia</p>
+                                  <h4 className="font-bold text-slate-100 tracking-wide text-sm uppercase">
+                                    {docTypeId}
+                                  </h4>
+                                  <p className="text-xs text-slate-400">{selectedContract.title}</p>
+                                  <p className="text-xs tracking-wider">NOMOR: {selectedContract.contractNumber}</p>
+                                </div>
+                                <div className="flex-1 min-w-0 space-y-1">
+                                  <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">English</p>
+                                  <h4 className="font-bold text-slate-100 tracking-wide text-sm uppercase">
+                                    {docTypeEn}
+                                  </h4>
+                                  <p className="text-xs text-slate-400">{titleEn}</p>
+                                  <p className="text-xs tracking-wider">NUMBER: {selectedContract.contractNumber}</p>
+                                </div>
+                              </div>
+                            );
+                          }
+                          return (
+                            <>
+                              <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
+                                {docTypeId}
+                              </h4>
+                              <p className="text-xs text-slate-400">{selectedContract.title}</p>
+                              <p className="text-xs tracking-wider">
+                                NOMOR: {selectedContract.contractNumber}
+                              </p>
+                            </>
+                          );
+                        })()}
                       </div>
 
                       {/* Narasi pembuka + identifikasi para pihak — bisa dikustom:
@@ -13981,7 +14149,14 @@ export default function App() {
                           hanya kalau field-nya terisi ("ditambahkan sesuai kebutuhan"). */}
                       {(() => {
                         const { template: preambleTemplate, tokens: preambleTokens } = getPreambleTemplateAndTokens();
-                        return (
+                        const docLang = selectedContract.documentLanguage || "id";
+                        // preambleEn diisi server saat /translate (lihat composeContractPreambleText
+                        // + endpoint /api/contracts/:id/translate) — sebelumnya field ini tidak
+                        // pernah dibaca di sini, jadi narasi pembuka & identifikasi pihak selalu
+                        // tampil Bahasa Indonesia walau mode dokumen sudah "en"/"bilingual".
+                        // Akibatnya cuma pasal yang berubah bahasa, "isi surat"-nya tidak.
+                        const hasPreambleEn = !!selectedContract.preambleEn;
+                        const idContent = (
                           <div className="space-y-2">
                             {renderPreambleBlock(preambleTemplate, preambleTokens)}
                             <div className="pl-4 space-y-0.5 text-xs text-slate-400">
@@ -13997,6 +14172,34 @@ export default function App() {
                                   {selectedContract.party2IdNumber && <>{selectedContract.party2IdLabel || "No. Identitas"} Pihak Kedua: <strong>{selectedContract.party2IdNumber}</strong>.</>}
                                 </p>
                               )}
+                            </div>
+                          </div>
+                        );
+                        if (!hasPreambleEn || docLang === "id") return idContent;
+                        // preambleEn = paragraf dipisah baris kosong, dengan **tebal** dari
+                        // AI penerjemah (lihat composeContractPreambleForTranslation di
+                        // server) — pakai renderPreambleParagraphs yang sama dengan sisi
+                        // Indonesia supaya bold-nya ikut tampil, bukan teks polos rata.
+                        const enContent = (
+                          <div className="space-y-2 text-slate-300">
+                            {renderPreambleParagraphs(String(selectedContract.preambleEn), {})}
+                          </div>
+                        );
+                        if (docLang === "en") {
+                          return <div>{enContent}</div>;
+                        }
+                        // "bilingual": dua kolom sejajar Indonesia | Inggris, gaya sama
+                        // dengan tampilan pasal di bawah, supaya narasi pembuka + identifikasi
+                        // para pihak ikut berubah, bukan cuma pasalnya saja.
+                        return (
+                          <div className="flex gap-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
+                              {idContent}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
+                              {enContent}
                             </div>
                           </div>
                         );
@@ -14036,13 +14239,32 @@ export default function App() {
                             </>
                           )}
                         </p>
-                      ) : (
-                        <p>
-                          Masing-masing pihak sepakat untuk mengikatkan diri dalam
-                          Perjanjian Kerjasama dengan ketentuan dan pasal-pasal
-                          sebagai berikut:
-                        </p>
-                      )}
+                      ) : (() => {
+                        // Kalimat baku (bukan hasil AI — memang tidak berubah antar
+                        // dokumen) yang menjembatani narasi pembuka ke daftar pasal.
+                        // Sebelumnya hardcoded Indonesia terus dan tidak pernah ikut
+                        // dikirim ke /translate, jadi "isi surat" ini tidak berubah
+                        // walau mode dokumen sudah "en"/"bilingual".
+                        const docLang = selectedContract.documentLanguage || "id";
+                        const closingId = "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
+                        const closingEn = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
+                        if (docLang === "en") return <p>{closingEn}</p>;
+                        if (docLang === "bilingual") {
+                          return (
+                            <div className="flex gap-3">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
+                                <p>{closingId}</p>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
+                                <p>{closingEn}</p>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return <p>{closingId}</p>;
+                      })()}
 
                       {/* Template sumber sudah direvisi setelah dokumen ini dibuat.
                           Dokumen SENGAJA tidak ikut berubah — yang ditampilkan
@@ -14114,7 +14336,7 @@ export default function App() {
                       )}
 
                       {/* Render clauses with filled-in variables */}
-                      <div className="space-y-4 text-xs border-t border-b border-slate-800/40 py-4">
+                      <div className="space-y-4 text-xs py-4">
                         {selectedContract.clauses.map((clause, index) => {
                           const cmtsForClause = clauseComments.filter((c) => c.clauseId === (clause.id || String(index)));
                           const unresolvedCount = cmtsForClause.filter((c) => !c.resolved).length;
@@ -14138,7 +14360,9 @@ export default function App() {
                           <div key={clause.id || index} className="space-y-1 group/clause">
                             <div className="flex items-center justify-between">
                               <h5 className="font-bold text-slate-100">
-                                {docLang === "en" && hasEn ? headingEn : headingId}
+                                {docLang === "bilingual" && hasEn
+                                  ? null
+                                  : (docLang === "en" && hasEn ? headingEn : headingId)}
                               </h5>
                               {!isExportingPdf && (
                                 <button
@@ -14175,31 +14399,40 @@ export default function App() {
                             {docLang === "bilingual" && hasEn ? (
                               twoColumn ? (
                                 // Dua kolom sejajar: Indonesia kiri, Inggris kanan.
-                                <div className="grid grid-cols-2 gap-3">
-                                  <div className="bg-slate-950 p-2 rounded border border-transparent">
+                                // Judul pasal ikut ditaruh di masing-masing kolom
+                                // (bukan di atas berselang bahasa) supaya heading +
+                                // isi selalu sepasang bahasa yang sama, konsisten
+                                // dengan tampilan narasi pembuka.
+                                <div className="flex gap-3">
+                                  <div className="flex-1 min-w-0">
                                     <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
+                                    <p className="font-bold text-slate-100 mb-1">{headingId}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(clause.content, selectedContract.variables)}
                                     </p>
                                   </div>
-                                  <div className="bg-slate-950 p-2 rounded border border-transparent">
+                                  <div className="flex-1 min-w-0">
                                     <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
+                                    <p className="font-bold text-slate-100 mb-1">{headingEn}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(enBody, selectedContract.variables)}
                                     </p>
                                   </div>
                                 </div>
                               ) : (
-                                // Pasal panjang → berselang, lebar penuh.
+                                // Pasal panjang → berselang, lebar penuh. Sama seperti
+                                // dua kolom: masing-masing blok bawa judulnya sendiri.
                                 <div className="space-y-2">
-                                  <div className="bg-slate-950 p-2 rounded">
+                                  <div>
                                     <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
+                                    <p className="font-bold text-slate-100 mb-1">{headingId}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(clause.content, selectedContract.variables)}
                                     </p>
                                   </div>
-                                  <div className="bg-slate-950 p-2 rounded">
-                                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English &mdash; {headingEn}</p>
+                                  <div>
+                                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
+                                    <p className="font-bold text-slate-100 mb-1">{headingEn}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(enBody, selectedContract.variables)}
                                     </p>
@@ -14207,7 +14440,7 @@ export default function App() {
                                 </div>
                               )
                             ) : (
-                              <p className="text-slate-300 bg-slate-950 p-2 rounded leading-relaxed border border-transparent hover:border-slate-800 transition select-text">
+                              <p className="text-slate-300 leading-relaxed border border-transparent hover:border-slate-800 transition select-text">
                                 {docLang === "en" && hasEn
                                   ? renderClauseContent(enBody, selectedContract.variables)
                                   : cmtsForClause.some((c) => c.anchor?.quote)

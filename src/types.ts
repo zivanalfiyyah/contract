@@ -211,6 +211,8 @@ export interface Contract {
   // diterjemahkan ulang atau dikoreksi manual.
   translationWarnings?: string[];
   preambleEn?: string; // terjemahan narasi pembuka (dipakai mode en/bilingual)
+  titleEn?: string; // terjemahan judul dokumen (header) — dipakai mode en/bilingual
+  docTypeEn?: string; // terjemahan jenis surat, mis. "Cooperation Agreement Letter" — dipakai mode en/bilingual
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF
   numberSeq?: number; // Nomor urut yang dikonsumsi dari counter persisten (per jenis+tahun) — dipakai sbg baseline anti-duplikat
   docType?: string; // Jenis dokumen saat pendaftaran arsip (Perjanjian, MOU, Addendum, dll)

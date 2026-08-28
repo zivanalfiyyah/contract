@@ -4879,6 +4879,98 @@ function composeContractPreambleText(db: any, contract: Contract): string {
   return [plain, ...trailers].join("\n\n");
 }
 
+// Sama seperti composeContractPreambleText, TAPI khusus dipakai sebagai
+// *sumber* untuk AI penerjemah (bukan untuk halaman review eksternal):
+// - Tanggal diformat jadi kalimat (bukan ISO mentah "2026-07-01") supaya AI
+//   ikut menerjemahkan/melokalkan tanggalnya, bukan sekadar menyalin digitnya
+//   apa adanya (dulu ini yang bikin sisi Inggris tampil "2026-07-01").
+// - Markup **tebal** DIPERTAHANKAN (bukan dilucuti) supaya hasil terjemahan
+//   masih bisa dirender tebal oleh renderPreambleParagraphs di frontend —
+//   dulu ini yang bikin sisi Inggris kehilangan bold sama sekali.
+function composeContractPreambleForTranslation(db: any, contract: Contract, sourceLang: "id" | "en"): string {
+  const settings = withSettingsDefaults(rawSettingsFor(db, contract.tenantId));
+  const template =
+    contract.customOpeningParagraph ||
+    contract.templateSnapshot?.openingParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.openingParagraph ||
+    settings.masterData?.categoryOpeningParagraphs?.[contract.category] ||
+    DEFAULT_PREAMBLE_TEMPLATE_SERVER;
+  const formattedStartDate = contract.startDate
+    ? new Date(contract.startDate).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : contract.startDate;
+  const tokens: Record<string, string> = {
+    ...(contract.variables || {}),
+    StartDate: formattedStartDate,
+    Party1Name: settings.companyName || "[Nama perusahaan belum diisi]",
+    Party1Address: contract.party1Address || settings.companyAddress || "[Alamat perusahaan belum diisi]",
+    Party1Representative: settings.companyRepresentative || "[Nama perwakilan belum diisi]",
+    Party1RepTitle: settings.companyRepresentativeTitle || "[Jabatan perwakilan belum diisi]",
+    Party2Name: contract.party2Name,
+    Party2Address: contract.party2Address || contract.variables?.Address || "[Alamat belum diisi]",
+  };
+  const substituted = template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
+  // Rich HTML (editor WYSIWYG) → markdown: <br>/</p>/</li>/</h*> jadi baris
+  // baru rangkap (paragraf tetap terpisah), <strong>/<b> jadi **bold** (bukan
+  // dibuang) supaya penanda tebalnya ikut terbawa ke teks yang dikirim ke AI.
+  const plain = substituted
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/(p|div|li|h[1-6])\s*>/gi, "\n\n")
+    .replace(/<\s*(p|div|h[1-6])(\s[^>]*)?>/gi, "")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<\s*(strong|b)(\s[^>]*)?>/gi, "**").replace(/<\s*\/(strong|b)\s*>/gi, "**")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const trailers: string[] = [];
+  if (contract.party1Position || contract.party1IdNumber) {
+    trailers.push(
+      [
+        contract.party1Position ? `Jabatan Pihak Pertama: ${contract.party1Position}.` : "",
+        contract.party1IdNumber ? `${contract.party1IdLabel || "No. Identitas"} Pihak Pertama: ${contract.party1IdNumber}.` : "",
+      ].filter(Boolean).join(" "),
+    );
+  }
+  if (contract.party2Position || contract.party2IdNumber) {
+    trailers.push(
+      [
+        contract.party2Position ? `Jabatan Pihak Kedua: ${contract.party2Position}.` : "",
+        contract.party2IdNumber ? `${contract.party2IdLabel || "No. Identitas"} Pihak Kedua: ${contract.party2IdNumber}.` : "",
+      ].filter(Boolean).join(" "),
+    );
+  }
+  return [plain, ...trailers].join("\n\n");
+}
+
+// Pengaman deterministik: gemini-3.5-flash kadang membiarkan label baku
+// "PIHAK PERTAMA"/"PIHAK KEDUA" (dan padanan Inggrisnya) tidak ikut
+// diterjemahkan sama sekali — kemungkinan besar karena prompt sebelumnya
+// memakai frasa PERSIS ini sebagai contoh "pertahankan tanda **", yang lalu
+// disalahartikan modelnya sebagai "pertahankan frasa ini apa adanya" (bukan
+// cuma tanda bintangnya). Dipaksa benar di sini, terlepas dari perilaku
+// model, karena frasa ini SELALU berasal dari template baku (bukan input
+// bebas pengguna) sehingga aman dipetakan langsung tanpa AI.
+function fixFixedPartyLabels(text: string | undefined, targetLang: "id" | "en"): string | undefined {
+  if (!text) return text;
+  const pairs: [RegExp, string][] =
+    targetLang === "en"
+      ? [
+          [/PIHAK PERTAMA/g, "FIRST PARTY"],
+          [/Pihak Pertama/g, "First Party"],
+          [/PIHAK KEDUA/g, "SECOND PARTY"],
+          [/Pihak Kedua/g, "Second Party"],
+        ]
+      : [
+          [/FIRST PARTY/g, "PIHAK PERTAMA"],
+          [/First Party/g, "Pihak Pertama"],
+          [/SECOND PARTY/g, "PIHAK KEDUA"],
+          [/Second Party/g, "Pihak Kedua"],
+        ];
+  let out = text;
+  for (const [re, rep] of pairs) out = out.replace(re, rep);
+  return out;
+}
+
 // Terjemahkan isi kontrak (narasi pembuka + seluruh pasal) ke bahasa lawan,
 // untuk mode dokumen "en" dan "bilingual". Hasilnya disimpan di field terpisah
 // (titleEn/contentEn/preambleEn) — teks sumber TIDAK PERNAH ditimpa, sehingga
@@ -4900,8 +4992,11 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
   const from = sourceLang === "en" ? "Bahasa Inggris" : "Bahasa Indonesia";
   const to = sourceLang === "en" ? "Bahasa Indonesia" : "Bahasa Inggris";
 
-  const preambleSource = composeContractPreambleText(db, contract);
+  const preambleSource = composeContractPreambleForTranslation(db, contract, sourceLang);
+  const docTypeSource = contract.docType || "Surat Perjanjian Kerjasama";
   const payload = {
+    title: contract.title,
+    docType: docTypeSource,
     preamble: preambleSource,
     clauses: contract.clauses.map((c) => ({ id: c.id, title: c.title, content: c.content })),
   };
@@ -4913,19 +5008,39 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
       Terjemahkan seluruh isi dokumen berikut ke ${to} secara formal dan presisi mengikuti konvensi penulisan kontrak.
       ATURAN PENTING:
       - Pertahankan struktur JSON persis: jumlah dan urutan "clauses" harus SAMA, dan "id" tiap pasal disalin apa adanya.
-      - JANGAN menerjemahkan nama orang, nama perusahaan, nomor dokumen, NIK/NPWP, dan nilai angka/mata uang.
+      - "title" adalah judul dokumen (mis. "Perjanjian Sewa AC & Perawatan Gedung") dan "docType" adalah jenis suratnya
+        (mis. "Surat Perjanjian Kerjasama", "Nota Kesepahaman", "Addendum") — terjemahkan keduanya secara natural dan
+        formal, memakai istilah hukum baku di bahasa tujuan (mis. "Cooperation Agreement Letter", "Memorandum of
+        Understanding"), BUKAN diterjemahkan kata per kata secara kaku.
+      - JANGAN menerjemahkan nama orang, nama perusahaan, nomor dokumen (mis. "GA-VND-2026-0001"), NIK/NPWP, dan nilai
+        angka/mata uang (mis. "45000000" atau "Rp 45.000.000" tetap angka yang sama).
+      - KECUALI tanggal: tanggal yang ditulis sebagai kalimat (mis. "Rabu, 1 Juli 2026") HARUS ikut diterjemahkan/
+        dilokalkan ke format kalimat tanggal yang wajar di bahasa tujuan (mis. "Wednesday, July 1, 2026") — jangan
+        disalin mentah sebagai angka/ISO (mis. JANGAN jadi "2026-07-01"), dan jangan diringkas jadi angka.
       - Pertahankan token bergaya {{NamaVariabel}} apa adanya, jangan diterjemahkan.
+      - Teks sumber memakai markdown **tebal** (dua bintang) untuk menandai bagian yang harus tetap tebal. WAJIB
+        terjemahkan teks DI DALAM tanda bintang itu ke ${to} (JANGAN dibiarkan tetap berbahasa ${from}), sambil tetap
+        mempertahankan sepasang tanda ** di sekeliling hasil terjemahannya. Ini termasuk label baku seperti "PIHAK
+        PERTAMA"/"PIHAK KEDUA" — label semacam ini WAJIB ikut diterjemahkan juga (mis. "**PIHAK PERTAMA:**" menjadi
+        "**FIRST PARTY:**"), TIDAK BOLEH dibiarkan sama seperti bahasa sumbernya walau ditulis huruf kapital semua.
 
       === DOKUMEN SUMBER (JSON) ===
       ${JSON.stringify(payload)}
       === AKHIR DOKUMEN ===
 
-      Balas HANYA JSON: { "preamble": "...", "clauses": [ { "id": "...", "title": "...", "content": "..." } ] }`,
+      Balas HANYA JSON: { "title": "...", "docType": "...", "preamble": "...", "clauses": [ { "id": "...", "title": "...", "content": "..." } ] }`,
       config: { responseMimeType: "application/json" },
     });
     const parsed = parseAiJson(response.text);
+    const targetLang: "id" | "en" = sourceLang === "en" ? "id" : "en";
     const byId = new Map<string, { title?: string; content?: string }>();
-    for (const c of (parsed.clauses || [])) if (c?.id) byId.set(String(c.id), c);
+    for (const c of (parsed.clauses || [])) {
+      if (!c?.id) continue;
+      byId.set(String(c.id), {
+        title: fixFixedPartyLabels(c.title, targetLang),
+        content: fixFixedPartyLabels(c.content, targetLang),
+      });
+    }
 
     // Jaring pengaman: AI kadang menerjemahkan atau merusak token {{Variabel}}
     // walau sudah dilarang eksplisit di prompt di atas — kalau ini lolos tak
@@ -4948,11 +5063,16 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
       }
       return { ...c, titleEn: t.title || c.titleEn, contentEn: t.content || c.contentEn };
     });
-    if (parsed.preamble && !sameTokens(tokensOf(preambleSource), tokensOf(parsed.preamble))) {
+    const fixedPreamble = fixFixedPartyLabels(parsed.preamble, targetLang);
+    if (fixedPreamble && !sameTokens(tokensOf(preambleSource), tokensOf(fixedPreamble))) {
       warnings.push("Narasi Pembuka");
     } else {
-      contract.preambleEn = parsed.preamble || contract.preambleEn;
+      contract.preambleEn = fixedPreamble || contract.preambleEn;
     }
+    // Judul dokumen & jenis surat (header) — teksnya pendek dan jarang memuat
+    // token {{Variabel}}, jadi cukup dipakai langsung kalau ada hasilnya.
+    contract.titleEn = parsed.title || contract.titleEn;
+    contract.docTypeEn = parsed.docType || contract.docTypeEn;
     contract.translationWarnings = warnings.length > 0 ? warnings : undefined;
     contract.sourceLanguage = sourceLang;
     contract.translationUpdatedAt = new Date().toISOString();

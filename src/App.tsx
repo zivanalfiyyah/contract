@@ -1469,6 +1469,25 @@ const mdToHtmlForEditor = (value: string): string => {
   }).join("");
 };
 
+// Daftar font yang bisa dipilih di toolbar RichTextEditor — Times New Roman
+// & Cambria sudah ada sebelumnya; Garamond/Book Antiqua/Bookman Old Style/
+// Palatino Linotype ditambahkan karena lazim dipakai utk dokumen kontrak/
+// legal formal. Semua font sistem Windows bawaan (tidak perlu @font-face).
+const RICH_FONT_OPTIONS: string[] = [
+  "Times New Roman",
+  "Cambria",
+  "Garamond",
+  "Book Antiqua",
+  "Bookman Old Style",
+  "Palatino Linotype",
+  "Georgia",
+  "Arial",
+  "Calibri",
+  "Verdana",
+  "Tahoma",
+  "Courier New",
+];
+
 // Editor WYSIWYG ringan (contentEditable + execCommand) — Bold/Italic/Underline,
 // warna, ukuran, perataan, bullet, plus palet token dinamis. Menyimpan HTML.
 // Sinkron nilai→DOM DIJAGA (hanya tulis ulang saat beda) supaya kursor tak
@@ -1481,8 +1500,27 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [color, setColor] = useState("#1c2837");
+  // Nama font TERKINI di posisi kursor/seleksi — supaya kotak dropdown terus
+  // menampilkan font yang sedang aktif (gaya Word), bukan balik ke placeholder
+  // "Font" setiap habis dipakai seperti dropdown "Ukuran" (yang sengaja tidak
+  // diubah perilakunya). Kosong = tidak ada padanan di RICH_FONT_OPTIONS
+  // (mis. teks masih pakai font bawaan) → dropdown jatuh ke placeholder.
+  const [currentFontName, setCurrentFontName] = useState("");
+  const syncFontFromSelection = () => {
+    try {
+      const raw = String(document.queryCommandValue("fontName") || "")
+        .replace(/^['"]+|['"]+$/g, "")
+        .split(",")[0]
+        .trim();
+      const match = RICH_FONT_OPTIONS.find((f) => f.toLowerCase() === raw.toLowerCase());
+      setCurrentFontName(match || "");
+    } catch { /* noop — queryCommandValue bisa gagal di beberapa browser lama */ }
+  };
   useEffect(() => {
-    if (ref.current && ref.current.innerHTML !== valueHtml) ref.current.innerHTML = valueHtml || "";
+    if (ref.current && ref.current.innerHTML !== valueHtml) {
+      ref.current.innerHTML = valueHtml || "";
+      setCurrentFontName("");
+    }
   }, [valueHtml]);
   const emit = () => { if (ref.current) onChange(sanitizeRich(ref.current.innerHTML)); };
   const exec = (cmd: string, arg?: string) => {
@@ -1504,6 +1542,25 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
         <Btn onClick={() => exec("bold")} title="Tebal"><b>B</b></Btn>
         <Btn onClick={() => exec("italic")} title="Miring"><i>I</i></Btn>
         <Btn onClick={() => exec("underline")} title="Garis bawah"><u>U</u></Btn>
+        <span className="w-px h-4 bg-slate-800 mx-0.5" />
+        {/* Jenis huruf (font-family) — terpisah total dari dropdown "Ukuran"
+            di bawah ini yang SENGAJA tidak disentuh sama sekali. Controlled
+            (value={currentFontName}) & TIDAK di-reset setelah dipilih, supaya
+            kotaknya terus menampilkan nama font aktif — gaya "Calibri (Body)"
+            di Word — bukan balik ke placeholder "Font" seperti "Ukuran".
+            styleWithCSS sudah diaktifkan di exec(), jadi fontName menghasilkan
+            <span style="font-family:...">, konsisten dgn pola Warna (foreColor)
+            yang sudah ada — tidak perlu ubah RICH_ALLOWED ("style" & "span"
+            sudah diizinkan di sana). */}
+        <select onMouseDown={(e) => e.stopPropagation()} value={currentFontName}
+          onChange={(e) => { const f = e.target.value; exec("fontName", f); setCurrentFontName(f); }}
+          title={currentFontName ? `Jenis huruf: ${currentFontName}` : "Jenis huruf"}
+          className="h-[26px] px-1 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer">
+          <option value="">Font</option>
+          {RICH_FONT_OPTIONS.map((f) => (
+            <option key={f} value={f} style={{ fontFamily: /\s/.test(f) ? `'${f}'` : f }}>{f}</option>
+          ))}
+        </select>
         <span className="w-px h-4 bg-slate-800 mx-0.5" />
         <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("fontSize", e.target.value); e.target.selectedIndex = 0; }} title="Ukuran teks"
           className="h-[26px] px-1 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer">
@@ -1541,6 +1598,10 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
         suppressContentEditableWarning
         onInput={emit}
         onBlur={emit}
+        onFocus={syncFontFromSelection}
+        onMouseUp={syncFontFromSelection}
+        onKeyUp={syncFontFromSelection}
+        onSelect={syncFontFromSelection}
         style={{ minHeight }}
         className="px-3 py-2 text-xs text-slate-100 focus:outline-none [&_b]:font-bold [&_strong]:font-bold [&_ul]:list-disc [&_ul]:pl-5"
       />
@@ -2354,6 +2415,30 @@ export default function App() {
     documentNumber: "",
   });
   const [isRenewSubmitting, setIsRenewSubmitting] = useState(false);
+
+  // Modal "Edit Data Pihak & Kontrak" (workspace kontrak individual) —
+  // form draft TERPISAH dari selectedContract, supaya "Batal" bisa
+  // membatalkan tanpa menyentuh dokumen yang sedang tampil. "Simpan
+  // Perubahan" menerapkan ke draft kontrak (selectedContract) — baru
+  // benar-benar tersimpan ke server via "Simpan Draft Baru" di header
+  // utama, pola yang sama seperti edit Pasal/Tambah Kolom TTD. Nomor
+  // dokumen SENGAJA tidak ada di form ini — dikunci demi jejak audit.
+  const [editPartyModalContract, setEditPartyModalContract] = useState<Contract | null>(null);
+  const [editPartyForm, setEditPartyForm] = useState({
+    title: "",
+    docType: "",
+    startDate: "",
+    party1Address: "",
+    party1Position: "",
+    party1IdLabel: "",
+    party1IdNumber: "",
+    party2Name: "",
+    party2Type: "",
+    party2Address: "",
+    party2Position: "",
+    party2IdLabel: "",
+    party2IdNumber: "",
+  });
 
   // Addendum: dokumen satelit yang mengamandemen kontrak induk (induk tetap
   // hidup) — beda dari Renew di atas yang membuat kontrak pengganti baru.
@@ -4708,6 +4793,61 @@ export default function App() {
     } finally {
       setIsTranslating(false);
     }
+  };
+
+  // Buka modal "Edit Data Pihak & Kontrak" — prefill dari kontrak yang
+  // sedang dibuka. Nomor dokumen tidak ikut di-prefill karena memang
+  // tidak ada field-nya di form (dikunci, hanya ditampilkan read-only).
+  const handleOpenEditPartyModal = (contract: Contract) => {
+    setEditPartyModalContract(contract);
+    setEditPartyForm({
+      title: contract.title || "",
+      docType: contract.docType || "",
+      startDate: contract.startDate || "",
+      party1Address: contract.party1Address || "",
+      party1Position: contract.party1Position || "",
+      party1IdLabel: contract.party1IdLabel || "",
+      party1IdNumber: contract.party1IdNumber || "",
+      party2Name: contract.party2Name || "",
+      party2Type: contract.party2Type || "",
+      party2Address: contract.party2Address || "",
+      party2Position: contract.party2Position || "",
+      party2IdLabel: contract.party2IdLabel || "",
+      party2IdNumber: contract.party2IdNumber || "",
+    });
+  };
+
+  // Terapkan form modal ke draft kontrak yang sedang tampil (belum ke
+  // server — sama seperti edit Pasal, baru permanen lewat "Simpan Draft
+  // Baru"). contractNumber SENGAJA tidak disentuh sama sekali di sini.
+  const handleSaveEditPartyModal = () => {
+    if (!selectedContract) return;
+    if (!editPartyForm.title.trim()) {
+      showToast("Judul dokumen tidak boleh kosong", "warning");
+      return;
+    }
+    if (!editPartyForm.party2Name.trim()) {
+      showToast("Nama Pihak Kedua tidak boleh kosong", "warning");
+      return;
+    }
+    setSelectedContract({
+      ...selectedContract,
+      title: editPartyForm.title.trim(),
+      docType: editPartyForm.docType.trim() || undefined,
+      startDate: editPartyForm.startDate,
+      party1Address: editPartyForm.party1Address.trim() || undefined,
+      party1Position: editPartyForm.party1Position.trim() || undefined,
+      party1IdLabel: editPartyForm.party1IdLabel.trim() || undefined,
+      party1IdNumber: editPartyForm.party1IdNumber.trim() || undefined,
+      party2Name: editPartyForm.party2Name.trim(),
+      party2Type: editPartyForm.party2Type.trim() || selectedContract.party2Type,
+      party2Address: editPartyForm.party2Address.trim() || undefined,
+      party2Position: editPartyForm.party2Position.trim() || undefined,
+      party2IdLabel: editPartyForm.party2IdLabel.trim() || undefined,
+      party2IdNumber: editPartyForm.party2IdNumber.trim() || undefined,
+    });
+    setEditPartyModalContract(null);
+    showToast("Perubahan diterapkan ke draft — klik \"Simpan Draft Baru\" untuk menyimpan.", "info");
   };
 
   // Open the Extend/Renew preview modal, prefilled with a suggested next period
@@ -7587,7 +7727,7 @@ export default function App() {
   // Default bawaan (dipakai kalau tidak ada override kategori/Template) —
   // isi sama persis dengan narasi hardcoded lama, hanya ditokenkan.
   const DEFAULT_PREAMBLE_TEMPLATE =
-    "Pada hari ini, tanggal **{{StartDate}}**, kami yang bertandatangan di bawah ini:\n\n" +
+    "Pada hari ini, **{{StartDate}}**, kami yang bertandatangan di bawah ini:\n\n" +
     "**PIHAK PERTAMA:** {{Party1Name}}, berkedudukan di {{Party1Address}}, dalam hal ini diwakili oleh {{Party1Representative}} selaku {{Party1RepTitle}}, selanjutnya disebut sebagai **Pihak Pertama**.\n\n" +
     "**PIHAK KEDUA:** {{Party2Name}}, berdomisili di {{Party2Address}}, selanjutnya disebut sebagai **Pihak Kedua**.";
 
@@ -13821,6 +13961,16 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-wrap items-center justify-end gap-2">
+                  {isContractEditable(selectedContract) && (
+                    <button
+                      onClick={() => handleOpenEditPartyModal(selectedContract)}
+                      title="Ubah judul dokumen, jenis dokumen, tanggal, dan detail identitas Pihak Pertama/Kedua. Nomor dokumen tidak bisa diubah di sini."
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition flex items-center gap-1"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Edit Data Pihak &amp; Kontrak
+                    </button>
+                  )}
                   {/* Ada TIGA "Bandingkan" di aplikasi ini dan dulu ketiganya
                       bernama sama persis. Nama masing-masing kini menyebut apa
                       yang dibandingkan:
@@ -14552,6 +14702,64 @@ export default function App() {
                         Editor Pasal Kontrak Ini (edit / hapus / tambah baris — simpan via "Simpan Draft Baru"):
                       </p>
                       <div className="space-y-3">
+                        {/* Narasi Pembuka — override HANYA utk kontrak ini
+                            (prioritas tertinggi di atas Template.openingParagraph
+                            & narasi kategori). Data pihak/tanggal/judul TIDAK
+                            diedit di sini — itu lewat "Edit Data Pihak & Kontrak"
+                            di header, supaya grammar kalimat pembuka tetap benar
+                            apa pun yang diisi. */}
+                        <div className="p-2.5 bg-slate-900 border border-amber-500/20 rounded-lg space-y-2">
+                          <div>
+                            <p className="font-bold text-amber-400 text-xs">Narasi Pembuka</p>
+                            <p className="text-[10px] text-slate-500">
+                              Judul dokumen, tanggal &amp; identitas Pihak Pertama/Kedua diatur lewat tombol "Edit Data Pihak &amp; Kontrak" di atas — ini cuma kalimat pembukanya.
+                            </p>
+                          </div>
+                          {(() => {
+                            const val = selectedContract.customOpeningParagraph || "";
+                            if (!val.trim()) {
+                              const { template } = getPreambleTemplateAndTokens();
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedContract({
+                                      ...selectedContract,
+                                      customOpeningParagraph: mdToHtmlForEditor(template),
+                                    })
+                                  }
+                                  className="text-[10px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg cursor-pointer font-semibold flex items-center gap-1"
+                                >
+                                  <FileText className="w-3 h-3" /> Muat teks aktif untuk diedit
+                                </button>
+                              );
+                            }
+                            return (
+                              <>
+                                <RichTextEditor
+                                  valueHtml={looksLikeHtml(val) ? val : mdToHtmlForEditor(val)}
+                                  onChange={(html) =>
+                                    setSelectedContract({ ...selectedContract, customOpeningParagraph: html })
+                                  }
+                                  tokens={PREAMBLE_TOKENS}
+                                  minHeight={100}
+                                />
+                                <div className="flex items-center justify-between gap-2">
+                                  <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })
+                                    }
+                                    className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
+                                  >
+                                    Kembalikan ke bawaan
+                                  </button>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
                         {selectedContract.clauses.map((cl, i) => (
                           <div
                             key={cl.id}
@@ -20065,6 +20273,181 @@ export default function App() {
       )}
 
       {/* EXTEND / RENEW PREVIEW MODAL */}
+      {editPartyModalContract && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-start">
+              <div>
+                <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
+                  <Pencil className="text-indigo-400 w-4 h-4" />
+                  Edit Data Pihak &amp; Kontrak
+                </h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Nomor dokumen ({editPartyModalContract.contractNumber}) tidak bisa diubah di sini — nomor terkunci demi jejak audit.
+                </p>
+              </div>
+              <button
+                onClick={() => setEditPartyModalContract(null)}
+                className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-5 text-xs">
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">Judul Dokumen</label>
+                <input
+                  type="text"
+                  value={editPartyForm.title}
+                  onChange={(e) => setEditPartyForm({ ...editPartyForm, title: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">Jenis Dokumen</label>
+                  <input
+                    type="text"
+                    placeholder="mis. Surat Perjanjian Kerjasama"
+                    value={editPartyForm.docType}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, docType: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">Tanggal ("pada hari ini, tanggal...")</label>
+                  <input
+                    type="date"
+                    value={editPartyForm.startDate}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, startDate: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300 flex items-center gap-1.5">
+                  Nomor Dokumen
+                  <HelpCircle className="w-3 h-3 text-slate-500 font-normal" title="Nomor dokumen terkunci demi jejak audit — tidak bisa diubah dari sini." />
+                </label>
+                <div className="w-full px-3 py-2 bg-slate-900/60 border border-slate-800 rounded-lg text-xs font-mono text-slate-400 flex items-center gap-2">
+                  <span>{editPartyModalContract.contractNumber}</span>
+                  <Lock className="w-3.5 h-3.5 text-slate-600 ml-auto shrink-0" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-slate-850">
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold text-slate-400 uppercase">Pihak Pertama ({appSettings.companyName || "Perusahaan"})</p>
+                  <input
+                    type="text"
+                    placeholder={`Alamat (kosong = "${appSettings.companyAddress || "alamat perusahaan"}")`}
+                    value={editPartyForm.party1Address}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, party1Address: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder={`Jabatan Penandatanganan (kosong = "${appSettings.companyRepresentativeTitle || "jabatan perwakilan"}")`}
+                    value={editPartyForm.party1Position}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, party1Position: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Label ID (mis. NPWP)"
+                      value={editPartyForm.party1IdLabel}
+                      onChange={(e) => setEditPartyForm({ ...editPartyForm, party1IdLabel: e.target.value })}
+                      className="w-24 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Nomor identitas"
+                      value={editPartyForm.party1IdNumber}
+                      onChange={(e) => setEditPartyForm({ ...editPartyForm, party1IdNumber: e.target.value })}
+                      className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold text-slate-400 uppercase">Pihak Kedua</p>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Nama"
+                      value={editPartyForm.party2Name}
+                      onChange={(e) => setEditPartyForm({ ...editPartyForm, party2Name: e.target.value })}
+                      className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                    />
+                    <select
+                      value={editPartyForm.party2Type}
+                      onChange={(e) => setEditPartyForm({ ...editPartyForm, party2Type: e.target.value })}
+                      className="w-32 px-2 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      {!masterData.partyTypes.includes(editPartyForm.party2Type) && editPartyForm.party2Type && (
+                        <option value={editPartyForm.party2Type}>{editPartyForm.party2Type}</option>
+                      )}
+                      {masterData.partyTypes.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Alamat"
+                    value={editPartyForm.party2Address}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, party2Address: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Jabatan"
+                    value={editPartyForm.party2Position}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, party2Position: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Label ID (mis. NIK)"
+                      value={editPartyForm.party2IdLabel}
+                      onChange={(e) => setEditPartyForm({ ...editPartyForm, party2IdLabel: e.target.value })}
+                      className="w-24 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Nomor identitas"
+                      value={editPartyForm.party2IdNumber}
+                      onChange={(e) => setEditPartyForm({ ...editPartyForm, party2IdNumber: e.target.value })}
+                      className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-800 bg-slate-900/50 flex justify-end gap-2">
+              <button
+                onClick={() => setEditPartyModalContract(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleSaveEditPartyModal}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl cursor-pointer"
+              >
+                Simpan Perubahan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {renewSource && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">

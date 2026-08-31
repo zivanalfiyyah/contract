@@ -14258,7 +14258,6 @@ export default function App() {
                             return (
                               <div className="flex gap-3 text-center">
                                 <div className="flex-1 min-w-0 space-y-1">
-                                  <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">Bahasa Indonesia</p>
                                   <h4 className="font-bold text-slate-100 tracking-wide text-sm uppercase">
                                     {docTypeId}
                                   </h4>
@@ -14266,7 +14265,6 @@ export default function App() {
                                   <p className="text-xs tracking-wider">NOMOR: {selectedContract.contractNumber}</p>
                                 </div>
                                 <div className="flex-1 min-w-0 space-y-1">
-                                  <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide">English</p>
                                   <h4 className="font-bold text-slate-100 tracking-wide text-sm uppercase">
                                     {docTypeEn}
                                   </h4>
@@ -14344,11 +14342,9 @@ export default function App() {
                         return (
                           <div className="flex gap-3">
                             <div className="flex-1 min-w-0">
-                              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
                               {idContent}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
                               {enContent}
                             </div>
                           </div>
@@ -14403,11 +14399,9 @@ export default function App() {
                           return (
                             <div className="flex gap-3">
                               <div className="flex-1 min-w-0">
-                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
                                 <p>{closingId}</p>
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
                                 <p>{closingEn}</p>
                               </div>
                             </div>
@@ -14532,7 +14526,11 @@ export default function App() {
                                 </button>
                               )}
                             </div>
-                            {!isExportingPdf && (
+                            {/* Sorot & Komentari / Usulkan Coret HANYA untuk kontrak
+                                yang masih Draft (isContractEditable) — begitu kontrak
+                                sudah diaktifkan (Aktif/OnReview/dst.), pasal terkunci
+                                dan tidak boleh lagi dianotasi baru. */}
+                            {!isExportingPdf && isContractEditable(selectedContract) && (
                               <div className="flex gap-1.5 opacity-0 group-hover/clause:opacity-100 transition">
                                 <button
                                   onClick={() => startClauseAnchor(clause, index, "comment")}
@@ -14555,14 +14553,12 @@ export default function App() {
                                 // dengan tampilan narasi pembuka.
                                 <div className="flex gap-3">
                                   <div className="flex-1 min-w-0">
-                                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
                                     <p className="font-bold text-slate-100 mb-1">{headingId}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(clause.content, selectedContract.variables)}
                                     </p>
                                   </div>
                                   <div className="flex-1 min-w-0">
-                                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
                                     <p className="font-bold text-slate-100 mb-1">{headingEn}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(enBody, selectedContract.variables)}
@@ -14574,14 +14570,12 @@ export default function App() {
                                 // dua kolom: masing-masing blok bawa judulnya sendiri.
                                 <div className="space-y-2">
                                   <div>
-                                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">Bahasa Indonesia</p>
                                     <p className="font-bold text-slate-100 mb-1">{headingId}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(clause.content, selectedContract.variables)}
                                     </p>
                                   </div>
                                   <div>
-                                    <p className="text-[9px] font-bold text-slate-500 uppercase tracking-wide mb-1">English</p>
                                     <p className="font-bold text-slate-100 mb-1">{headingEn}</p>
                                     <p className="text-slate-300 leading-relaxed select-text">
                                       {renderClauseContent(enBody, selectedContract.variables)}

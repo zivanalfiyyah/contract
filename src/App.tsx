@@ -14502,13 +14502,19 @@ export default function App() {
                           const headingEn = selectedContractAddendumInfo ? enTitle : `Article ${index + 1}: ${enTitle}`;
                           return (
                           <div key={clause.id || index} className="space-y-1 group/clause">
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between min-h-[1.375rem]">
                               <h5 className="font-bold text-slate-100">
                                 {docLang === "bilingual" && hasEn
                                   ? null
                                   : (docLang === "en" && hasEn ? headingEn : headingId)}
                               </h5>
-                              {!isExportingPdf && (
+                              {/* Sama seperti "Sorot & Komentari" / "Usulkan Coret" di
+                                  bawah — tombol "Komentar" ini juga HANYA muncul kalau
+                                  kontrak masih Draft (isContractEditable). Sebelumnya
+                                  cuma dicek !isExportingPdf, jadi masih nongol di
+                                  kontrak yang udah Aktif padahal dua tombol lain
+                                  sudah dikunci. */}
+                              {!isExportingPdf && isContractEditable(selectedContract) && (
                                 <button
                                   onClick={() => {
                                     setCommentClauseId(clause.id || String(index));

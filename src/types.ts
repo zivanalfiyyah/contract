@@ -200,6 +200,12 @@ export interface Contract {
   // "bilingual" (dua kolom Indonesia|Inggris, jatuh ke gaya berselang untuk
   // pasal yang terlalu panjang). Kosong/undefined = "id".
   documentLanguage?: "id" | "en" | "bilingual";
+  // Tampilkan kop surat (logo+nama+alamat perusahaan) di preview/export PDF.
+  // Kosong/undefined = true (perilaku lama, tampil). Kontrak KERJASAMA dua
+  // pihak yang sejajar (bukan surat sepihak dari satu pihak) sering sengaja
+  // dimatikan — kop surat salah satu pihak bisa kesan berat sebelah, dan
+  // mematikannya juga menghemat ~30mm ruang vertikal per halaman.
+  showLetterhead?: boolean;
   // Bahasa ASLI yang diketik user. Menentukan arah terjemahan: kalau sumbernya
   // "en", maka yang diterjemahkan justru ke Indonesia. Kosong = "id".
   sourceLanguage?: "id" | "en";
@@ -318,6 +324,27 @@ export interface Contract {
   party2Position?: string;
   party2IdLabel?: string;
   party2IdNumber?: string;
+  // Logo Pihak Kedua — OPSIONAL, diunggah manual per-kontrak lewat modal Edit
+  // Data Pihak (beda dari appSettings.companyLogoUrl yang global utk Pihak
+  // Pertama/perusahaan sendiri, dipakai berulang di semua kontrak). Kosong =
+  // kop surat cuma tampilkan 1 logo (Pihak Pertama saja) — TIDAK dianggap
+  // error/rusak, ini kondisi normal utk mayoritas kontrak (mis. kerjasama
+  // internal antar unit sendiri yang memang tidak butuh identitas kedua).
+  party2LogoUrl?: string;
+  party2LogoKey?: string;
+  party2LogoMimeType?: string;
+  // Nyala/matikan GAMBAR logo di kop surat — terpisah dari showLetterhead
+  // (yang matikan kop SELURUHNYA termasuk nama/alamat teks). Kosong/undefined
+  // = true (tampil, perilaku lama). Dipakai utk kop "teks doang" (nama+alamat
+  // perusahaan tanpa gambar logo) tanpa harus mematikan kop surat total.
+  showLetterheadLogo?: boolean;
+  // Tampilkan kotak placeholder "Meterai Rp10.000" (garis putus-putus) di
+  // ruang kosong tanda tangan tiap pihak. Kosong/undefined = false (tidak
+  // tampil, perilaku lama) — ini FITUR OPT-IN, bukan default baru, karena
+  // banyak perusahaan sudah punya meterai tempel fisik/e-meterai sendiri di
+  // luar template ini. TIDAK menambah tinggi halaman sama sekali kalau
+  // dinyalakan — cuma mengisi ruang kosong TTD yang memang sudah ada.
+  showMeteraiPlaceholder?: boolean;
   // Override narasi pembuka KHUSUS kontrak ini (prioritas TERTINGGI di atas
   // Template.openingParagraph & masterData.categoryOpeningParagraphs) —
   // diisi langsung di wizard/form registrasi. Kosong = ikuti rantai fallback

@@ -1079,6 +1079,13 @@ function defaultSettings() {
     // ruang penjilidan, praktik umum SOP. Dipakai dcs/pdf-compose.ts (dikonversi
     // ke points). Bisa diubah per perusahaan di Konfigurasi > DCS.
     dcsPageMargins: { top: 20, right: 18, bottom: 18, left: 25 },
+    // Margin halaman PDF KONTRAK (mm) — dipakai sebagai padding pada preview
+    // yang di-screenshot (html2canvas) oleh generateContractPdf di App.tsx.
+    // Terpisah dari dcsPageMargins karena beda mesin render (kontrak = screenshot
+    // preview, DCS = digambar langsung lewat pdf-lib). Default 40/30/30/40mm
+    // = gaya margin dokumen resmi Indonesia umum (atas 4cm, kiri 4cm, kanan &
+    // bawah 3cm). Bisa diubah per perusahaan di Konfigurasi > Master Data.
+    contractPageMargins: { top: 30, right: 30, bottom: 30, left: 30 },
     // Watermark (CONTROLLED/UNCONTROLLED) pada PDF KONTRAK — OPSIONAL, default
     // MATI (tidak mandatory utk kontrak & karyawan). DCS TETAP wajib watermark
     // by sistem (reactive watermark modul DCS, tidak dipengaruhi setelan ini).
@@ -1941,6 +1948,23 @@ app.post("/api/settings/company-logo", requireAuth, requireRole("admin"), upload
   res.json({ url: stored.url, key: stored.key, mimeType: req.file.mimetype });
 });
 
+// Upload logo Pihak Kedua — beda dari company-logo di atas (yang tenant-wide
+// utk Pihak Pertama/perusahaan sendiri): ini per-kontrak, jadi TIDAK
+// menyimpan ke appSettings sama sekali, cuma mengunggah berkas & balikin
+// url/key-nya. Penyimpanan ke field party2LogoUrl kontrak terjadi lewat PUT
+// /api/contracts/:id yang sudah ada (lihat komentar showLetterhead/
+// party2LogoUrl di situ) — konsisten dgn alur "Edit Data Pihak & Kontrak" yg
+// juga baru benar-benar tersimpan setelah tombol Simpan di modal itu diklik.
+app.post("/api/contracts/:id/party2-logo", requireAuth, requireRole("admin", "staff", "legal", "manager"), upload.single("file"), async (req: AuthedRequest, res) => {
+  if (!req.file) return res.status(400).json({ error: "Tidak ada berkas" });
+  if (!/^image\/(png|jpe?g)$/.test(req.file.mimetype)) {
+    return res.status(400).json({ error: "Logo harus berformat PNG atau JPEG" });
+  }
+  const key = `party2-logo-${req.params.id}-${Date.now()}-${req.file.originalname.replace(/[^\w.\-]/g, "_")}`;
+  const stored = await storeFile(req.file.buffer, key, req.file.mimetype);
+  res.json({ url: stored.url, key: stored.key, mimeType: req.file.mimetype });
+});
+
 // Bangun daftar rangkap fisik kontrak dari pilihan form (jumlah rangkap +
 // bermeterai/tidak). Konvensi meterai rangkap 2 mengikuti praktik umum:
 // rangkap pertama meterai di sisi Pihak Pertama, rangkap kedua di sisi
@@ -2149,6 +2173,12 @@ app.put("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal"
       party2Position: req.body.party2Position !== undefined ? (req.body.party2Position || undefined) : oldContract.party2Position,
       party2IdLabel: req.body.party2IdLabel !== undefined ? (req.body.party2IdLabel || undefined) : oldContract.party2IdLabel,
       party2IdNumber: req.body.party2IdNumber !== undefined ? (req.body.party2IdNumber || undefined) : oldContract.party2IdNumber,
+      // Sama level kuncinya dgn party2Address/Position di atas — logo Pihak
+      // Kedua bagian dari identitas pihak yang disepakati, bukan preferensi
+      // tampilan (beda dgn showLetterhead/showLetterheadLogo di bawah).
+      party2LogoUrl: req.body.party2LogoUrl !== undefined ? (req.body.party2LogoUrl || undefined) : oldContract.party2LogoUrl,
+      party2LogoKey: req.body.party2LogoKey !== undefined ? (req.body.party2LogoKey || undefined) : oldContract.party2LogoKey,
+      party2LogoMimeType: req.body.party2LogoMimeType !== undefined ? (req.body.party2LogoMimeType || undefined) : oldContract.party2LogoMimeType,
       customOpeningParagraph: req.body.customOpeningParagraph !== undefined ? (req.body.customOpeningParagraph || undefined) : oldContract.customOpeningParagraph,
     } : {}),
     status: req.body.status !== undefined ? req.body.status : oldContract.status,
@@ -2168,6 +2198,15 @@ app.put("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal"
     // dwibahasa.
     documentLanguage: req.body.documentLanguage !== undefined ? req.body.documentLanguage : oldContract.documentLanguage,
     sourceLanguage: req.body.sourceLanguage !== undefined ? req.body.sourceLanguage : oldContract.sourceLanguage,
+    // showLetterhead: preferensi tampilan (nyala/mati kop surat di preview &
+    // export), sama seperti documentLanguage di atas — bukan isi naskah yang
+    // disepakati, jadi juga SELALU diizinkan terlepas dari status kontrak.
+    showLetterhead: req.body.showLetterhead !== undefined ? !!req.body.showLetterhead : oldContract.showLetterhead,
+    // showLetterheadLogo: sama alasannya dgn showLetterhead di atas — preferensi
+    // tampilan, bukan isi naskah, jadi juga selalu diizinkan.
+    showLetterheadLogo: req.body.showLetterheadLogo !== undefined ? !!req.body.showLetterheadLogo : oldContract.showLetterheadLogo,
+    // showMeteraiPlaceholder: preferensi tampilan juga, alasan sama.
+    showMeteraiPlaceholder: req.body.showMeteraiPlaceholder !== undefined ? !!req.body.showMeteraiPlaceholder : oldContract.showMeteraiPlaceholder,
     // Termin pembayaran SELALU boleh diperbarui, terlepas dari status —
     // justru setelah kontrak Aktif-lah tagihan berjalan dan realisasinya
     // dicatat. Mengunci ini di balik canEditContent (Draft saja) akan membuat

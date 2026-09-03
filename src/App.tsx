@@ -42,6 +42,7 @@ import {
   HelpCircle,
   FileDigit,
   Building2,
+  Image as ImageIcon,
   User,
   PenTool,
   LineChart,
@@ -63,7 +64,6 @@ import {
   Copy,
   Archive,
   Star,
-  Wallet,
   CheckSquare,
   XCircle,
   ChevronDown,
@@ -1733,6 +1733,7 @@ export default function App() {
     confidentialityNotice: "",
   });
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
+  const [isUploadingParty2Logo, setIsUploadingParty2Logo] = useState(false);
   const [configTab, setConfigTab] = useState<"beranda" | "folder" | "masterdata" | "dcsdoctypes" | "dcsclauses" | "vendor" | "karyawan" | "app" | "pengguna" | "perusahaan">("beranda");
   // Pencarian pengaturan di beranda Konfigurasi berpandu — ketik kata kunci,
   // klik hasil untuk lompat ke tab yang relevan (lihat configSearchIndex).
@@ -1856,9 +1857,6 @@ export default function App() {
   const [arsipStatusBucket, setArsipStatusBucket] = useState<"draft" | "approve" | null>(null);
   // Sub-folder tree (3 layer: category > sub folder > sub-sub folder)
   const [subFolders, setSubFolders] = useState<SubFolder[]>([]);
-  const [budgets, setBudgets] = useState<any[]>([]);
-  const [budgetForm, setBudgetForm] = useState({ id: "", year: new Date().getFullYear(), category: "", department: "", amount: "", notes: "" });
-  const [budgetYearFilter, setBudgetYearFilter] = useState<number>(new Date().getFullYear());
   const [arsipSubPath, setArsipSubPath] = useState<string[]>([]); // stack of SubFolder ids drilled into
   const [isRegisteringDoc, setIsRegisteringDoc] = useState(false);
   const [isDocSubmitting, setIsDocSubmitting] = useState(false);
@@ -2438,6 +2436,9 @@ export default function App() {
     party2Position: "",
     party2IdLabel: "",
     party2IdNumber: "",
+    party2LogoUrl: "",
+    party2LogoKey: "",
+    party2LogoMimeType: "",
   });
 
   // Addendum: dokumen satelit yang mengamandemen kontrak induk (induk tetap
@@ -2855,13 +2856,6 @@ export default function App() {
       ? { rating: ev.rating, onTimeDelivery: ev.onTimeDelivery, disputeCount: ev.disputeCount, notes: ev.notes || "" }
       : { rating: 0, disputeCount: 0, notes: "" });
   }, [selectedContract?.id]);
-
-  // Form "Tambah Anggaran" ikut default ke tahun yang sedang difilter —
-  // tanpa ini form selalu menampilkan tahun berjalan (2026) walau user sudah
-  // pindah melihat tahun lain, memaksa ganti manual tiap kali.
-  useEffect(() => {
-    setBudgetForm((f) => (f.id ? f : { ...f, year: budgetYearFilter }));
-  }, [budgetYearFilter]);
 
   // Hasil verifikasi checksum sebelumnya tidak boleh "menempel" saat pindah
   // ke kontrak lain — tanpa reset ini, membuka kontrak B bisa menampilkan
@@ -3557,7 +3551,6 @@ export default function App() {
         resNotifications,
         resSettings,
         resSubFolders,
-        resBudgets,
       ] = await Promise.all([
         fetch("/api/contracts").then((r) => r.json()),
         fetch("/api/clauses").then((r) => r.json()),
@@ -3569,7 +3562,6 @@ export default function App() {
         fetch("/api/notifications").then((r) => r.json()),
         fetch("/api/settings").then((r) => r.json()),
         fetch("/api/subfolders").then((r) => r.json()),
-        fetch("/api/budgets").then((r) => r.json()),
       ]);
 
       setContracts(resContracts);
@@ -3582,7 +3574,6 @@ export default function App() {
       setNotifications(resNotifications);
       if (resSettings) setAppSettings(resSettings);
       setSubFolders(resSubFolders || []);
-      setBudgets(resBudgets || []);
       fetchDcsDocs();
       fetchDcsDocTypes();
       fetchDcsNumberingRule();
@@ -4448,6 +4439,9 @@ export default function App() {
     // temporarily expanded to its full content height for capture.
     const prevMaxHeight = el.style.maxHeight;
     const prevOverflow = el.style.overflow;
+    const prevWidth = el.style.width;
+    const prevPadding = el.style.padding;
+    const prevBorder = el.style.border;
     try {
       setIsExportingPdf(true);
       // Let React re-render (hides draft-only edit buttons) before capture.
@@ -4455,6 +4449,42 @@ export default function App() {
 
       el.style.maxHeight = "none";
       el.style.overflow = "visible";
+      // Margin cetak (mm) HANYA dipaksakan di sini, saat capture — BUKAN
+      // ditaruh permanen di className/style on-screen div ini. Alasannya:
+      // panel preview di layar lebarnya ikut layout editor (kolom app,
+      // biasanya jauh lebih sempit dari kertas asli), jadi kalau padding
+      // mm ditempel di situ, 4cm kiri+kanan bisa makan hampir separuh
+      // lebar panel yang sempit itu — bikin teks kepepet/wrap 3 baris dan
+      // kolom dwibahasa ke-squeeze parah (persis bug yang dilaporkan).
+      // Dengan memaksa width jadi "210mm" (lebar asli kertas A4) SESAAT
+      // sebelum screenshot, satuan mm padding-nya jadi terhitung relatif
+      // ke lebar kertas sungguhan, bukan ke lebar panel UI yang sempit.
+      el.style.width = "210mm";
+      const m = appSettings.contractPageMargins || { top: 30, right: 30, bottom: 30, left: 30 };
+      // PENTING: cuma kiri/kanan yang jadi padding DOM di sini. Alasannya:
+      // seluruh dokumen di-screenshot sebagai SATU kanvas tinggi, baru
+      // dipotong-potong jadi halaman PDF belakangan. Kalau atas/bawah ikut
+      // jadi padding DOM (seperti sebelumnya), padding itu cuma nempel SEKALI
+      // di paling atas & paling bawah kanvas GABUNGAN — jadi halaman 1 dapat
+      // margin atas, halaman TERAKHIR dapat margin bawah, tapi semua halaman
+      // di ANTARANYA (mis. halaman 2 dari kontrak 3 halaman) kepotong pas di
+      // batas semantik tanpa spasi apa pun di atas/bawahnya — beda dgn
+      // kiri/kanan yang otomatis konsisten di semua baris karena memang
+      // sifatnya lebar konten, bukan potongan vertikal. Makanya margin
+      // atas/bawah HARUS ditegakkan ulang per-halaman saat menaruh gambar ke
+      // PDF (lihat MM_TO_PT & topMarginPt/bottomMarginPt di bawah), bukan
+      // dari padding DOM ini.
+      el.style.padding = `0 ${m.right}mm 0 ${m.left}mm`;
+      // Border panel preview (`border-slate-850` di className) itu delineasi
+      // visual BUAT DI LAYAR doang, gak pernah dimaksudkan ikut tercetak.
+      // Dulu efeknya nyaris tak kasat mata karena garis ini nempel pas di
+      // tepi kanvas yang kebetulan berhimpit sama tepi halaman PDF (margin
+      // atas/bawah lama cuma nempel sekali di ujung kanvas gabungan — lihat
+      // komentar topMarginPt di bawah). Sekarang margin atas/bawah sudah
+      // benar per-halaman, konten ketarik turun sejauh topMarginPt tapi
+      // garis border ini AKAN ikut ketarik juga kalau tidak dimatikan —
+      // muncul sebagai garis ngambang aneh persis di atas kop surat.
+      el.style.border = "none";
       // Force a layout recalc, lalu tunggu sampai TINGGI elemen berhenti
       // berubah antar frame (bukan cuma 2x RAF tetap) — dokumen kontrak yang
       // panjang + kolom dwibahasa butuh beberapa siklus reflow untuk benar2
@@ -4543,11 +4573,21 @@ export default function App() {
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfPageHeight = pdf.internal.pageSize.getHeight();
       const imgWidth = pdfWidth;
+      const MM_TO_PT = 2.834645669;
+      // Margin atas/bawah DITEGAKKAN DI SINI (bukan di padding DOM di atas —
+      // lihat komentar di el.style.padding) supaya SETIAP halaman, bukan cuma
+      // halaman pertama/terakhir, dapat jatah blank yang sama persis.
+      const topMarginPt = m.top * MM_TO_PT;
+      const bottomMarginPt = m.bottom * MM_TO_PT;
+      const pageContentHeightPt = pdfPageHeight - topMarginPt - bottomMarginPt;
 
       // Slice the full-height canvas into A4-sized page chunks so long
       // contracts (many clauses/signatures) aren't cut off or squeezed
-      // into a single page.
-      const pageHeightPx = (pdfPageHeight * canvas.width) / imgWidth;
+      // into a single page. pageHeightPx sekarang berdasarkan TINGGI KONTEN
+      // saja (halaman dikurangi margin atas+bawah), bukan tinggi halaman
+      // penuh — itu yang menjamin tiap halaman baru juga punya ruang kosong
+      // margin atas+bawah, bukan cuma halaman pertama/terakhir.
+      const pageHeightPx = (pageContentHeightPt * canvas.width) / imgWidth;
       let renderedHeightPx = 0;
       let pageIndex = 0;
 
@@ -4619,16 +4659,114 @@ export default function App() {
         const pageImgHeight = (sliceHeightPx * imgWidth) / canvas.width;
 
         if (pageIndex > 0) pdf.addPage();
-        pdf.addImage(pageImgData, "PNG", 0, 0, imgWidth, pageImgHeight);
+        pdf.addImage(pageImgData, "PNG", 0, topMarginPt, imgWidth, pageImgHeight);
 
         renderedHeightPx += sliceHeightPx;
         pageIndex += 1;
+      }
+
+      // Footer nomor halaman — cuma dokumen 2+ halaman (dokumen 1 halaman
+      // konvensinya tidak perlu nomor sama sekali). Ditaruh di tengah ruang
+      // margin bawah (m.bottom), bukan menambah ruang baru — supaya tetap
+      // konsisten dengan margin yang sudah dikonfigurasi, tidak nabrak isi.
+      const totalPages = pdf.getNumberOfPages();
+      if (totalPages > 1) {
+        const docLang = selectedContract.documentLanguage || "id";
+        const label = docLang === "en"
+          ? (p: number) => `Page ${p} of ${totalPages}`
+          : docLang === "bilingual"
+            ? (p: number) => `Halaman ${p} dari ${totalPages} / Page ${p} of ${totalPages}`
+            : (p: number) => `Halaman ${p} dari ${totalPages}`;
+        const footerY = pdfPageHeight - bottomMarginPt / 2;
+        pdf.setFontSize(8);
+        pdf.setTextColor(140, 140, 140);
+        for (let p = 1; p <= totalPages; p++) {
+          pdf.setPage(p);
+          pdf.text(label(p), pdfWidth / 2, footerY, { align: "center" });
+        }
+      }
+
+      // Watermark reaktif (CONTROLLED/UNCONTROLLED) — spec (teks & warna) SAMA
+      // PERSIS dgn server (server.ts /api/contracts/:id/view-pdf) supaya PDF
+      // hasil "Export to PDF" ini (client, jsPDF) konsisten secara visual dgn
+      // PDF hasil "Buka Berkas" (server, pdf-lib) — termasuk utk kontrak
+      // digital yang belum pernah punya berkas apa pun sebelumnya. Ikut toggle
+      // yang sama (appSettings.contractWatermark) — mati kalau opsi ini mati.
+      // Warna dihitung PRA-CAMPUR (blended-over-white) alih-alih opacity
+      // sungguhan (GState) karena dukungan alpha jsPDF antar-versi/renderer
+      // tidak konsisten — background halaman PDF selalu putih jadi hasil
+      // campurannya identik secara matematis dengan opacity asli.
+      if (appSettings.contractWatermark) {
+        interface WmSpec { banner: string; footer: string; bannerRgb: [number, number, number]; footerRgb: [number, number, number]; }
+        const blend = (r: number, g: number, b: number, opacity: number): [number, number, number] => [
+          Math.round(r * opacity + 255 * (1 - opacity)),
+          Math.round(g * opacity + 255 * (1 - opacity)),
+          Math.round(b * opacity + 255 * (1 - opacity)),
+        ];
+        const docRef = selectedContract.contractNumber;
+        let spec: WmSpec;
+        if (selectedContract.status === "Aktif") {
+          spec = {
+            banner: "CONTROLLED COPY",
+            footer: `CONTROLLED COPY · ${docRef}`,
+            bannerRgb: blend(41, 82, 191, 0.10),
+            footerRgb: blend(41, 82, 191, 0.55),
+          };
+        } else if (selectedContract.status === "TidakAktif") {
+          spec = {
+            banner: "UNCONTROLLED COPY — TIDAK AKTIF / KEDALUWARSA",
+            footer: `UNCONTROLLED / EXPIRED · ${docRef}`,
+            bannerRgb: blend(204, 31, 31, 0.14),
+            footerRgb: blend(204, 31, 31, 0.65),
+          };
+        } else if (selectedContract.status === "Terminated") {
+          spec = {
+            banner: "UNCONTROLLED COPY — TIDAK BERLAKU / TERMINATED",
+            footer: `UNCONTROLLED / TERMINATED · ${docRef}`,
+            bannerRgb: blend(204, 31, 31, 0.14),
+            footerRgb: blend(204, 31, 31, 0.65),
+          };
+        } else if (selectedContract.status === "Archived") {
+          spec = {
+            banner: "UNCONTROLLED COPY — DIARSIPKAN / ARCHIVED",
+            footer: `UNCONTROLLED / ARCHIVED · ${docRef}`,
+            bannerRgb: blend(204, 31, 31, 0.14),
+            footerRgb: blend(204, 31, 31, 0.65),
+          };
+        } else {
+          spec = {
+            banner: `DRAFT — NOT FOR USE (${selectedContract.status.toUpperCase()})`,
+            footer: `DRAFT · ${docRef}`,
+            bannerRgb: blend(115, 115, 115, 0.12),
+            footerRgb: blend(115, 115, 115, 0.55),
+          };
+        }
+        const bannerFontSize = 28;
+        const stepX = Math.max(spec.banner.length * bannerFontSize * 0.42, 260);
+        const stepY = 150;
+        const watermarkTotalPages = pdf.getNumberOfPages();
+        for (let p = 1; p <= watermarkTotalPages; p++) {
+          pdf.setPage(p);
+          pdf.setFontSize(bannerFontSize);
+          pdf.setTextColor(spec.bannerRgb[0], spec.bannerRgb[1], spec.bannerRgb[2]);
+          for (let y = -pdfPageHeight; y < pdfPageHeight * 2; y += stepY) {
+            for (let x = -pdfWidth; x < pdfWidth * 2; x += stepX) {
+              pdf.text(spec.banner, x, y, { angle: 45 });
+            }
+          }
+          pdf.setFontSize(7.5);
+          pdf.setTextColor(spec.footerRgb[0], spec.footerRgb[1], spec.footerRgb[2]);
+          pdf.text(spec.footer, 24, pdfPageHeight - 14, { maxWidth: pdfWidth - 48 });
+        }
       }
 
       return pdf;
     } finally {
       el.style.maxHeight = prevMaxHeight;
       el.style.overflow = prevOverflow;
+      el.style.width = prevWidth;
+      el.style.padding = prevPadding;
+      el.style.border = prevBorder;
       setIsExportingPdf(false);
     }
   };
@@ -4795,6 +4933,62 @@ export default function App() {
     }
   };
 
+  // Nyala/matikan kop surat perusahaan di preview & export PDF kontrak ini.
+  // Opsional per-kontrak (bukan setelan global) karena kebutuhannya beda-beda:
+  // kontrak kerjasama dua pihak yang sejajar biasanya mati, sedang dokumen
+  // internal (mis. Kontrak Karyawan) yang lebih pantas terasa "surat resmi
+  // perusahaan" biasanya tetap nyala.
+  const handleToggleLetterhead = async () => {
+    if (!selectedContract) return;
+    const next = !(selectedContract.showLetterhead ?? true);
+    const updated = { ...selectedContract, showLetterhead: next };
+    setSelectedContract(updated);
+    await handleUpdateContractDraft(`${next ? "Tampilkan" : "Sembunyikan"} kop surat`, updated);
+  };
+
+  // Nyala/matikan GAMBAR logo di kop — beda dari handleToggleLetterhead di
+  // atas (yang matikan kop SELURUHNYA). Dipakai utk kop "teks doang" (nama +
+  // alamat perusahaan tanpa gambar logo).
+  const handleToggleLetterheadLogo = async () => {
+    if (!selectedContract) return;
+    const next = !(selectedContract.showLetterheadLogo ?? true);
+    const updated = { ...selectedContract, showLetterheadLogo: next };
+    setSelectedContract(updated);
+    await handleUpdateContractDraft(`${next ? "Tampilkan" : "Sembunyikan"} gambar logo kop surat`, updated);
+  };
+
+  // Nyala/matikan kotak placeholder "Meterai Rp10.000" di ruang TTD. Beda
+  // dari toggle kop di atas: default-nya OFF (opt-in), bukan ON — lihat
+  // komentar showMeteraiPlaceholder di types.ts.
+  const handleToggleMeteraiPlaceholder = async () => {
+    if (!selectedContract) return;
+    const next = !selectedContract.showMeteraiPlaceholder;
+    const updated = { ...selectedContract, showMeteraiPlaceholder: next };
+    setSelectedContract(updated);
+    await handleUpdateContractDraft(`${next ? "Tampilkan" : "Sembunyikan"} placeholder meterai`, updated);
+  };
+
+  // Upload logo Pihak Kedua — cuma unggah berkas & taruh hasilnya di STAGING
+  // form (editPartyForm), belum ke draft/server. Sama seperti
+  // handleUploadCompanyLogo (yang staging ke appSettings sampai "Simpan
+  // Konfigurasi" diklik): baru permanen setelah "Terapkan Perubahan" modal
+  // ini diklik, lalu "Simpan Draft Baru" — bukan langsung tersimpan.
+  const handleUploadParty2Logo = async (file: File) => {
+    if (!editPartyModalContract) return;
+    setIsUploadingParty2Logo(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch(`/api/contracts/${editPartyModalContract.id}/party2-logo`, { method: "POST", body: fd });
+      const data = await res.json();
+      if (data.url) {
+        setEditPartyForm({ ...editPartyForm, party2LogoUrl: data.url, party2LogoKey: data.key, party2LogoMimeType: data.mimeType });
+        showToast("Logo Pihak Kedua terunggah — klik \"Terapkan Perubahan\" lalu \"Simpan Draft Baru\"", "success");
+      } else showToast(data.error || "Gagal mengunggah logo", "warning");
+    } catch { showToast("Gagal mengunggah logo", "warning"); }
+    finally { setIsUploadingParty2Logo(false); }
+  };
+
   // Buka modal "Edit Data Pihak & Kontrak" — prefill dari kontrak yang
   // sedang dibuka. Nomor dokumen tidak ikut di-prefill karena memang
   // tidak ada field-nya di form (dikunci, hanya ditampilkan read-only).
@@ -4814,6 +5008,9 @@ export default function App() {
       party2Position: contract.party2Position || "",
       party2IdLabel: contract.party2IdLabel || "",
       party2IdNumber: contract.party2IdNumber || "",
+      party2LogoUrl: contract.party2LogoUrl || "",
+      party2LogoKey: contract.party2LogoKey || "",
+      party2LogoMimeType: contract.party2LogoMimeType || "",
     });
   };
 
@@ -4845,6 +5042,9 @@ export default function App() {
       party2Position: editPartyForm.party2Position.trim() || undefined,
       party2IdLabel: editPartyForm.party2IdLabel.trim() || undefined,
       party2IdNumber: editPartyForm.party2IdNumber.trim() || undefined,
+      party2LogoUrl: editPartyForm.party2LogoUrl.trim() || undefined,
+      party2LogoKey: editPartyForm.party2LogoKey.trim() || undefined,
+      party2LogoMimeType: editPartyForm.party2LogoMimeType.trim() || undefined,
     });
     setEditPartyModalContract(null);
     showToast("Perubahan diterapkan ke draft — klik \"Simpan Draft Baru\" untuk menyimpan.", "info");
@@ -7664,6 +7864,19 @@ export default function App() {
     );
   };
 
+  // Judul pasal ditengah + HURUF BESAR SEMUA, nomor ("Pasal N"/"Article N")
+  // di baris terpisah dari judulnya — gaya surat kontrak formal Indonesia.
+  // numLabel null = tidak ada baris nomor sama sekali (dipakai utk Addendum,
+  // yang judul pasalnya sudah final apa adanya, tidak diberi nomor sintetis).
+  const renderClauseHeading = (numLabel: string | null, title: string) => (
+    <div className="text-center">
+      {numLabel && (
+        <p className="font-bold text-slate-100 uppercase tracking-wide">{numLabel}</p>
+      )}
+      <p className="font-bold text-slate-100 uppercase">{title}</p>
+    </div>
+  );
+
   const renderClauseString = (
     text: string,
     variables: Record<string, string>,
@@ -8520,20 +8733,6 @@ export default function App() {
                 Performa Vendor
               </button>
 
-              <button
-                onClick={() => {
-                  setActiveTab("anggaran");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "anggaran"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
-                }`}
-              >
-                <Wallet className="w-4 h-4" />
-                Anggaran vs Kontrak
-              </button>
             </div>
 
             <div className="pt-2">
@@ -10910,6 +11109,35 @@ export default function App() {
                       >
                         Buka tab Jenis Dokumen →
                       </button>
+                    </div>
+
+                    {/* Margin halaman PDF kontrak (mm) — beda mesin dari margin DCS
+                        (kontrak = screenshot preview via html2canvas, bukan digambar
+                        pdf-lib), jadi butuh setting terpisah dari "Margin Halaman
+                        Dokumen" di tab Jenis Dokumen (yang cuma berlaku utk DCS). */}
+                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
+                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                        <FileText className="w-4 h-4 text-violet-400" /> Margin Halaman Kontrak (mm)
+                      </h4>
+                      <p className="text-[10px] text-slate-500">
+                        Berlaku untuk PDF Kontrak Eksternal &amp; Kontrak Karyawan (hasil "Export to PDF" dari preview kontrak). Terpisah dari margin dokumen DCS di tab Jenis Dokumen. Tidak ada standar hukum wajib untuk kontrak bisnis (beda dengan naskah dinas pemerintah) — default 30/30/30/30 (3cm rata) mengikuti konvensi profesional umum. Isi 40 di Kiri kalau dokumen akan dijilid.
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {([["top", "Atas"], ["right", "Kanan"], ["bottom", "Bawah"], ["left", "Kiri"]] as const).map(([side, label]) => (
+                          <div key={side} className="space-y-1">
+                            <label className="text-[10px] text-slate-500">{label}</label>
+                            <input
+                              type="number"
+                              min={5}
+                              max={60}
+                              value={appSettings.contractPageMargins?.[side] ?? ""}
+                              onChange={(e) => setAppSettings({ ...appSettings, contractPageMargins: { ...(appSettings.contractPageMargins || { top: 30, right: 30, bottom: 30, left: 30 }), [side]: Number(e.target.value) } })}
+                              className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <button onClick={handleSaveSettings} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer">Simpan Margin</button>
                     </div>
 
                     {/* Daftar string sederhana: tipe pihak, mata uang, status rangkap */}
@@ -13985,6 +14213,44 @@ export default function App() {
                     <ArrowLeftRight className="w-3.5 h-3.5" />
                     Bandingkan dgn Kontrak Sebelumnya
                   </button>
+                  <button
+                    onClick={handleToggleLetterhead}
+                    title="Kop surat opsional untuk kontrak kerjasama — dokumennya milik bersama dua pihak, bukan surat sepihak dari salah satu perusahaan. Mematikannya juga menghemat ruang halaman."
+                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition flex items-center gap-1 ${
+                      (selectedContract.showLetterhead ?? true)
+                        ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                        : "bg-slate-900/50 hover:bg-slate-800 text-slate-500 border-slate-800"
+                    }`}
+                  >
+                    <Building2 className="w-3.5 h-3.5" />
+                    Kop Surat: {(selectedContract.showLetterhead ?? true) ? "Nyala" : "Mati"}
+                  </button>
+                  {(selectedContract.showLetterhead ?? true) && (
+                    <button
+                      onClick={handleToggleLetterheadLogo}
+                      title="Nyala/matikan GAMBAR logo di kop surat saja — nama & alamat perusahaan tetap tampil (kop jadi teks doang kalau dimatikan). Berbeda dari tombol Kop Surat di sebelah kiri yang mematikan kop seluruhnya."
+                      className={`px-3 py-2 text-xs font-semibold rounded-xl border transition flex items-center gap-1 ${
+                        (selectedContract.showLetterheadLogo ?? true)
+                          ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                          : "bg-slate-900/50 hover:bg-slate-800 text-slate-500 border-slate-800"
+                      }`}
+                    >
+                      <ImageIcon className="w-3.5 h-3.5" />
+                      Logo: {(selectedContract.showLetterheadLogo ?? true) ? "Nyala" : "Mati"}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleToggleMeteraiPlaceholder}
+                    title="Tampilkan kotak placeholder 'Meterai Rp10.000' di ruang tanda tangan tiap pihak. Tidak menambah tinggi halaman — cuma mengisi ruang kosong TTD yang sudah ada. Matikan kalau meterai fisik/e-meterai ditempel manual di luar sistem ini."
+                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition flex items-center gap-1 ${
+                      selectedContract.showMeteraiPlaceholder
+                        ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                        : "bg-slate-900/50 hover:bg-slate-800 text-slate-500 border-slate-800"
+                    }`}
+                  >
+                    <Stamp className="w-3.5 h-3.5" />
+                    Meterai: {selectedContract.showMeteraiPlaceholder ? "Nyala" : "Mati"}
+                  </button>
                   {/* Bahasa dokumen — terjemahan AI dijalankan sekali saat
                       pertama kali butuh teks Inggris, lalu tersimpan. */}
                   <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-0.5" title="Bahasa tampilan dokumen. Terjemahan dibuat otomatis oleh AI saat pertama kali dipilih.">
@@ -14012,11 +14278,17 @@ export default function App() {
                   <button
                     onClick={handleExportPdf}
                     disabled={isExportingPdf || !isContractDownloadable(selectedContract)}
-                    title={!isContractDownloadable(selectedContract) ? "Tersedia setelah approval matriks selesai (status FullyApproved ke atas)" : undefined}
+                    title={
+                      !isContractDownloadable(selectedContract)
+                        ? "Tersedia setelah approval matriks selesai (status FullyApproved ke atas)"
+                        : appSettings.contractWatermark
+                          ? `PDF akan diberi watermark ${selectedContract.status === "Aktif" ? "CONTROLLED COPY (biru)" : "UNCONTROLLED COPY (merah)"} sesuai status kontrak`
+                          : undefined
+                    }
                     className="px-4 py-2 bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 text-xs font-semibold rounded-xl border border-rose-600/30 transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <FileText className="w-3.5 h-3.5" />
-                    {isExportingPdf ? "Mengekspor..." : "Export to PDF"}
+                    {isExportingPdf ? "Mengekspor..." : "Export to PDF"}{appSettings.contractWatermark ? " (Watermarked)" : ""}
                   </button>
                   <button
                     onClick={handleExportSharePdf}
@@ -14121,7 +14393,12 @@ export default function App() {
                         )}
                       </h3>
                       <div className="flex items-center gap-3">
-                        {selectedContract.masterPdfUrl && (
+                        {/* "Buka Berkas" butuh berkas SUNGGUHAN — cek dua sumber
+                            (master upload ATAU hasil export/share), bukan cuma
+                            masterPdfUrl seperti sebelumnya. /api/contracts/:id/
+                            view-pdf di server sudah fallback ke exportedPdfUrl
+                            duluan (lihat komentar dekat handleExportSharePdf). */}
+                        {(selectedContract.masterPdfUrl || selectedContract.exportedPdfUrl) && (
                           isContractDownloadable(selectedContract) ? (
                             <a
                               href={`/api/contracts/${selectedContract.id}/view-pdf`}
@@ -14141,18 +14418,23 @@ export default function App() {
                             </span>
                           )
                         )}
-                        {selectedContract.masterPdfUrl && (
-                          <span
-                            className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                              selectedContract.status === "Aktif"
-                                ? "bg-blue-500/15 text-blue-400 border border-blue-500/20"
-                                : "bg-rose-500/15 text-rose-400 border border-rose-500/20"
-                            }`}
-                            title="Status watermark PDF: CONTROLLED = dokumen berlaku (biru); UNCONTROLLED = dokumen tidak berlaku/diarsipkan/draft (merah)"
-                          >
-                            {selectedContract.status === "Aktif" ? "CONTROLLED" : "UNCONTROLLED"}
-                          </span>
-                        )}
+                        {/* Badge status CONTROLLED/UNCONTROLLED — SELALU tampil,
+                            tidak lagi digantung pada masterPdfUrl. Ini cuma label
+                            status dokumen (dari selectedContract.status), bukan
+                            hasil baca berkas PDF — jadi kontrak yang murni
+                            "digital" (belum ada berkas apa pun) tetap kelihatan
+                            status kontrolnya di preview, bukan cuma yang sudah
+                            punya berkas upload/export. */}
+                        <span
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                            selectedContract.status === "Aktif"
+                              ? "bg-blue-500/15 text-blue-400 border border-blue-500/20"
+                              : "bg-rose-500/15 text-rose-400 border border-rose-500/20"
+                          }`}
+                          title="Status watermark: CONTROLLED = dokumen berlaku (biru); UNCONTROLLED = dokumen tidak berlaku/diarsipkan/draft (merah). Berlaku sbg label status meski belum ada berkas PDF."
+                        >
+                          {selectedContract.status === "Aktif" ? "CONTROLLED" : "UNCONTROLLED"}
+                        </span>
                         <span className="text-[10px] text-slate-500">
                           Auto-filled via Clause Variables
                         </span>
@@ -14163,7 +14445,12 @@ export default function App() {
                     <div
                       ref={previewRef}
                       style={{ ...docTypographyStyle(), backgroundColor: "#ffffff" }}
-                      className="space-y-6 max-h-[600px] overflow-y-auto p-6 border border-slate-850 text-slate-300"
+                      // p-6 di sini CUMA padding nyaman buat EDIT di layar (panel
+                      // ini bukan seukuran kertas A4 asli). Margin cetak yang
+                      // sesungguhnya (mm, dari Konfigurasi > Master Data > "Margin
+                      // Halaman Kontrak") dipaksakan terpisah, HANYA saat export,
+                      // di dalam generateContractPdf — lihat komentar di sana.
+                      className={`${isExportingPdf ? "space-y-3" : "space-y-6"} max-h-[600px] overflow-y-auto p-6 border border-slate-850 text-slate-300`}
                     >
                       {/* Kop Surat (Letterhead) — logo + identitas perusahaan, sumber
                           data sama dengan yang dipakai kop surat dokumen DCS
@@ -14174,7 +14461,8 @@ export default function App() {
                           nama perusahaan sudah diisi di Konfigurasi & Master Data —
                           supaya tenant yang belum isi profil perusahaan tidak melihat
                           kop surat kosong/aneh. */}
-                      {appSettings.companyName && (() => {
+                      {appSettings.companyName && (selectedContract.showLetterhead ?? true) && (() => {
+                        const showLogo = selectedContract.showLetterheadLogo ?? true;
                         const contactParts = [
                           appSettings.companyPhone && `Telp. ${appSettings.companyPhone}`,
                           appSettings.companyFax && `Fax. ${appSettings.companyFax}`,
@@ -14184,10 +14472,40 @@ export default function App() {
                           appSettings.companyWebsite && `Website: ${appSettings.companyWebsite}`,
                           appSettings.companyEmail && `Email: ${appSettings.companyEmail}`,
                         ].filter(Boolean).join("  ");
+                        // Kop dua-logo cuma aktif kalau Pihak Kedua PUNYA logo yang
+                        // diunggah (lihat handleUploadParty2Logo / modal Edit Data
+                        // Pihak) — mayoritas kontrak (termasuk kerjasama INTERNAL
+                        // antar unit sendiri) tidak akan mengisi ini, jadi otomatis
+                        // jatuh ke tampilan lama 1-logo di bawah, bukan kondisi error.
+                        const hasParty2Logo = showLogo && !!selectedContract.party2LogoUrl;
                         return (
-                        <div className="pb-3 mb-4">
+                        <div className={`pb-3 ${isExportingPdf ? "mb-2" : "mb-4"}`}>
+                          {hasParty2Logo ? (
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                {showLogo && appSettings.companyLogoUrl && (
+                                  <img src={appSettings.companyLogoUrl} alt="Logo Pihak Pertama" className="w-16 h-16 object-contain shrink-0" crossOrigin="anonymous" />
+                                )}
+                                <div className="min-w-0">
+                                  <p className="font-black text-slate-100 text-base leading-tight uppercase truncate">{appSettings.companyName}</p>
+                                  {appSettings.companyAddress && (
+                                    <p className="text-[11px] text-slate-400 leading-snug">{appSettings.companyAddress}</p>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3 flex-1 min-w-0 flex-row-reverse text-right">
+                                <img src={selectedContract.party2LogoUrl} alt="Logo Pihak Kedua" className="w-16 h-16 object-contain shrink-0" crossOrigin="anonymous" />
+                                <div className="min-w-0">
+                                  <p className="font-black text-slate-100 text-base leading-tight uppercase truncate">{selectedContract.party2Name}</p>
+                                  {selectedContract.party2Address && (
+                                    <p className="text-[11px] text-slate-400 leading-snug">{selectedContract.party2Address}</p>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
                           <div className="flex items-center gap-5">
-                            {appSettings.companyLogoUrl && (
+                            {showLogo && appSettings.companyLogoUrl && (
                               <img
                                 src={appSettings.companyLogoUrl}
                                 alt="Logo perusahaan"
@@ -14211,6 +14529,7 @@ export default function App() {
                               )}
                             </div>
                           </div>
+                          )}
                           {/* Garis pembatas ganda (double rule) mengikuti gaya kop surat
                               formal — dua garis tipis berdekatan, bukan satu garis tebal. */}
                           <div className="mt-3">
@@ -14222,7 +14541,7 @@ export default function App() {
                       {/* Document Header Title — mengikuti jenis dokumen kontrak,
                           atau format Addendum kalau kontrak ini mengamandemen
                           kontrak lain (amendsContractId terisi) */}
-                      <div className="text-center space-y-1 pb-4">
+                      <div className={`text-center space-y-1 ${isExportingPdf ? "pb-2" : "pb-4"}`}>
                         {selectedContractAddendumInfo ? (
                           <>
                             <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
@@ -14480,7 +14799,7 @@ export default function App() {
                       )}
 
                       {/* Render clauses with filled-in variables */}
-                      <div className="space-y-4 text-xs py-4">
+                      <div className={`${isExportingPdf ? "space-y-3 py-2" : "space-y-4 py-4"} text-xs`}>
                         {selectedContract.clauses.map((clause, index) => {
                           const cmtsForClause = clauseComments.filter((c) => c.clauseId === (clause.id || String(index)));
                           const unresolvedCount = cmtsForClause.filter((c) => !c.resolved).length;
@@ -14498,16 +14817,16 @@ export default function App() {
                           const twoColumn = docLang === "bilingual" && hasEn
                             && String(clause.content || "").length <= LONG_CLAUSE_CHARS
                             && String(enBody || "").length <= LONG_CLAUSE_CHARS;
-                          const headingId = selectedContractAddendumInfo ? clause.title : `Pasal ${index + 1}: ${clause.title}`;
-                          const headingEn = selectedContractAddendumInfo ? enTitle : `Article ${index + 1}: ${enTitle}`;
+                          const numLabelId = selectedContractAddendumInfo ? null : `Pasal ${index + 1}`;
+                          const numLabelEn = selectedContractAddendumInfo ? null : `Article ${index + 1}`;
                           return (
                           <div key={clause.id || index} className="space-y-1 group/clause">
                             <div className="flex items-center justify-between min-h-[1.375rem]">
-                              <h5 className="font-bold text-slate-100">
+                              <div className="flex-1">
                                 {docLang === "bilingual" && hasEn
                                   ? null
-                                  : (docLang === "en" && hasEn ? headingEn : headingId)}
-                              </h5>
+                                  : renderClauseHeading(docLang === "en" && hasEn ? numLabelEn : numLabelId, docLang === "en" && hasEn ? enTitle : clause.title)}
+                              </div>
                               {/* Sama seperti "Sorot & Komentari" / "Usulkan Coret" di
                                   bawah — tombol "Komentar" ini juga HANYA muncul kalau
                                   kontrak masih Draft (isContractEditable). Sebelumnya
@@ -14559,14 +14878,14 @@ export default function App() {
                                 // dengan tampilan narasi pembuka.
                                 <div className="flex gap-3">
                                   <div className="flex-1 min-w-0">
-                                    <p className="font-bold text-slate-100 mb-1">{headingId}</p>
-                                    <p className="text-slate-300 leading-relaxed select-text">
+                                    {renderClauseHeading(numLabelId, clause.title)}
+                                    <p className="text-slate-300 leading-relaxed select-text mt-1">
                                       {renderClauseContent(clause.content, selectedContract.variables)}
                                     </p>
                                   </div>
                                   <div className="flex-1 min-w-0">
-                                    <p className="font-bold text-slate-100 mb-1">{headingEn}</p>
-                                    <p className="text-slate-300 leading-relaxed select-text">
+                                    {renderClauseHeading(numLabelEn, enTitle)}
+                                    <p className="text-slate-300 leading-relaxed select-text mt-1">
                                       {renderClauseContent(enBody, selectedContract.variables)}
                                     </p>
                                   </div>
@@ -14576,14 +14895,14 @@ export default function App() {
                                 // dua kolom: masing-masing blok bawa judulnya sendiri.
                                 <div className="space-y-2">
                                   <div>
-                                    <p className="font-bold text-slate-100 mb-1">{headingId}</p>
-                                    <p className="text-slate-300 leading-relaxed select-text">
+                                    {renderClauseHeading(numLabelId, clause.title)}
+                                    <p className="text-slate-300 leading-relaxed select-text mt-1">
                                       {renderClauseContent(clause.content, selectedContract.variables)}
                                     </p>
                                   </div>
                                   <div>
-                                    <p className="font-bold text-slate-100 mb-1">{headingEn}</p>
-                                    <p className="text-slate-300 leading-relaxed select-text">
+                                    {renderClauseHeading(numLabelEn, enTitle)}
+                                    <p className="text-slate-300 leading-relaxed select-text mt-1">
                                       {renderClauseContent(enBody, selectedContract.variables)}
                                     </p>
                                   </div>
@@ -14670,10 +14989,21 @@ export default function App() {
                               { role: "PIHAK KEDUA", name: selectedContract.party2Name },
                             ]
                         ).map((party: any, idx: number) => (
-                          <div key={idx} className="text-center space-y-16">
+                          <div key={idx} className="text-center">
                             <p className="font-semibold text-slate-400 uppercase">
                               {party.role}
                             </p>
+                            {/* Spacer setinggi ruang TTD basah (h-16 = persis pengganti
+                                space-y-16 lama) — SELALU segini tingginya baik placeholder
+                                Meterai nyala atau mati, supaya toggle ini tidak menambah
+                                ATAU mengurangi tinggi halaman sama sekali. */}
+                            <div className="h-16 flex items-center justify-center">
+                              {(selectedContract.showMeteraiPlaceholder) && (
+                                <div className="border border-dashed border-slate-500 rounded px-3 py-1.5 text-[9px] leading-tight text-slate-500 uppercase tracking-wide">
+                                  Meterai<br />Rp10.000
+                                </div>
+                              )}
+                            </div>
                             <p className="font-semibold text-slate-200">
                               ( {party.name} )
                             </p>
@@ -15826,7 +16156,7 @@ export default function App() {
                           <p className="text-[11px] text-slate-500 leading-relaxed">
                             Kontrak {selectedContract.status === "Archived" ? "diarsipkan" : "diakhiri"} — tidak lagi dipantau reminder. Gunakan "Perpanjang / Extend" untuk membuat draft kontrak lanjutan.
                           </p>
-                          {selectedContract.masterPdfUrl && (
+                          {(selectedContract.masterPdfUrl || selectedContract.exportedPdfUrl) && (
                             <p className="text-[10px] text-rose-400/80 flex items-center gap-1">
                               ⚠ PDF kontrak ini telah diberi watermark merah <strong>UNCONTROLLED COPY</strong> — tidak untuk digunakan sebagai dokumen operasional.
                             </p>
@@ -17744,139 +18074,6 @@ export default function App() {
                         </div>
                       </div>
                     ))}
-                  </div>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* ANGGARAN vs NILAI KONTRAK. Angka anggaran diinput manual (CRUD
-              lewat /api/budgets); nilai AKTUAL dihitung di sini dari kontrak
-              yang benar-benar berjalan — status Aktif/TidakAktif (Draft/
-              OnReview/FullyApproved belum tentu jadi biaya nyata karena belum
-              ditandatangani), dicocokkan berdasarkan kategori + tahun mulai. */}
-          {activeTab === "anggaran" && !selectedContract && (() => {
-            const tahunTersedia = [...new Set([budgetYearFilter, ...budgets.map((b) => b.year), new Date().getFullYear()])].sort((a, b) => b - a);
-            const entriTahunIni = budgets.filter((b) => b.year === budgetYearFilter).sort((a, b) => a.category.localeCompare(b.category));
-            const aktualUntuk = (kategori: string) => contracts
-              .filter((c) => c.category === kategori && (c.status === "Aktif" || c.status === "TidakAktif") && Number(c.startDate?.slice(0, 4)) === budgetYearFilter)
-              .reduce((s, c) => s + (Number(c.contractValue) || 0), 0);
-            const totalAnggaran = entriTahunIni.reduce((s, b) => s + b.amount, 0);
-            const totalAktual = entriTahunIni.reduce((s, b) => s + aktualUntuk(b.category), 0);
-
-            const simpanBudget = async () => {
-              const isEdit = !!budgetForm.id;
-              const res = await fetch(isEdit ? `/api/budgets/${budgetForm.id}` : "/api/budgets", {
-                method: isEdit ? "PUT" : "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ year: budgetForm.year, category: budgetForm.category, department: budgetForm.department, amount: Number(budgetForm.amount) || 0, notes: budgetForm.notes }),
-              });
-              const data = await res.json();
-              if (!res.ok) { showToast(data.error || "Gagal menyimpan anggaran", "warning"); return; }
-              setBudgets((prev) => isEdit ? prev.map((b) => (b.id === data.entry.id ? data.entry : b)) : [...prev, data.entry]);
-              setBudgetForm({ id: "", year: budgetYearFilter, category: "", department: "", amount: "", notes: "" });
-              showToast("Anggaran tersimpan.", "success");
-            };
-            const hapusBudget = async (b: any) => {
-              if (!(await askConfirm(`Hapus anggaran ${b.category} ${b.year}?`, { title: "Hapus Anggaran" }))) return;
-              const res = await fetch(`/api/budgets/${b.id}`, { method: "DELETE" });
-              if (!res.ok) { showToast("Gagal menghapus anggaran", "warning"); return; }
-              setBudgets((prev) => prev.filter((x) => x.id !== b.id));
-              showToast("Anggaran dihapus.", "success");
-            };
-
-            return (
-              <div className="space-y-6 animate-fadeIn text-xs">
-                <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                  <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                    <Wallet className="text-emerald-500 w-5 h-5" />
-                    Anggaran vs Nilai Kontrak
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Nilai aktual dihitung dari kontrak berstatus Aktif/Tidak Aktif (draft & yang masih dalam proses
-                    approval belum tentu jadi biaya nyata karena belum ditandatangani), dicocokkan berdasarkan
-                    kategori dan tahun mulai kontrak.
-                  </p>
-                </div>
-
-                <div className="flex items-center justify-between flex-wrap gap-3">
-                  <select value={budgetYearFilter} onChange={(e) => setBudgetYearFilter(Number(e.target.value))}
-                    className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-200 focus:outline-none cursor-pointer">
-                    {tahunTersedia.map((y) => <option key={y} value={y}>{y}</option>)}
-                  </select>
-                  <div className="text-right">
-                    <p className="text-slate-500">Total Anggaran {budgetYearFilter}</p>
-                    <p className="font-bold text-slate-200 text-sm tabular-nums">Rp {totalAnggaran.toLocaleString("id-ID")}</p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-slate-500">Total Aktual {budgetYearFilter}</p>
-                    <p className={`font-bold text-sm tabular-nums ${totalAktual > totalAnggaran && totalAnggaran > 0 ? "text-rose-600" : "text-emerald-600"}`}>Rp {totalAktual.toLocaleString("id-ID")}</p>
-                  </div>
-                </div>
-
-                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-3">
-                  <p className="font-bold text-slate-300">{budgetForm.id ? "Ubah Anggaran" : "Tambah Anggaran"}</p>
-                  <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                    <input type="number" placeholder="Tahun" value={budgetForm.year} onChange={(e) => setBudgetForm({ ...budgetForm, year: Number(e.target.value) || budgetYearFilter })}
-                      className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 tabular-nums focus:outline-none" />
-                    <select value={budgetForm.category} onChange={(e) => setBudgetForm({ ...budgetForm, category: e.target.value })}
-                      className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-200 focus:outline-none">
-                      <option value="">Pilih kategori...</option>
-                      {clauseCategories.map((c) => <option key={c} value={c}>{c}</option>)}
-                    </select>
-                    <input type="text" placeholder="Departemen (opsional)" value={budgetForm.department} onChange={(e) => setBudgetForm({ ...budgetForm, department: e.target.value })}
-                      className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 focus:outline-none" />
-                    <input type="number" placeholder="Nominal (Rp)" value={budgetForm.amount} onChange={(e) => setBudgetForm({ ...budgetForm, amount: e.target.value })}
-                      className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 tabular-nums focus:outline-none" />
-                    <input type="text" placeholder="Catatan (opsional)" value={budgetForm.notes} onChange={(e) => setBudgetForm({ ...budgetForm, notes: e.target.value })}
-                      className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 focus:outline-none" />
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={simpanBudget} disabled={!budgetForm.category || !budgetForm.amount}
-                      className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-[11px] font-bold cursor-pointer">
-                      {budgetForm.id ? "Simpan Perubahan" : "+ Tambah Anggaran"}
-                    </button>
-                    {budgetForm.id && (
-                      <button onClick={() => setBudgetForm({ id: "", year: budgetYearFilter, category: "", department: "", amount: "", notes: "" })}
-                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-semibold cursor-pointer">Batal</button>
-                    )}
-                  </div>
-                </div>
-
-                {entriTahunIni.length === 0 ? (
-                  <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-14 text-center">
-                    <p className="text-slate-500 italic">Belum ada anggaran untuk tahun {budgetYearFilter}.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {entriTahunIni.map((b) => {
-                      const aktual = aktualUntuk(b.category);
-                      const persen = b.amount > 0 ? Math.min(100, Math.round((aktual / b.amount) * 100)) : 0;
-                      const lewat = aktual > b.amount;
-                      return (
-                        <div key={b.id} className="bg-slate-950/60 border border-slate-800 rounded-2xl p-4 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <div>
-                              <p className="font-bold text-slate-200">{b.category}{b.department ? ` · ${b.department}` : ""}</p>
-                              {b.notes && <p className="text-[10px] text-slate-500">{b.notes}</p>}
-                            </div>
-                            <div className="flex gap-1.5">
-                              <button onClick={() => setBudgetForm({ id: b.id, year: b.year, category: b.category, department: b.department || "", amount: String(b.amount), notes: b.notes || "" })}
-                                className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-900 rounded-lg cursor-pointer"><Pencil className="w-3.5 h-3.5" /></button>
-                              <button onClick={() => hapusBudget(b)} className="p-1.5 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer"><Trash2 className="w-3.5 h-3.5" /></button>
-                            </div>
-                          </div>
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-slate-500">Anggaran: <b className="text-slate-200 tabular-nums">Rp {b.amount.toLocaleString("id-ID")}</b></span>
-                            <span className={lewat ? "text-rose-600 font-semibold" : "text-slate-500"}>
-                              Aktual: <b className="tabular-nums">Rp {aktual.toLocaleString("id-ID")}</b> ({persen}%{lewat ? ", melebihi anggaran" : ""})
-                            </span>
-                          </div>
-                          <div className="h-2 bg-slate-900 rounded-full overflow-hidden">
-                            <div className={`h-full rounded-full ${lewat ? "bg-rose-600" : persen > 80 ? "bg-amber-500" : "bg-emerald-600"}`} style={{ width: `${Math.min(100, persen)}%` }} />
-                          </div>
-                        </div>
-                      );
-                    })}
                   </div>
                 )}
               </div>
@@ -20425,6 +20622,27 @@ export default function App() {
                       onChange={(e) => setEditPartyForm({ ...editPartyForm, party2IdNumber: e.target.value })}
                       className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                     />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-semibold text-slate-300 flex items-center gap-1">
+                      Logo Pihak Kedua
+                      <HelpCircle className="w-3 h-3 text-slate-500" title="Opsional. Kosong = kop surat cuma tampilkan logo Pihak Pertama saja — normal, bukan error. Dipakai utk kop surat dua-logo pada kontrak kerjasama B2B antar dua perusahaan independen." />
+                    </label>
+                    <div className="flex items-center gap-3">
+                      {editPartyForm.party2LogoUrl && (
+                        <img src={editPartyForm.party2LogoUrl} alt="Logo Pihak Kedua" className="w-14 h-14 object-contain bg-slate-900 border border-slate-800 rounded-lg p-1" />
+                      )}
+                      <input type="file" accept="image/png,image/jpeg" disabled={isUploadingParty2Logo}
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUploadParty2Logo(f); }}
+                        className="flex-1 text-sm text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 bg-slate-900 border border-slate-800 rounded-xl cursor-pointer disabled:opacity-50" />
+                      {isUploadingParty2Logo && <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />}
+                      {editPartyForm.party2LogoUrl && !isUploadingParty2Logo && (
+                        <button type="button" onClick={() => setEditPartyForm({ ...editPartyForm, party2LogoUrl: "", party2LogoKey: "", party2LogoMimeType: "" })}
+                          title="Hapus logo Pihak Kedua" className="p-1.5 text-slate-500 hover:text-rose-400 cursor-pointer">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>

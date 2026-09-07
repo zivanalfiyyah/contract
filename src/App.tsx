@@ -4549,6 +4549,19 @@ export default function App() {
         (child) => ((child as HTMLElement).getBoundingClientRect().bottom - elTopCss) * scale,
       );
 
+      // Titik PAKSA ganti halaman — beda dari safeBreakPointsPx di atas yang
+      // cuma titik BOLEH potong (dipakai kalau kebetulan pas). Ini dipakai
+      // HANYA oleh blok tanda tangan pihak ke-2/dst saat placeholder Meterai
+      // dinyalakan (lihat atribut data-pdf-force-break di blok TTD, dekat
+      // handleToggleMeteraiPlaceholder): tiap pihak WAJIB dapat halaman
+      // closing+TTD miliknya sendiri (meterai itu bea materai fisik yang
+      // ditempel per lembar asli tiap pihak — bukan cuma dekorasi bersama),
+      // jadi TIDAK BOLEH digabung ke halaman pihak lain walau isinya
+      // sebetulnya masih muat kalau disatukan.
+      const forceBreakPointsPx: number[] = Array.from(
+        el.querySelectorAll("[data-pdf-force-break]"),
+      ).map((elm) => ((elm as HTMLElement).getBoundingClientRect().top - elTopCss) * scale);
+
       const canvas = await html2canvas(el, {
         scale,
         windowWidth,
@@ -4596,28 +4609,40 @@ export default function App() {
           pageHeightPx,
           canvas.height - renderedHeightPx,
         );
-        // Kalau ini bukan potongan terakhir (masih ada sisa konten di bawah),
-        // geser titik potongnya ke batas SEMANTIK (akhir kop surat/header/
-        // narasi pembuka/kalimat penutup/tiap pasal/blok tanda tangan) yang
-        // paling dekat dengan titik potong ideal — supaya tidak pernah motong
-        // di tengah satu blok. Minimal 40% tinggi halaman harus terisi supaya
-        // tidak ada halaman yang jadi nyaris kosong gara-gara satu blok
-        // sebelumnya pas² sedikit lebih panjang dari sisa halaman.
-        const isLastSlice = renderedHeightPx + sliceHeightPx >= canvas.height;
-        if (!isLastSlice) {
-          const idealCutY = renderedHeightPx + sliceHeightPx;
-          const minCutY = renderedHeightPx + pageHeightPx * 0.4;
-          let bestBreak = -1;
-          for (const bp of safeBreakPointsPx) {
-            if (bp <= idealCutY && bp > minCutY && bp > bestBreak) bestBreak = bp;
+        // Titik PAKSA (forceBreakPointsPx) dicek LEBIH DULU, TIDAK PEDULI
+        // apakah sisa konten kelihatannya muat jadi satu halaman — soalnya
+        // kalau ditunda sampai pengecekan isLastSlice di bawah, dokumen
+        // pendek (mis. hanya 2 pihak, closing singkat) akan lolos dari
+        // pemisahan halaman per-pihak yang justru jadi inti fitur ini.
+        const nextForcedBreak = forceBreakPointsPx.find(
+          (fp) => fp > renderedHeightPx + 1 && fp < renderedHeightPx + sliceHeightPx - 1,
+        );
+        if (nextForcedBreak !== undefined) {
+          sliceHeightPx = nextForcedBreak - renderedHeightPx;
+        } else {
+          // Kalau ini bukan potongan terakhir (masih ada sisa konten di bawah),
+          // geser titik potongnya ke batas SEMANTIK (akhir kop surat/header/
+          // narasi pembuka/kalimat penutup/tiap pasal/blok tanda tangan) yang
+          // paling dekat dengan titik potong ideal — supaya tidak pernah motong
+          // di tengah satu blok. Minimal 40% tinggi halaman harus terisi supaya
+          // tidak ada halaman yang jadi nyaris kosong gara-gara satu blok
+          // sebelumnya pas² sedikit lebih panjang dari sisa halaman.
+          const isLastSlice = renderedHeightPx + sliceHeightPx >= canvas.height;
+          if (!isLastSlice) {
+            const idealCutY = renderedHeightPx + sliceHeightPx;
+            const minCutY = renderedHeightPx + pageHeightPx * 0.4;
+            let bestBreak = -1;
+            for (const bp of safeBreakPointsPx) {
+              if (bp <= idealCutY && bp > minCutY && bp > bestBreak) bestBreak = bp;
+            }
+            if (bestBreak > 0) {
+              sliceHeightPx = bestBreak - renderedHeightPx;
+            }
+            // Kalau tidak ketemu batas semantik yang cocok (mis. satu pasal
+            // kebetulan lebih panjang dari satu halaman penuh), sliceHeightPx
+            // tetap pakai potongan tetap di atas — jarang terjadi, tapi lebih
+            // baik daripada halaman kosong sama sekali.
           }
-          if (bestBreak > 0) {
-            sliceHeightPx = bestBreak - renderedHeightPx;
-          }
-          // Kalau tidak ketemu batas semantik yang cocok (mis. satu pasal
-          // kebetulan lebih panjang dari satu halaman penuh), sliceHeightPx
-          // tetap pakai potongan tetap di atas — jarang terjadi, tapi lebih
-          // baik daripada halaman kosong sama sekali.
         }
         // Bulatkan ke atas: pageCanvas.height (integer, dibulatkan browser)
         // TIDAK BOLEH lebih kecil dari area yang mau digambar — kalau lebih
@@ -14796,9 +14821,19 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* Render clauses with filled-in variables */}
-                      <div className={`${isExportingPdf ? "space-y-3 py-2" : "space-y-4 py-4"} text-xs`}>
-                        {selectedContract.clauses.map((clause, index) => {
+                      {(() => {
+                        const parties = selectedContract.parties?.length
+                          ? selectedContract.parties
+                          : [
+                              { role: "PIHAK PERTAMA", name: selectedContract.party1Name },
+                              { role: "PIHAK KEDUA", name: selectedContract.party2Name },
+                            ];
+
+                        // Persis logic render pasal yang lama (tidak diubah sama
+                        // sekali) — cuma dibungkus fungsi supaya bisa dipanggil
+                        // ulang per-rangkap saat export+meterai nyala di bawah.
+                        const renderClauseList = () => (
+                        selectedContract.clauses.map((clause, index) => {
                           const cmtsForClause = clauseComments.filter((c) => c.clauseId === (clause.id || String(index)));
                           const unresolvedCount = cmtsForClause.filter((c) => !c.resolved).length;
                           // ---- Mode bahasa dokumen ----
@@ -14932,13 +14967,20 @@ export default function App() {
                             )}
                           </div>
                           );
-                        })}
-                      </div>
+                        })
+                        );
 
-                      {/* Lampiran Rincian (opsional, khusus Addendum) — tabel
+                        const clauseListBlock = () => (
+                          <div className={`${isExportingPdf ? "space-y-3 py-2" : "space-y-4 py-4"} text-xs`}>
+                            {renderClauseList()}
+                          </div>
+                        );
+
+                        const lampiranBlock = () => (
+                      /* Lampiran Rincian (opsional, khusus Addendum) — tabel
                           bebas (mis. perhitungan biaya). Kosong = tidak tercetak
-                          sama sekali, sesuai prinsip "tidak semua harus ada". */}
-                      {selectedContractAddendumInfo && selectedContract.amendmentAttachments && selectedContract.amendmentAttachments.length > 0 && (
+                          sama sekali, sesuai prinsip "tidak semua harus ada". */
+                      selectedContractAddendumInfo && selectedContract.amendmentAttachments && selectedContract.amendmentAttachments.length > 0 && (
                         <div className="font-sans text-xs space-y-2">
                           <h5 className="font-bold text-slate-100">Lampiran Rincian</h5>
                           <table className="w-full border-collapse text-[11px]">
@@ -14962,52 +15004,88 @@ export default function App() {
                             </tbody>
                           </table>
                         </div>
-                      )}
+                      )
+                        );
 
-                      {/* Closing paragraph — hanya untuk Addendum (kontrak biasa
+                        const closingParagraphBlock = () => (
+                      /* Closing paragraph — hanya untuk Addendum (kontrak biasa
                           tidak pernah punya ini, tidak ada regresi tampilan).
-                          Override lewat Template.closingParagraph kalau ada. */}
-                      {selectedContractAddendumInfo && (
+                          Override lewat Template.closingParagraph kalau ada. */
+                      selectedContractAddendumInfo && (
                         <p>
                           {selectedContractTemplate?.closingParagraph
                             ? renderClauseContent(selectedContractTemplate.closingParagraph, selectedContract.variables)
                             : 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.'}
                         </p>
-                      )}
+                      )
+                        );
 
-                      {/* Blok tanda tangan basah: ruang kosong per pihak untuk
-                          TTD manual setelah PDF dicetak */}
-                      <div
-                        className={`grid grid-cols-1 md:grid-cols-${selectedContract.parties?.length || 2} gap-6 pt-6 text-xs`}
-                      >
-                        {(selectedContract.parties?.length
-                          ? selectedContract.parties
-                          : [
-                              { role: "PIHAK PERTAMA", name: selectedContract.party1Name },
-                              { role: "PIHAK KEDUA", name: selectedContract.party2Name },
-                            ]
-                        ).map((party: any, idx: number) => (
-                          <div key={idx} className="text-center">
-                            <p className="font-semibold text-slate-400 uppercase">
-                              {party.role}
-                            </p>
-                            {/* Spacer setinggi ruang TTD basah (h-16 = persis pengganti
-                                space-y-16 lama) — SELALU segini tingginya baik placeholder
-                                Meterai nyala atau mati, supaya toggle ini tidak menambah
-                                ATAU mengurangi tinggi halaman sama sekali. */}
-                            <div className="h-16 flex items-center justify-center">
-                              {(selectedContract.showMeteraiPlaceholder) && (
-                                <div className="border border-dashed border-slate-500 rounded px-3 py-1.5 text-[9px] leading-tight text-slate-500 uppercase tracking-wide">
-                                  Meterai<br />Rp10.000
+                        // Blok TTD SEBARIS seperti semula (semua pihak tampil
+                        // sejajar) — bedanya cuma parameter meteraiPartyIdx: index
+                        // pihak yang kolomnya dapat kotak meterai. -1 = tidak ada
+                        // yang dapat (meterai mati).
+                        const signatureRow = (meteraiPartyIdx: number) => (
+                          <div className={`grid grid-cols-1 md:grid-cols-${parties.length || 2} gap-6 pt-6 text-xs`}>
+                            {parties.map((party: any, idx: number) => (
+                              <div key={idx} className="text-center">
+                                <p className="font-semibold text-slate-400 uppercase">
+                                  {party.role}
+                                </p>
+                                <div className="h-16 flex items-center justify-center">
+                                  {idx === meteraiPartyIdx && (
+                                    <div className="border border-dashed border-slate-500 rounded px-3 py-1.5 text-[9px] leading-tight text-slate-500 uppercase tracking-wide">
+                                      Meterai<br />Rp10.000
+                                    </div>
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                            <p className="font-semibold text-slate-200">
-                              ( {party.name} )
-                            </p>
+                                <p className="font-semibold text-slate-200">
+                                  ( {party.name} )
+                                </p>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
+                        );
+
+                        // Duplikasi pasal + lampiran + penutup + blok TTD SEBARIS
+                        // per RANGKAP, masing² dipaksa mulai halaman PDF baru
+                        // (data-pdf-force-break, lihat forceBreakPointsPx di
+                        // generateContractPdf) — HANYA saat proses export PDF
+                        // sungguhan DAN placeholder Meterai dinyalakan. TTD TETAP
+                        // sebaris semua pihak di tiap rangkap (bukan satu pihak
+                        // per halaman) — yang gantian per rangkap cuma POSISI
+                        // kotak meterainya, sesuai konsep "Rangkap 1: meterai di
+                        // Pihak Pertama, Rangkap 2: meterai di Pihak Kedua" yang
+                        // sudah ada di fitur Rangkap Fisik. Di layar (mode edit
+                        // biasa, isExportingPdf false) TETAP satu salinan seperti
+                        // semula — supaya anotasi/komentar per pasal (Sorot &
+                        // Komentari dkk) tidak dobel.
+                        if (isExportingPdf && selectedContract.showMeteraiPlaceholder) {
+                          return (
+                            <>
+                              {parties.map((_party: any, rangkapIdx: number) => (
+                                <div key={rangkapIdx} data-pdf-force-break={rangkapIdx > 0 ? "1" : undefined}>
+                                  {clauseListBlock()}
+                                  {lampiranBlock()}
+                                  {closingParagraphBlock()}
+                                  {signatureRow(rangkapIdx)}
+                                </div>
+                              ))}
+                            </>
+                          );
+                        }
+
+                        // Tampilan normal (di layar, ATAU export tanpa meterai): satu
+                        // salinan pasal + lampiran + penutup, lalu blok TTD sebaris
+                        // tanpa meterai di kolom manapun — persis seperti semula.
+                        return (
+                          <>
+                            {clauseListBlock()}
+                            {lampiranBlock()}
+                            {closingParagraphBlock()}
+                            {signatureRow(-1)}
+                          </>
+                        );
+                      })()}
                       {!isExportingPdf && isContractEditable(selectedContract) && (
                         <div className="mt-8 flex justify-center">
                           <button
@@ -15035,108 +15113,192 @@ export default function App() {
                             & narasi kategori). Data pihak/tanggal/judul TIDAK
                             diedit di sini — itu lewat "Edit Data Pihak & Kontrak"
                             di header, supaya grammar kalimat pembuka tetap benar
-                            apa pun yang diisi. */}
-                        <div className="p-2.5 bg-slate-900 border border-amber-500/20 rounded-lg space-y-2">
-                          <div>
-                            <p className="font-bold text-amber-400 text-xs">Narasi Pembuka</p>
-                            <p className="text-[10px] text-slate-500">
-                              Judul dokumen, tanggal &amp; identitas Pihak Pertama/Kedua diatur lewat tombol "Edit Data Pihak &amp; Kontrak" di atas — ini cuma kalimat pembukanya.
-                            </p>
-                          </div>
-                          {(() => {
-                            const val = selectedContract.customOpeningParagraph || "";
-                            if (!val.trim()) {
-                              const { template } = getPreambleTemplateAndTokens();
-                              return (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setSelectedContract({
-                                      ...selectedContract,
-                                      customOpeningParagraph: mdToHtmlForEditor(template),
-                                    })
-                                  }
-                                  className="text-[10px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg cursor-pointer font-semibold flex items-center gap-1"
-                                >
-                                  <FileText className="w-3 h-3" /> Muat teks aktif untuk diedit
-                                </button>
-                              );
-                            }
-                            return (
-                              <>
-                                <RichTextEditor
-                                  valueHtml={looksLikeHtml(val) ? val : mdToHtmlForEditor(val)}
-                                  onChange={(html) =>
-                                    setSelectedContract({ ...selectedContract, customOpeningParagraph: html })
-                                  }
-                                  tokens={PREAMBLE_TOKENS}
-                                  minHeight={100}
-                                />
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })
-                                    }
-                                    className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
-                                  >
-                                    Kembalikan ke bawaan
-                                  </button>
+                            apa pun yang diisi. Konten yang diedit IKUT bahasa
+                            dokumen aktif (toggle ID/EN/ID+EN di header preview)
+                            — bilingual menampilkan ID & EN berdampingan sekaligus,
+                            sama seperti gaya tampilan preview di atasnya. */}
+                        {(() => {
+                          const docLang = selectedContract.documentLanguage || "id";
+
+                          const idEditor = (
+                            <div className="space-y-2">
+                              <p className="font-bold text-amber-400 text-xs">Narasi Pembuka (Indonesia)</p>
+                              {(() => {
+                                const val = selectedContract.customOpeningParagraph || "";
+                                if (!val.trim()) {
+                                  const { template } = getPreambleTemplateAndTokens();
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setSelectedContract({
+                                          ...selectedContract,
+                                          customOpeningParagraph: mdToHtmlForEditor(template),
+                                        })
+                                      }
+                                      className="text-[10px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg cursor-pointer font-semibold flex items-center gap-1"
+                                    >
+                                      <FileText className="w-3 h-3" /> Muat teks aktif untuk diedit
+                                    </button>
+                                  );
+                                }
+                                return (
+                                  <>
+                                    <RichTextEditor
+                                      valueHtml={looksLikeHtml(val) ? val : mdToHtmlForEditor(val)}
+                                      onChange={(html) =>
+                                        setSelectedContract({ ...selectedContract, customOpeningParagraph: html })
+                                      }
+                                      tokens={PREAMBLE_TOKENS}
+                                      minHeight={100}
+                                    />
+                                    <div className="flex items-center justify-between gap-2">
+                                      <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })
+                                        }
+                                        className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
+                                      >
+                                        Kembalikan ke bawaan
+                                      </button>
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                            </div>
+                          );
+
+                          // preambleEn diisi AI saat toggle EN/ID+EN pertama kali
+                          // diklik — teks mentah (paragraf dipisah baris kosong,
+                          // **tebal** markdown), BUKAN HTML seperti
+                          // customOpeningParagraph, jadi diedit sbg teks polos.
+                          const enEditor = (
+                            <div className="space-y-2">
+                              <p className="font-bold text-sky-400 text-xs">Opening Narrative (English)</p>
+                              {selectedContract.preambleEn ? (
+                                <>
+                                  <textarea
+                                    value={selectedContract.preambleEn}
+                                    onChange={(e) => setSelectedContract({ ...selectedContract, preambleEn: e.target.value })}
+                                    rows={5}
+                                    className="w-full bg-slate-950 border border-slate-850 px-2.5 py-2 rounded-lg text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-sky-500"
+                                    placeholder="Opening narrative in English"
+                                  />
+                                  <p className="text-[10px] text-slate-500">Pakai **tebal** untuk cetak tebal, baris kosong ganda = paragraf baru.</p>
+                                </>
+                              ) : (
+                                <p className="text-[10px] text-slate-500 italic">
+                                  Belum ada versi Inggris — klik toggle EN atau ID+EN di header preview dulu supaya diterjemahkan otomatis, baru bisa dikoreksi di sini.
+                                </p>
+                              )}
+                            </div>
+                          );
+
+                          return (
+                            <div className="p-2.5 bg-slate-900 border border-amber-500/20 rounded-lg space-y-2">
+                              <p className="text-[10px] text-slate-500">
+                                Judul dokumen, tanggal &amp; identitas Pihak Pertama/Kedua diatur lewat tombol "Edit Data Pihak &amp; Kontrak" di atas — ini cuma kalimat pembukanya.
+                              </p>
+                              {docLang === "id" && idEditor}
+                              {docLang === "en" && enEditor}
+                              {docLang === "bilingual" && (
+                                <div className="flex gap-3">
+                                  <div className="flex-1 min-w-0">{idEditor}</div>
+                                  <div className="flex-1 min-w-0">{enEditor}</div>
                                 </div>
-                              </>
+                              )}
+                            </div>
+                          );
+                        })()}
+                        {selectedContract.clauses.map((cl, i) => {
+                          const docLang = selectedContract.documentLanguage || "id";
+                          const updateClause = (patch: any) => {
+                            const updatedClauses = selectedContract.clauses.map((x, xi) =>
+                              xi === i ? { ...x, ...patch } : x,
                             );
-                          })()}
-                        </div>
-                        {selectedContract.clauses.map((cl, i) => (
-                          <div
-                            key={cl.id}
-                            className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex flex-col gap-1.5"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-indigo-400 shrink-0">
-                                Pasal {i + 1}:
-                              </span>
+                            setSelectedContract({ ...selectedContract, clauses: updatedClauses });
+                          };
+                          // Editor pasal per-kontrak — WYSIWYG (format teks + token).
+                          // Pipeline render sudah sadar-HTML. idFields/enFields dipisah
+                          // supaya bisa ditampilkan tunggal (ID/EN) ATAU berdampingan
+                          // (bilingual), tanpa duplikasi kode.
+                          const idFields = (
+                            <div className="space-y-1.5">
                               <input
                                 type="text"
                                 value={cl.title}
-                                onChange={(e) => {
-                                  const updatedClauses = selectedContract.clauses.map((x, xi) =>
-                                    xi === i ? { ...x, title: e.target.value } : x,
-                                  );
-                                  setSelectedContract({ ...selectedContract, clauses: updatedClauses });
-                                }}
-                                className="flex-1 bg-slate-950 border border-slate-850 px-2 py-1 rounded text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                                onChange={(e) => updateClause({ title: e.target.value })}
+                                className="w-full bg-slate-950 border border-slate-850 px-2 py-1 rounded text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
                                 placeholder="Judul pasal"
                               />
-                              <button
-                                onClick={() => {
-                                  const updatedClauses = selectedContract.clauses
-                                    .filter((_, xi) => xi !== i)
-                                    .map((x, xi) => ({ ...x, order: xi + 1 }));
-                                  setSelectedContract({ ...selectedContract, clauses: updatedClauses });
-                                }}
-                                title="Hapus pasal ini"
-                                className="text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg cursor-pointer shrink-0"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <RichTextEditor
+                                valueHtml={looksLikeHtml(cl.content) ? cl.content : mdToHtmlForEditor(cl.content)}
+                                onChange={(html) => updateClause({ content: html })}
+                                tokens={CLAUSE_TOKENS}
+                                minHeight={80}
+                              />
                             </div>
-                            {/* Editor pasal per-kontrak — WYSIWYG (format teks +
-                                token). Pipeline render sudah sadar-HTML. */}
-                            <RichTextEditor
-                              valueHtml={looksLikeHtml(cl.content) ? cl.content : mdToHtmlForEditor(cl.content)}
-                              onChange={(html) => {
-                                const updatedClauses = selectedContract.clauses.map((x, xi) =>
-                                  xi === i ? { ...x, content: html } : x,
-                                );
-                                setSelectedContract({ ...selectedContract, clauses: updatedClauses });
-                              }}
-                              tokens={CLAUSE_TOKENS}
-                              minHeight={80}
-                            />
-                          </div>
-                        ))}
+                          );
+                          const enFields = (
+                            <div className="space-y-1.5">
+                              {(cl.titleEn || cl.contentEn) ? (
+                                <>
+                                  <input
+                                    type="text"
+                                    value={cl.titleEn || ""}
+                                    onChange={(e) => updateClause({ titleEn: e.target.value })}
+                                    className="w-full bg-slate-950 border border-slate-850 px-2 py-1 rounded text-xs text-slate-200 focus:outline-none focus:border-sky-500"
+                                    placeholder="Article title"
+                                  />
+                                  <RichTextEditor
+                                    valueHtml={looksLikeHtml(cl.contentEn || "") ? (cl.contentEn || "") : mdToHtmlForEditor(cl.contentEn || "")}
+                                    onChange={(html) => updateClause({ contentEn: html })}
+                                    tokens={CLAUSE_TOKENS}
+                                    minHeight={80}
+                                  />
+                                </>
+                              ) : (
+                                <p className="text-[10px] text-slate-500 italic">
+                                  Belum diterjemahkan — klik toggle EN/ID+EN di header preview dulu.
+                                </p>
+                              )}
+                            </div>
+                          );
+                          return (
+                            <div
+                              key={cl.id}
+                              className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex flex-col gap-1.5"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-bold text-indigo-400 shrink-0">
+                                  Pasal {i + 1}:
+                                </span>
+                                <button
+                                  onClick={() => {
+                                    const updatedClauses = selectedContract.clauses
+                                      .filter((_, xi) => xi !== i)
+                                      .map((x, xi) => ({ ...x, order: xi + 1 }));
+                                    setSelectedContract({ ...selectedContract, clauses: updatedClauses });
+                                  }}
+                                  title="Hapus pasal ini"
+                                  className="text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg cursor-pointer shrink-0"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                              {docLang === "id" && idFields}
+                              {docLang === "en" && enFields}
+                              {docLang === "bilingual" && (
+                                <div className="flex gap-3">
+                                  <div className="flex-1 min-w-0">{idFields}</div>
+                                  <div className="flex-1 min-w-0">{enFields}</div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                         <div className="flex flex-wrap items-center gap-2 pt-1">
                           <select
                             value=""
@@ -15186,739 +15348,6 @@ export default function App() {
                 <div className="xl:col-span-5 bg-slate-950 rounded-2xl border border-slate-800 p-5 flex flex-col justify-between shadow-2xl">
                   {/* Workspace Tools Contents */}
                   <div className="space-y-6">
-                    {/* TERMIN PEMBAYARAN & REALISASI */}
-                    {(() => {
-                      const termin = selectedContract.paymentTerms || [];
-                      const nilaiKontrak = Number(selectedContract.contractValue) || 0;
-                      // Persentase SELALU diturunkan ke rupiah dulu memakai nilai
-                      // kontrak — tidak pernah dijumlah mentah bersama nominal
-                      // (aturan yang sama seperti sharing fee). Kalau nilai
-                      // kontraknya belum diisi, baris persen dilaporkan "belum
-                      // bisa dihitung", bukan dianggap nol.
-                      const rupiah = (t: any) => t.amountType === "percentage"
-                        ? (nilaiKontrak > 0 ? Math.round(nilaiKontrak * (Number(t.amount) || 0) / 100) : null)
-                        : (Number(t.amount) || 0);
-                      const adaPersenTakTerhitung = termin.some((t) => t.amountType === "percentage" && nilaiKontrak <= 0);
-                      const aktif = termin.filter((t) => t.status !== "batal");
-                      const totalTagihan = aktif.reduce((s, t) => s + (rupiah(t) ?? 0), 0);
-                      const totalDibayar = aktif.reduce((s, t) => s + (Number(t.paidAmount) || 0), 0);
-                      const selisih = nilaiKontrak > 0 ? totalTagihan - nilaiKontrak : 0;
-                      const hariIni = new Date().toISOString().slice(0, 10);
-                      const telat = aktif.filter((t) => t.status !== "lunas" && t.dueDate < hariIni);
-                      const ubah = (i: number, patch: any) => {
-                        const next = termin.map((x, xi) => (xi === i ? { ...x, ...patch } : x));
-                        setSelectedContract({ ...selectedContract, paymentTerms: next });
-                      };
-                      const simpan = async (rows: any[]) => {
-                        const res = await fetch(`/api/contracts/${selectedContract.id}`, {
-                          method: "PUT", headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ paymentTerms: rows }),
-                        });
-                        const data = await res.json();
-                        if (!res.ok) { showToast(data.error || "Gagal menyimpan termin", "warning"); return false; }
-                        setSelectedContract(data.contract);
-                        setContracts((prev) => prev.map((c) => (c.id === data.contract.id ? data.contract : c)));
-                        showToast("Termin pembayaran tersimpan.", "success");
-                        return true;
-                      };
-                      return (
-                        <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <h4 className="font-bold text-xs flex items-center gap-1.5 text-slate-200">
-                              <FileDigit className="w-3.5 h-3.5 text-emerald-500" /> Termin Pembayaran
-                              {termin.length > 0 && <span className="text-slate-500 font-normal">· {termin.length}</span>}
-                            </h4>
-                            {telat.length > 0 && (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-700 uppercase">{telat.length} terlambat</span>
-                            )}
-                          </div>
-
-                          {termin.length === 0 ? (
-                            <p className="text-[11px] text-slate-500 leading-relaxed">
-                              Belum ada jadwal termin. Kosongkan saja bila kontrak ini memang tidak dilacak pembayarannya
-                              (mis. NDA atau dokumen legalitas).
-                            </p>
-                          ) : (
-                            <div className="space-y-2">
-                              {termin.map((t, i) => {
-                                const nilai = rupiah(t);
-                                const lewat = t.status !== "lunas" && t.status !== "batal" && t.dueDate < hariIni;
-                                return (
-                                  <div key={t.id || i} className={`p-2.5 rounded-lg border text-[11px] space-y-1.5 ${lewat ? "bg-rose-500/5 border-rose-500/25" : "bg-slate-950 border-slate-800"}`}>
-                                    <div className="flex items-center gap-1.5">
-                                      <input value={t.label} onChange={(e) => ubah(i, { label: e.target.value })} placeholder="mis. Termin 1 — DP 30%"
-                                        className="flex-1 px-1.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-100 focus:outline-none focus:border-indigo-500" />
-                                      <select value={t.status} onChange={(e) => ubah(i, { status: e.target.value })}
-                                        className={`px-1.5 py-1 bg-slate-900 border rounded focus:outline-none ${t.status === "lunas" ? "border-emerald-500/40 text-emerald-600" : t.status === "batal" ? "border-slate-700 text-slate-500" : "border-slate-800 text-slate-200"}`}>
-                                        <option value="belum">Belum ditagih</option>
-                                        <option value="ditagih">Sudah ditagih</option>
-                                        <option value="lunas">Lunas</option>
-                                        <option value="batal">Batal</option>
-                                      </select>
-                                      <button onClick={() => setSelectedContract({ ...selectedContract, paymentTerms: termin.filter((_, xi) => xi !== i) })}
-                                        title="Hapus termin" className="p-1 text-rose-400 hover:bg-rose-500/10 rounded cursor-pointer"><Trash2 className="w-3 h-3" /></button>
-                                    </div>
-                                    <div className="grid grid-cols-3 gap-1.5">
-                                      <div>
-                                        <label className="block text-[9px] text-slate-500 mb-0.5">Jatuh tempo</label>
-                                        <input type="date" value={t.dueDate} onChange={(e) => ubah(i, { dueDate: e.target.value })}
-                                          className="w-full px-1.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-100 focus:outline-none focus:border-indigo-500" />
-                                      </div>
-                                      <div>
-                                        <label className="block text-[9px] text-slate-500 mb-0.5">Tagihan</label>
-                                        <div className="flex gap-1">
-                                          <input type="number" value={t.amount} onChange={(e) => ubah(i, { amount: Number(e.target.value) || 0 })}
-                                            className="w-full px-1.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-100 tabular-nums focus:outline-none focus:border-indigo-500" />
-                                          <select value={t.amountType} onChange={(e) => ubah(i, { amountType: e.target.value })}
-                                            className="px-1 py-1 bg-slate-900 border border-slate-800 rounded text-slate-300 focus:outline-none">
-                                            <option value="nominal">Rp</option>
-                                            <option value="percentage">%</option>
-                                          </select>
-                                        </div>
-                                      </div>
-                                      <div>
-                                        <label className="block text-[9px] text-slate-500 mb-0.5">Diterima (Rp)</label>
-                                        <input type="number" value={t.paidAmount ?? ""} onChange={(e) => ubah(i, { paidAmount: e.target.value === "" ? undefined : Number(e.target.value) })}
-                                          className="w-full px-1.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-100 tabular-nums focus:outline-none focus:border-indigo-500" />
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-2 text-[10px]">
-                                      <span className="text-slate-500">
-                                        {t.amountType === "percentage"
-                                          ? (nilai === null ? "% — nilai kontrak belum diisi, belum bisa dihitung" : `${t.amount}% = Rp ${nilai.toLocaleString("id-ID")}`)
-                                          : `Rp ${(nilai ?? 0).toLocaleString("id-ID")}`}
-                                      </span>
-                                      {lewat && <span className="text-rose-600 font-semibold">lewat jatuh tempo</span>}
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          {termin.length > 0 && (
-                            <div className="pt-2 border-t border-slate-800 space-y-1 text-[11px]">
-                              <div className="flex justify-between"><span className="text-slate-500">Total tagihan</span><span className="text-slate-200 tabular-nums font-semibold">Rp {totalTagihan.toLocaleString("id-ID")}</span></div>
-                              <div className="flex justify-between"><span className="text-slate-500">Sudah diterima</span><span className="text-emerald-600 tabular-nums font-semibold">Rp {totalDibayar.toLocaleString("id-ID")}</span></div>
-                              <div className="flex justify-between"><span className="text-slate-500">Sisa</span><span className="text-slate-200 tabular-nums font-semibold">Rp {Math.max(0, totalTagihan - totalDibayar).toLocaleString("id-ID")}</span></div>
-                              {adaPersenTakTerhitung && (
-                                <p className="text-amber-700 pt-1">Ada termin berbasis persen sementara Nilai Kontrak masih kosong — angkanya belum bisa dihitung dan tidak ikut dijumlah.</p>
-                              )}
-                              {nilaiKontrak > 0 && selisih !== 0 && (
-                                <p className="text-amber-700 pt-1">
-                                  Total tagihan {selisih > 0 ? "melebihi" : "kurang dari"} Nilai Kontrak sebesar{" "}
-                                  Rp {Math.abs(selisih).toLocaleString("id-ID")}. Wajar bila memang ada biaya tambahan atau termin belum lengkap — periksa saja.
-                                </p>
-                              )}
-                            </div>
-                          )}
-
-                          <div className="flex gap-1.5 pt-1">
-                            <button
-                              onClick={() => setSelectedContract({
-                                ...selectedContract,
-                                paymentTerms: [...termin, {
-                                  id: "pt-" + Date.now(), label: `Termin ${termin.length + 1}`,
-                                  dueDate: selectedContract.startDate || hariIni,
-                                  amountType: "nominal" as const, amount: 0, status: "belum" as const,
-                                }],
-                              })}
-                              className="flex-1 px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-semibold cursor-pointer flex items-center justify-center gap-1">
-                              <Plus className="w-3 h-3" /> Tambah termin
-                            </button>
-                            <button onClick={() => simpan(termin)}
-                              className="flex-1 px-2 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-bold cursor-pointer">
-                              Simpan termin
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* KEWAJIBAN KONTRAK (PIC + jatuh tempo) */}
-                    {(() => {
-                      const kew = selectedContract.obligations || [];
-                      const hariIni = new Date().toISOString().slice(0, 10);
-                      const terbuka = kew.filter((o) => o.status === "open");
-                      const telat = terbuka.filter((o) => o.dueDate < hariIni);
-                      const ubah = (i: number, patch: any) =>
-                        setSelectedContract({ ...selectedContract, obligations: kew.map((x, xi) => (xi === i ? { ...x, ...patch } : x)) });
-                      const simpanKew = async (rows: any[]) => {
-                        const res = await fetch(`/api/contracts/${selectedContract.id}`, {
-                          method: "PUT", headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ obligations: rows }),
-                        });
-                        const data = await res.json();
-                        if (!res.ok) { showToast(data.error || "Gagal menyimpan kewajiban", "warning"); return; }
-                        setSelectedContract(data.contract);
-                        setContracts((prev) => prev.map((c) => (c.id === data.contract.id ? data.contract : c)));
-                        showToast("Kewajiban tersimpan.", "success");
-                      };
-                      // Kewajiban BERULANG yang diselesaikan otomatis maju ke
-                      // periode berikutnya — tanpa ini orang harus membuat ulang
-                      // 12 baris untuk laporan bulanan satu tahun.
-                      // Cerminan nextObligationDate di reminders.ts — termasuk
-                      // penjepitan akhir bulan. setMonth() polos salah: 31 Jan
-                      // + 1 bulan jadi "31 Feb" yang dinormalkan JS ke 3 Maret,
-                      // Februari terlewat dan tanggalnya terus melenceng.
-                      const majukan = (dueDate: string, recurrence: string) => {
-                        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dueDate);
-                        if (!m) return dueDate;
-                        const tambah = recurrence === "monthly" ? 1 : recurrence === "quarterly" ? 3 : recurrence === "yearly" ? 12 : 0;
-                        if (tambah === 0) return dueDate;
-                        const total = Number(m[2]) - 1 + tambah;
-                        const th = Number(m[1]) + Math.floor(total / 12);
-                        const bl = ((total % 12) + 12) % 12;
-                        const akhir = new Date(Date.UTC(th, bl + 1, 0)).getUTCDate();
-                        return `${th}-${String(bl + 1).padStart(2, "0")}-${String(Math.min(Number(m[3]), akhir)).padStart(2, "0")}`;
-                      };
-                      return (
-                        <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                          <div className="flex items-center justify-between gap-2">
-                            <h4 className="font-bold text-xs flex items-center gap-1.5 text-slate-200">
-                              <CheckSquare className="w-3.5 h-3.5 text-sky-600" /> Kewajiban Kontrak
-                              {terbuka.length > 0 && <span className="text-slate-500 font-normal">· {terbuka.length} terbuka</span>}
-                            </h4>
-                            {telat.length > 0 && (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-700 uppercase">{telat.length} terlambat</span>
-                            )}
-                          </div>
-
-                          {kew.length === 0 ? (
-                            <p className="text-[11px] text-slate-500 leading-relaxed">
-                              Belum ada kewajiban yang dilacak. Gunakan ini untuk hal yang harus dikerjakan berkala —
-                              laporan bulanan, perpanjangan asuransi, penyerahan jaminan.
-                            </p>
-                          ) : (
-                            <div className="space-y-2">
-                              {kew.map((o, i) => {
-                                const lewat = o.status === "open" && o.dueDate < hariIni;
-                                return (
-                                  <div key={o.id || i} className={`p-2.5 rounded-lg border text-[11px] space-y-1.5 ${lewat ? "bg-rose-500/5 border-rose-500/25" : o.status !== "open" ? "bg-slate-950/60 border-slate-800 opacity-70" : "bg-slate-950 border-slate-800"}`}>
-                                    <div className="flex items-center gap-1.5">
-                                      <input value={o.title} onChange={(e) => ubah(i, { title: e.target.value })} placeholder="mis. Kirim laporan bulanan"
-                                        className="flex-1 px-1.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-100 focus:outline-none focus:border-indigo-500" />
-                                      <button onClick={() => setSelectedContract({ ...selectedContract, obligations: kew.filter((_, xi) => xi !== i) })}
-                                        title="Hapus kewajiban" className="p-1 text-rose-400 hover:bg-rose-500/10 rounded cursor-pointer"><Trash2 className="w-3 h-3" /></button>
-                                    </div>
-                                    <div className="grid grid-cols-3 gap-1.5">
-                                      <div>
-                                        <label className="block text-[9px] text-slate-500 mb-0.5">Jatuh tempo</label>
-                                        <input type="date" value={o.dueDate} onChange={(e) => ubah(i, { dueDate: e.target.value })}
-                                          className="w-full px-1.5 py-1 bg-slate-900 border border-slate-800 rounded text-slate-100 focus:outline-none focus:border-indigo-500" />
-                                      </div>
-                                      <div>
-                                        <label className="block text-[9px] text-slate-500 mb-0.5">Pengulangan</label>
-                                        <select value={o.recurrence} onChange={(e) => ubah(i, { recurrence: e.target.value })}
-                                          className="w-full px-1 py-1 bg-slate-900 border border-slate-800 rounded text-slate-200 focus:outline-none">
-                                          <option value="none">Sekali</option>
-                                          <option value="monthly">Bulanan</option>
-                                          <option value="quarterly">Triwulan</option>
-                                          <option value="yearly">Tahunan</option>
-                                        </select>
-                                      </div>
-                                      <div>
-                                        <label className="block text-[9px] text-slate-500 mb-0.5">Penanggung jawab</label>
-                                        <select value={o.ownerId || ""} onChange={(e) => {
-                                          const u = mentionableUsers.find((x: any) => x.id === e.target.value);
-                                          ubah(i, { ownerId: e.target.value || undefined, ownerName: u?.name });
-                                        }} className="w-full px-1 py-1 bg-slate-900 border border-slate-800 rounded text-slate-200 focus:outline-none">
-                                          <option value="">— belum ditunjuk —</option>
-                                          {mentionableUsers.map((u: any) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                                        </select>
-                                      </div>
-                                    </div>
-                                    <div className="flex items-center justify-between gap-2">
-                                      <span className={`text-[10px] ${lewat ? "text-rose-600 font-semibold" : "text-slate-500"}`}>
-                                        {o.status === "done" ? `selesai${o.completedAt ? ` ${String(o.completedAt).slice(0, 10)}` : ""}${o.completedByName ? ` oleh ${o.completedByName}` : ""}`
-                                          : o.status === "waived" ? "dikesampingkan"
-                                          : lewat ? "lewat jatuh tempo" : "terbuka"}
-                                      </span>
-                                      <div className="flex gap-1">
-                                        {o.status === "open" ? (
-                                          <>
-                                            <button onClick={() => {
-                                              const berulang = o.recurrence !== "none";
-                                              const next = kew.map((x, xi) => xi === i
-                                                ? (berulang
-                                                    // Berulang: baris yang sama dimajukan, bukan ditutup —
-                                                    // riwayat penyelesaiannya dicatat di catatan.
-                                                    ? { ...x, dueDate: majukan(x.dueDate, x.recurrence), lastDueNudgeDate: undefined,
-                                                        notes: `${x.notes ? x.notes + " | " : ""}selesai ${hariIni} oleh ${currentUser?.name || "-"}` }
-                                                    : { ...x, status: "done" as const, completedAt: new Date().toISOString(), completedByName: currentUser?.name })
-                                                : x);
-                                              setSelectedContract({ ...selectedContract, obligations: next });
-                                              simpanKew(next);
-                                            }} className="px-2 py-0.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-700 rounded text-[10px] font-semibold cursor-pointer">
-                                              {o.recurrence !== "none" ? "Selesai · majukan" : "Tandai selesai"}
-                                            </button>
-                                            <button onClick={() => ubah(i, { status: "waived" })} title="Tidak berlaku / dikesampingkan"
-                                              className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px] cursor-pointer">N/A</button>
-                                          </>
-                                        ) : (
-                                          <button onClick={() => ubah(i, { status: "open", completedAt: undefined, completedByName: undefined })}
-                                            className="px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px] cursor-pointer">Buka lagi</button>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          <div className="flex gap-1.5 pt-1">
-                            <button onClick={() => setSelectedContract({
-                              ...selectedContract,
-                              obligations: [...kew, { id: "ob-" + Date.now(), title: "", dueDate: hariIni, recurrence: "none" as const, status: "open" as const }],
-                            })} className="flex-1 px-2 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-semibold cursor-pointer flex items-center justify-center gap-1">
-                              <Plus className="w-3 h-3" /> Tambah kewajiban
-                            </button>
-                            <button onClick={() => simpanKew(kew)}
-                              className="flex-1 px-2 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[11px] font-bold cursor-pointer">
-                              Simpan kewajiban
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* EVALUASI KINERJA VENDOR — hanya bermakna untuk kontrak
-                        yang vendornya dipilih dari master data (vendorSnapshot
-                        ada), bukan diketik bebas sebagai teks. */}
-                    {selectedContract.vendorSnapshot && (() => {
-                      const ev = selectedContract.vendorEvaluation;
-                      const [rating, setRating] = [vendorEvalForm.rating, (v: number) => setVendorEvalForm({ ...vendorEvalForm, rating: v })];
-                      const simpanEvaluasi = async () => {
-                        const res = await fetch(`/api/contracts/${selectedContract.id}`, {
-                          method: "PUT", headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ vendorEvaluation: vendorEvalForm }),
-                        });
-                        const data = await res.json();
-                        if (!res.ok) { showToast(data.error || "Gagal menyimpan evaluasi", "warning"); return; }
-                        setSelectedContract(data.contract);
-                        setContracts((prev) => prev.map((c) => (c.id === data.contract.id ? data.contract : c)));
-                        showToast("Evaluasi vendor tersimpan.", "success");
-                      };
-                      return (
-                        <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                          <h4 className="font-bold text-xs flex items-center gap-1.5 text-slate-200">
-                            <Star className="w-3.5 h-3.5 text-amber-500" /> Evaluasi Kinerja Vendor
-                            <span className="text-slate-500 font-normal">· {selectedContract.vendorSnapshot.name}</span>
-                          </h4>
-                          {ev && (
-                            <div className="p-2.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] space-y-1">
-                              <div className="flex items-center gap-1">
-                                {[1, 2, 3, 4, 5].map((n) => <Star key={n} className={`w-3.5 h-3.5 ${n <= ev.rating ? "fill-amber-500 text-amber-500" : "text-slate-700"}`} />)}
-                                <span className="text-slate-500 ml-1">oleh {ev.evaluatedByName} · {String(ev.evaluatedAt).slice(0, 10)}</span>
-                              </div>
-                              <p className="text-slate-400">
-                                {ev.onTimeDelivery === true ? "Tepat waktu" : ev.onTimeDelivery === false ? "Terlambat" : "Ketepatan waktu: tidak dinilai"}
-                                {" · "}{ev.disputeCount} sengketa
-                              </p>
-                              {ev.notes && <p className="text-slate-500 italic">"{ev.notes}"</p>}
-                            </div>
-                          )}
-                          <div className="space-y-2">
-                            <div>
-                              <label className="block text-[10px] text-slate-500 mb-1">{ev ? "Perbarui evaluasi" : "Beri evaluasi"} — Rating</label>
-                              <div className="flex gap-1">
-                                {[1, 2, 3, 4, 5].map((n) => (
-                                  <button key={n} onClick={() => setRating(n)} className="cursor-pointer">
-                                    <Star className={`w-5 h-5 ${n <= rating ? "fill-amber-500 text-amber-500" : "text-slate-700 hover:text-slate-500"}`} />
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="block text-[10px] text-slate-500 mb-1">Ketepatan waktu</label>
-                                <select value={vendorEvalForm.onTimeDelivery === undefined ? "" : String(vendorEvalForm.onTimeDelivery)}
-                                  onChange={(e) => setVendorEvalForm({ ...vendorEvalForm, onTimeDelivery: e.target.value === "" ? undefined : e.target.value === "true" })}
-                                  className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-[11px] text-slate-200 focus:outline-none">
-                                  <option value="">Tidak dinilai</option>
-                                  <option value="true">Tepat waktu</option>
-                                  <option value="false">Terlambat</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="block text-[10px] text-slate-500 mb-1">Jumlah sengketa</label>
-                                <input type="number" min={0} value={vendorEvalForm.disputeCount}
-                                  onChange={(e) => setVendorEvalForm({ ...vendorEvalForm, disputeCount: Math.max(0, Number(e.target.value) || 0) })}
-                                  className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-[11px] text-slate-100 tabular-nums focus:outline-none" />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="block text-[10px] text-slate-500 mb-1">Catatan (opsional)</label>
-                              <input type="text" value={vendorEvalForm.notes} maxLength={300}
-                                onChange={(e) => setVendorEvalForm({ ...vendorEvalForm, notes: e.target.value })}
-                                placeholder="mis. Kualitas pengerjaan baik, komunikasi responsif"
-                                className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-[11px] text-slate-100 focus:outline-none" />
-                            </div>
-                            <button onClick={simpanEvaluasi} disabled={vendorEvalForm.rating < 1}
-                              className="w-full px-2 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-[11px] font-bold cursor-pointer">
-                              {ev ? "Perbarui Evaluasi" : "Simpan Evaluasi"}
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* CHECKSUM INTEGRITAS BERKAS AKTIVASI. Tegas BUKAN
-                        e-meterai/TTD elektronik resmi — cuma bukti berkas
-                        belum berubah sejak diunggah. Hanya muncul untuk
-                        kontrak yang punya activationProofHash. */}
-                    {selectedContract.activationProofHash && (() => {
-                      const cekIntegritas = async () => {
-                        setIntegrityCheck({ busy: true });
-                        try {
-                          const res = await fetch(`/api/contracts/${selectedContract.id}/verify-integrity`);
-                          const data = await res.json();
-                          if (!res.ok) { setIntegrityCheck({ busy: false, error: data.error }); return; }
-                          setIntegrityCheck({ busy: false, match: data.match, currentHash: data.currentHash });
-                        } catch {
-                          setIntegrityCheck({ busy: false, error: "Tidak dapat menghubungi server." });
-                        }
-                      };
-                      return (
-                        <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-2.5">
-                          <h4 className="font-bold text-xs flex items-center gap-1.5 text-slate-200">
-                            <ShieldAlert className="w-3.5 h-3.5 text-sky-600" /> Checksum Integritas Berkas
-                          </h4>
-                          <p className="text-[10px] text-slate-500 leading-relaxed">
-                            <b className="text-slate-400">Bukan e-meterai atau tanda tangan elektronik resmi.</b> Ini murni checksum
-                            SHA-256 yang membuktikan berkas bukti TTD belum berubah sejak diunggah saat aktivasi. Untuk e-meterai
-                            sah secara hukum, gunakan penyedia berizin PERURI (Privy/Digisign/TekenAja, dst).
-                          </p>
-                          <div className="flex items-center gap-1.5">
-                            <code className="flex-1 px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg font-mono text-[10px] text-slate-400 truncate">{selectedContract.activationProofHash}</code>
-                            <button onClick={() => { navigator.clipboard.writeText(selectedContract.activationProofHash!); showToast("Checksum disalin.", "success"); }}
-                              className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-950 rounded-lg cursor-pointer" title="Salin"><Copy className="w-3 h-3" /></button>
-                          </div>
-                          <button onClick={cekIntegritas} disabled={integrityCheck.busy}
-                            className="w-full px-2 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 rounded-lg text-[11px] font-semibold cursor-pointer">
-                            {integrityCheck.busy ? "Memeriksa…" : "Verifikasi Ulang Sekarang"}
-                          </button>
-                          {integrityCheck.match === true && (
-                            <p className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Cocok — berkas belum berubah sejak aktivasi.</p>
-                          )}
-                          {integrityCheck.match === false && (
-                            <p className="text-[11px] text-rose-600 font-semibold">⚠ TIDAK COCOK — berkas di penyimpanan berbeda dari saat aktivasi. Segera periksa.</p>
-                          )}
-                          {integrityCheck.error && (
-                            <p className="text-[11px] text-amber-600">{integrityCheck.error}</p>
-                          )}
-                        </div>
-                      );
-                    })()}
-
-                    {/* SECTION 0: RANGKAP FISIK & METERAI */}
-                    <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5">
-                          <Stamp className="w-4 h-4 text-amber-400" />
-                          Rangkap Fisik & Meterai
-                        </h4>
-                        {(!selectedContract.copies || selectedContract.copies.length === 0) && (
-                          <button
-                            onClick={() => handleUpdateCopy(selectedContract.id, 1, { initCopies: { copyCount: 2, hasMaterai: true } })}
-                            className="text-[10px] px-2 py-1 bg-indigo-600/20 text-indigo-300 border border-indigo-500/30 rounded-lg font-bold cursor-pointer hover:bg-indigo-600/30"
-                          >
-                            + Aktifkan Pelacakan Rangkap
-                          </button>
-                        )}
-                      </div>
-                      {(!selectedContract.copies || selectedContract.copies.length === 0) ? (
-                        <p className="text-[11px] text-slate-500">
-                          Kontrak ini didaftarkan sebelum fitur rangkap ada. Klik tombol di atas untuk mulai melacak rangkap 2 bermeterai (bisa diubah setelahnya).
-                        </p>
-                      ) : (
-                        <div className="space-y-3">
-                          {(selectedContract.copies as ContractCopy[]).map((copy) => (
-                            <div key={copy.index} className="p-3 bg-slate-950 border border-slate-850 rounded-xl space-y-2">
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="text-[11px] font-bold text-slate-200 flex items-center gap-1.5">
-                                  <Layers className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                                  {copy.label}
-                                </p>
-                                {copy.materaiOn && (
-                                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 font-bold uppercase shrink-0">
-                                    Meterai: {copy.materaiOn}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="grid grid-cols-2 gap-2">
-                                <div className="space-y-1">
-                                  <label className="block text-[9px] font-bold text-slate-500 uppercase">Status</label>
-                                  <select
-                                    value={copy.status}
-                                    onChange={(e) => handleUpdateCopy(selectedContract.id, copy.index, { status: e.target.value })}
-                                    className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 focus:outline-none focus:border-indigo-500"
-                                  >
-                                    {!masterData.copyStatuses.includes(copy.status) && (
-                                      <option value={copy.status}>{copy.status}</option>
-                                    )}
-                                    {masterData.copyStatuses.map((s) => (
-                                      <option key={s} value={s}>{s}</option>
-                                    ))}
-                                  </select>
-                                </div>
-                                <div className="space-y-1">
-                                  <label className="block text-[9px] font-bold text-slate-500 uppercase">Pemegang</label>
-                                  <input
-                                    type="text"
-                                    defaultValue={copy.heldBy}
-                                    onBlur={(e) => {
-                                      if (e.target.value !== copy.heldBy) handleUpdateCopy(selectedContract.id, copy.index, { heldBy: e.target.value });
-                                    }}
-                                    className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 focus:outline-none focus:border-indigo-500"
-                                  />
-                                </div>
-                              </div>
-                              {(copy.status === "Dikirim" || copy.status === "Di-assign") && (
-                                <div className="space-y-1">
-                                  <label className="block text-[9px] font-bold text-slate-500 uppercase">Dikirim / Di-assign kepada</label>
-                                  <input
-                                    type="text"
-                                    defaultValue={copy.assignedTo || ""}
-                                    placeholder="Nama penerima rangkap ini"
-                                    onBlur={(e) => {
-                                      if (e.target.value !== (copy.assignedTo || "")) handleUpdateCopy(selectedContract.id, copy.index, { assignedTo: e.target.value });
-                                    }}
-                                    className="w-full px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-100 focus:outline-none focus:border-indigo-500"
-                                  />
-                                </div>
-                              )}
-                              <div className="flex items-center justify-between gap-2 pt-1">
-                                {copy.fileUrl ? (
-                                  <a
-                                    href={copy.fileUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="text-[10px] text-sky-400 hover:underline flex items-center gap-1"
-                                  >
-                                    <ExternalLink className="w-3 h-3" /> Lihat scan rangkap {copy.index}
-                                  </a>
-                                ) : (
-                                  <span className="text-[10px] text-slate-600">Belum ada scan rangkap ini</span>
-                                )}
-                                <label className="text-[10px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-semibold cursor-pointer flex items-center gap-1">
-                                  <Upload className="w-3 h-3" /> {copy.fileUrl ? "Ganti Scan" : "Upload Scan"}
-                                  <input
-                                    type="file"
-                                    accept=".pdf,.jpg,.jpeg,.png"
-                                    className="hidden"
-                                    onChange={(e) => {
-                                      const f = e.target.files?.[0];
-                                      if (f) handleUploadCopyFile(selectedContract.id, copy.index, f);
-                                      e.target.value = "";
-                                    }}
-                                  />
-                                </label>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* SECTION 0B: SHARING FEE & DATA VENDOR/CUSTOMER — hanya
-                        tampil kalau kontrak ini memang memakainya (bukan setiap
-                        kontrak punya sharing fee atau disinkron dari master). */}
-                    {(selectedContract.vendorSnapshot || (selectedContract.sharingFeeItems && selectedContract.sharingFeeItems.length > 0)) && (
-                      <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5">
-                          <Percent className="w-4 h-4 text-emerald-400" />
-                          Sharing Fee & Data Vendor/Customer
-                        </h4>
-                        {selectedContract.vendorSnapshot && (
-                          <div className="p-3 bg-slate-950 border border-slate-850 rounded-xl text-[11px] text-slate-400 space-y-1">
-                            <p className="text-slate-200 font-semibold">{selectedContract.vendorSnapshot.name}</p>
-                            <p>NPWP: <span className="text-slate-300">{selectedContract.vendorSnapshot.npwp || "—"}</span> · PPh23: <span className="text-slate-300">{selectedContract.vendorSnapshot.pphRatePercent !== undefined ? `${selectedContract.vendorSnapshot.pphRatePercent}%` : "—"}</span></p>
-                            {selectedContract.vendorSnapshot.picName && (
-                              <p>PIC: <span className="text-slate-300">{selectedContract.vendorSnapshot.picName}</span>{selectedContract.vendorSnapshot.picPhone ? ` (${selectedContract.vendorSnapshot.picPhone})` : ""}</p>
-                            )}
-                            {selectedContract.vendorSnapshot.bankName && (
-                              <p>Bank: <span className="text-slate-300">{selectedContract.vendorSnapshot.bankName}{selectedContract.vendorSnapshot.bankAccountNumber ? ` · ${selectedContract.vendorSnapshot.bankAccountNumber}` : ""}{selectedContract.vendorSnapshot.bankAccountName ? ` a.n. ${selectedContract.vendorSnapshot.bankAccountName}` : ""}</span></p>
-                            )}
-                          </div>
-                        )}
-                        {selectedContract.sharingFeeItems && selectedContract.sharingFeeItems.length > 0 && (
-                          <div className="space-y-1.5">
-                            {selectedContract.sharingFeeItems.map((item) => (
-                              <div key={item.id} className="flex items-center justify-between px-3 py-2 bg-slate-950 border border-slate-850 rounded-lg text-[11px]">
-                                <span className="text-slate-300">{item.productType}</span>
-                                <span className="text-slate-400 font-mono">
-                                  {item.feeType === "percentage"
-                                    ? `${item.value}%${selectedContract.contractValue > 0 ? ` (≈ Rp ${formatCurrencyDisplay(Math.round(selectedContract.contractValue * item.value / 100))})` : ""}`
-                                    : `Rp ${formatCurrencyDisplay(item.value)}`}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* SECTION 1: VARIABLE EDITING */}
-                    <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5">
-                          <Sliders className="w-4 h-4 text-indigo-400" />
-                          Daftar Variabel Kontrak
-                        </h4>
-                        <span className="text-[10px] text-slate-500">
-                          Live Updates preview
-                        </span>
-                      </div>
-
-                      <div className="space-y-3">
-                        {Object.keys(selectedContract.variables).map(
-                          (varKey) => (
-                            <div key={varKey} className="space-y-1">
-                              <label className="block text-[10px] font-bold text-slate-400">
-                                {varKey}
-                              </label>
-                              <input
-                                type="text"
-                                value={selectedContract.variables[varKey] || ""}
-                                onChange={(e) => {
-                                  const newVal = e.target.value;
-                                  setSelectedContract((prev) => {
-                                    if (!prev) return null;
-                                    return {
-                                      ...prev,
-                                      variables: {
-                                        ...prev.variables,
-                                        [varKey]: newVal,
-                                      },
-                                    };
-                                  });
-                                }}
-                                className="w-full px-2.5 py-1.5 bg-slate-950 border border-slate-850 rounded text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
-                              />
-                            </div>
-                          ),
-                        )}
-                      </div>
-                    </div>
-
-                    {/* SECTION 2: AI LAWS & REGULATION COMPLIANCE CHECK (Fitur Unggulan) */}
-                    <div className="p-4 bg-indigo-950/20 rounded-xl border border-indigo-500/10 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5 text-indigo-400">
-                          <Sparkles className="w-4 h-4 text-amber-400" />
-                          AI Compliance Checker & Policy Review
-                        </h4>
-                        <button
-                          onClick={handleCheckCompliance}
-                          disabled={aiLoading}
-                          className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-[10px] rounded font-bold transition flex items-center gap-1 cursor-pointer"
-                        >
-                          {aiLoading ? (
-                            <RefreshCw className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Sparkles className="w-3 h-3 text-amber-300" />
-                          )}
-                          Tinjau Kepatuhan
-                        </button>
-                      </div>
-
-                      <p className="text-[10px] text-slate-400 leading-relaxed">
-                        AI akan memindai seluruh isi pasal di atas dan
-                        membandingkannya dengan Undang-Undang Ketenagakerjaan
-                        No. 13/2003, UU Cipta Kerja No. 6 Tahun 2023, PP PKWT,
-                        KUHPerdata, dan regulasi korporasi Indonesia terbaru.
-                      </p>
-
-                      {aiReport && (
-                        <div className="space-y-3 max-h-72 overflow-y-auto pr-1 animate-fadeIn">
-                          <div
-                            className={`p-2.5 rounded-lg border text-xs ${
-                              aiReport.isCompliant
-                                ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
-                                : "bg-rose-500/10 border-rose-500/30 text-rose-400"
-                            }`}
-                          >
-                            <p className="font-bold">Status Kepatuhan Hukum:</p>
-                            <p className="text-[10px] text-slate-300 mt-1">
-                              {aiReport.overallSummary}
-                            </p>
-                          </div>
-
-                          {aiReport.violations.length > 0 && (
-                            <div className="space-y-2">
-                              <p className="text-[10px] font-bold text-rose-400">
-                                Temuan Risiko / Ketidaksesuaian (
-                                {aiReport.violations.length}):
-                              </p>
-                              {aiReport.violations.map((violation, idx) => (
-                                <div
-                                  key={idx}
-                                  className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg text-xs space-y-1"
-                                >
-                                  <div className="flex justify-between items-center">
-                                    <span className="font-bold text-slate-200">
-                                      {violation.clauseTitle}
-                                    </span>
-                                    <span className="bg-rose-500/15 text-rose-400 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase">
-                                      {violation.severity} Risk
-                                    </span>
-                                  </div>
-                                  <p className="text-[10px] text-slate-400">
-                                    <strong className="text-slate-300">
-                                      Issue:
-                                    </strong>{" "}
-                                    {violation.issue}
-                                  </p>
-                                  <p className="text-[10px] text-indigo-400 font-mono">
-                                    <strong className="text-slate-400">
-                                      Dasar Regulasi:
-                                    </strong>{" "}
-                                    {violation.regulatoryReference}
-                                  </p>
-                                  <div className="p-1.5 bg-indigo-500/5 rounded border border-indigo-500/10 text-[9px] text-slate-300">
-                                    <strong className="text-indigo-400">
-                                      Saran Perbaikan:
-                                    </strong>{" "}
-                                    {violation.correctionSuggest}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {aiReport.missingEssentialClauses &&
-                            aiReport.missingEssentialClauses.length > 0 && (
-                              <div className="space-y-2">
-                                <p className="text-[10px] font-bold text-amber-400">
-                                  Pasal Esensial yang Hilang (
-                                  {aiReport.missingEssentialClauses.length}):
-                                </p>
-                                {aiReport.missingEssentialClauses.map(
-                                  (clause, idx) => (
-                                    <div
-                                      key={idx}
-                                      className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg text-xs space-y-1"
-                                    >
-                                      <strong className="text-slate-200">
-                                        {clause.title}
-                                      </strong>
-                                      <p className="text-[10px] text-slate-400">
-                                        {clause.importance}
-                                      </p>
-                                      <div className="p-1.5 bg-slate-950 rounded text-[9px] text-indigo-400 border border-slate-850">
-                                        {clause.suggestedText}
-                                      </div>
-                                    </div>
-                                  ),
-                                )}
-                              </div>
-                            )}
-                        </div>
-                      )}
-                    </div>
-
                     {/* SECTION 3: STATUS & SIKLUS KONTRAK (Draft → OnReview →
                         FullyApproved → Aktif → Archived/Terminated) */}
                     <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
@@ -16197,293 +15626,6 @@ export default function App() {
                         </div>
                       </div>
                     )}
-
-                    {/* SECTION 5: HISTORI VERSI & COMPARATOR (VERSION CONTROL) */}
-                    <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                      <h4 className="font-bold text-xs flex items-center gap-1.5">
-                        <History className="w-4 h-4 text-indigo-400" />
-                        Histori Versi Kontrak (Version Control)
-                      </h4>
-
-                      <div className="space-y-2">
-                        {contractVersions.length === 0 ? (
-                          <p className="text-[10px] text-slate-500 italic">
-                            Belum ada versi sebelumnya. Draft saat ini adalah
-                            versi awal.
-                          </p>
-                        ) : (
-                          contractVersions.map((ver) => (
-                            <div
-                              key={ver.id}
-                              className="p-2 bg-slate-950 border border-slate-850 rounded text-xs flex items-center justify-between"
-                            >
-                              <div>
-                                <p className="font-semibold text-slate-200">
-                                  Versi {ver.version}
-                                </p>
-                                <p className="text-[9px] text-slate-500">
-                                  Oleh: {ver.updatedBy} | {ver.comment}
-                                </p>
-                              </div>
-                              <button
-                                onClick={() =>
-                                  setSelectedVersionForCompare(ver)
-                                }
-                                title={`Membandingkan versi ${ver.version} dengan isi dokumen saat ini.`}
-                                className="px-2 py-0.5 bg-indigo-950 hover:bg-indigo-900 text-indigo-400 border border-indigo-900 rounded text-[10px] cursor-pointer"
-                              >
-                                Bandingkan versi ini
-                              </button>
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      {/* Version Compare Modal Drawer */}
-                      {selectedVersionForCompare && (
-                        <div className="bg-slate-950 p-3 rounded-lg border border-indigo-500/20 text-xs space-y-2 animate-fadeIn">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-indigo-400">
-                              Komparasi Versi{" "}
-                              {selectedVersionForCompare.version} vs Saat Ini
-                            </span>
-                            <button
-                              onClick={() => {
-                                setSelectedVersionForCompare(null);
-                                setVersionCompareReport(null);
-                              }}
-                              className="text-slate-500 hover:text-slate-300 text-xs cursor-pointer"
-                            >
-                              Tutup
-                            </button>
-                          </div>
-
-                          <div className="flex justify-between items-center my-2 border-b border-slate-800 pb-2">
-                            <button
-                              onClick={handleAICompareVersions}
-                              disabled={aiLoading}
-                              className="px-2 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[10px] flex items-center gap-1 cursor-pointer transition disabled:opacity-50"
-                            >
-                              {aiLoading ? (
-                                <RefreshCw className="w-3 h-3 animate-spin" />
-                              ) : (
-                                <Sparkles className="w-3 h-3 text-amber-300" />
-                              )}
-                              Generate AI Change Summary & Auto Addendum
-                            </button>
-                          </div>
-
-                          {versionCompareReport && (
-                            <div className="space-y-3 p-2 bg-slate-900 border border-slate-800 rounded animate-fadeIn mb-2">
-                              <div>
-                                <p className="text-[10px] font-bold text-emerald-400 mb-1">
-                                  AI Change Summary
-                                </p>
-                                <ul className="list-disc pl-4 text-[9px] text-slate-300 space-y-0.5">
-                                  {versionCompareReport.summary.map((s, i) => (
-                                    <li key={i}>{s}</li>
-                                  ))}
-                                </ul>
-                              </div>
-                              <div>
-                                <p className="text-[10px] font-bold text-amber-400 mb-1">
-                                  Legal Impact:{" "}
-                                  {versionCompareReport.legalImpact}
-                                </p>
-                              </div>
-                              <div>
-                                <p className="text-[10px] font-bold text-indigo-400 mb-1">
-                                  Auto Addendum Draft:
-                                </p>
-                                <div className="bg-slate-950 p-2 rounded border border-slate-800 text-[9px] text-slate-400 italic">
-                                  {versionCompareReport.addendumDraft}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          <div className="space-y-2 max-h-40 overflow-y-auto">
-                            <p className="font-bold text-slate-400 text-[10px]">
-                              Perubahan Klausul Terdeteksi:
-                            </p>
-                            {selectedVersionForCompare.clauses.map(
-                              (oldClause, idx) => {
-                                const currentClause =
-                                  selectedContract.clauses.find(
-                                    (c) => c.id === oldClause.id,
-                                  );
-                                const isDiff =
-                                  currentClause &&
-                                  currentClause.content !== oldClause.content;
-                                return (
-                                  <div
-                                    key={idx}
-                                    className="p-2 rounded bg-slate-900 space-y-1"
-                                  >
-                                    <span className="font-bold block text-slate-300">
-                                      {oldClause.title}
-                                    </span>
-                                    {isDiff ? (
-                                      <div className="grid grid-cols-2 gap-2 text-[9px]">
-                                        <div className="p-1 bg-rose-500/10 text-rose-300 rounded">
-                                          <span className="font-bold">
-                                            Lama:
-                                          </span>{" "}
-                                          {oldClause.content.slice(0, 80)}...
-                                        </div>
-                                        <div className="p-1 bg-emerald-500/10 text-emerald-300 rounded">
-                                          <span className="font-bold">
-                                            Baru:
-                                          </span>{" "}
-                                          {currentClause.content.slice(0, 80)}
-                                          ...
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <span className="text-[9px] text-slate-500">
-                                        Tidak ada perubahan
-                                      </span>
-                                    )}
-                                  </div>
-                                );
-                              },
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* SECTION 3: AI RISK ANALYSIS */}
-                    <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5 text-rose-400">
-                          <AlertTriangle className="w-4 h-4 text-rose-400" />
-                          AI Risk Analysis
-                        </h4>
-                        <button
-                          onClick={handleAIRiskAnalysis}
-                          disabled={aiLoading}
-                          className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 disabled:bg-slate-800 text-white text-[10px] rounded font-bold transition flex items-center gap-1 cursor-pointer"
-                        >
-                          {aiLoading ? (
-                            <RefreshCw className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Sparkles className="w-3 h-3 text-amber-300" />
-                          )}
-                          Analisis Risiko
-                        </button>
-                      </div>
-
-                      {riskReport && (
-                        <div className="space-y-3 animate-fadeIn">
-                          <div className="flex items-center gap-4 p-3 bg-slate-950 rounded border border-slate-800">
-                            <div className="text-center">
-                              <span
-                                className={`text-2xl font-bold ${riskReport.riskScore > 70 ? "text-rose-400" : riskReport.riskScore > 30 ? "text-amber-400" : "text-emerald-400"}`}
-                              >
-                                {riskReport.riskScore}
-                              </span>
-                              <span className="block text-[8px] uppercase text-slate-500">
-                                Risk Score
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-slate-300 flex-1">
-                              {riskReport.summary}
-                            </p>
-                          </div>
-
-                          {riskReport.inconsistencies.length > 0 && (
-                            <div>
-                              <p className="text-[10px] font-bold text-amber-400 mb-1">
-                                Inkonsistensi (
-                                {riskReport.inconsistencies.length}):
-                              </p>
-                              <ul className="list-disc pl-4 text-[10px] text-slate-400 space-y-1">
-                                {riskReport.inconsistencies.map((inc, i) => (
-                                  <li key={i}>{inc}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          {riskReport.missingClauses.length > 0 && (
-                            <div>
-                              <p className="text-[10px] font-bold text-rose-400 mb-1">
-                                Klausul Hilang (
-                                {riskReport.missingClauses.length}):
-                              </p>
-                              <ul className="list-disc pl-4 text-[10px] text-slate-400 space-y-1">
-                                {riskReport.missingClauses.map((mc, i) => (
-                                  <li key={i}>{mc}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          {riskReport.emptyVariables.length > 0 && (
-                            <div>
-                              <p className="text-[10px] font-bold text-indigo-400 mb-1">
-                                Variabel Kosong (
-                                {riskReport.emptyVariables.length}):
-                              </p>
-                              <ul className="list-disc pl-4 text-[10px] text-slate-400 space-y-1">
-                                {riskReport.emptyVariables.map((ev, i) => (
-                                  <li key={i}>{ev}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* SECTION 4: AI LEGAL COPILOT */}
-                    <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 flex flex-col h-64">
-                      <div className="flex items-center justify-between mb-3 shrink-0">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5 text-indigo-400">
-                          <User className="w-4 h-4 text-indigo-400" />
-                          AI Legal Copilot
-                        </h4>
-                      </div>
-
-                      <div className="flex-1 overflow-y-auto space-y-3 pr-2 mb-3">
-                        {copilotHistory.map((chat, i) => (
-                          <div key={i} className="space-y-1">
-                            <div className="bg-indigo-600/20 text-indigo-200 text-[10px] p-2 rounded-lg rounded-tr-none ml-4 text-right">
-                              {chat.q}
-                            </div>
-                            <div className="bg-slate-800 text-slate-300 text-[10px] p-2 rounded-lg rounded-tl-none mr-4">
-                              {chat.a}
-                            </div>
-                          </div>
-                        ))}
-                        {copilotHistory.length === 0 && (
-                          <div className="text-[10px] text-slate-500 text-center mt-4">
-                            Tanyakan sesuatu tentang kontrak ini. Contoh:
-                            "Apakah ada penalti keterlambatan?"
-                          </div>
-                        )}
-                      </div>
-
-                      <form
-                        onSubmit={handleCopilotChat}
-                        className="flex gap-2 shrink-0"
-                      >
-                        <input
-                          type="text"
-                          value={copilotQuestion}
-                          onChange={(e) => setCopilotQuestion(e.target.value)}
-                          placeholder="Tanya Copilot..."
-                          className="flex-1 bg-slate-950 border border-slate-800 rounded px-2 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
-                        />
-                        <button
-                          type="submit"
-                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 rounded text-xs cursor-pointer"
-                        >
-                          Kirim
-                        </button>
-                      </form>
-                    </div>
                   </div>
                 </div>
               </div>

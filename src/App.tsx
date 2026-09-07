@@ -10545,15 +10545,13 @@ export default function App() {
                         {sharingFeeStats.pctContracts} <span className="text-sm font-medium text-slate-400">kontrak</span>
                       </p>
                       <p className="text-[11px] text-slate-500 mt-0.5">
-                        {sharingFeeStats.pctEstCoveredContracts > 0
-                          ? <>est. ± Rp {sharingFeeStats.pctEstSum.toLocaleString("id-ID")} <span className="text-slate-600">(dari {sharingFeeStats.pctEstCoveredContracts} kontrak yg nilainya diketahui)</span></>
-                          : "tidak diangkakan ke rupiah (nilai kontrak tak pasti)"}
+                        {sharingFeeStats.pctContracts > 0 ? "kontrak aktif dengan fee persentase" : "belum ada fee persentase"}
                       </p>
                     </div>
                   </div>
                   <p className="text-[10px] text-slate-600 flex items-start gap-1.5">
                     <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-slate-500" />
-                    Fee persentase tidak dijumlahkan ke dalam total rupiah — satuannya berbeda. Angka "est." hanya perkiraan dari nilai kontrak yang sudah diisi, bisa berubah mengikuti realisasi.
+                    Fee persentase tidak dijumlahkan ke dalam total rupiah — satuannya berbeda, sehingga hanya ditampilkan sebagai jumlah kontrak.
                   </p>
                 </div>
               )}

@@ -14723,18 +14723,51 @@ export default function App() {
                           atau format Addendum kalau kontrak ini mengamandemen
                           kontrak lain (amendsContractId terisi) */}
                       <div className={`text-center space-y-1 ${isExportingPdf ? "pb-2" : "pb-4"}`}>
-                        {selectedContractAddendumInfo ? (
-                          <>
-                            <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
-                              ADDENDUM {selectedContractAddendumInfo.ordinal.toUpperCase()}
-                            </h4>
-                            <p className="text-xs text-slate-400 uppercase">
-                              {selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian"}
-                            </p>
-                            <p className="text-xs text-slate-400">{selectedContract.title}</p>
-                            <p className="text-xs tracking-wider">No: {selectedContract.contractNumber}</p>
-                          </>
-                        ) : (() => {
+                        {selectedContractAddendumInfo ? (() => {
+                          const docLang = selectedContract.documentLanguage || "id";
+                          // Sebelumnya header Addendum ini hardcoded Bahasa Indonesia
+                          // apa pun toggle bahasanya — beda dari header kontrak biasa
+                          // di bawah yang sudah docLang-aware (docTypeEn/titleEn).
+                          // titleEn di sini pakai punya SELECTEDCONTRACT SENDIRI (si
+                          // addendum), bukan parent — addendum ini juga diterjemahkan
+                          // lewat /translate yang sama seperti kontrak biasa.
+                          const ADDENDUM_ORDINALS_EN = ["", "First", "Second", "Third", "Fourth", "Fifth", "Sixth", "Seventh", "Eighth", "Ninth", "Tenth", "Eleventh", "Twelfth", "Thirteenth", "Fourteenth", "Fifteenth"];
+                          const ordinalEn = ADDENDUM_ORDINALS_EN[selectedContractAddendumInfo.sequence] || `No. ${selectedContractAddendumInfo.sequence}`;
+                          const parentLabelId = selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian";
+                          const parentLabelEn = selectedContractAddendumInfo.parent?.docTypeEn || selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Agreement";
+                          const titleEn = selectedContract.titleEn || selectedContract.title;
+                          const hasHeaderEn = !!selectedContract.titleEn;
+                          const idBlock = (
+                            <>
+                              <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
+                                ADDENDUM {selectedContractAddendumInfo.ordinal.toUpperCase()}
+                              </h4>
+                              <p className="text-xs text-slate-400 uppercase">{parentLabelId}</p>
+                              <p className="text-xs text-slate-400">{selectedContract.title}</p>
+                              <p className="text-xs tracking-wider">No: {selectedContract.contractNumber}</p>
+                            </>
+                          );
+                          const enBlock = (
+                            <>
+                              <h4 className="font-bold text-slate-100 tracking-wide text-base uppercase">
+                                {ordinalEn.toUpperCase()} ADDENDUM
+                              </h4>
+                              <p className="text-xs text-slate-400 uppercase">{parentLabelEn}</p>
+                              <p className="text-xs text-slate-400">{titleEn}</p>
+                              <p className="text-xs tracking-wider">No: {selectedContract.contractNumber}</p>
+                            </>
+                          );
+                          if (docLang === "en" && hasHeaderEn) return enBlock;
+                          if (docLang === "bilingual" && hasHeaderEn) {
+                            return (
+                              <div className="flex gap-3 text-center">
+                                <div className="flex-1 min-w-0 space-y-1">{idBlock}</div>
+                                <div className="flex-1 min-w-0 space-y-1">{enBlock}</div>
+                              </div>
+                            );
+                          }
+                          return idBlock;
+                        })() : (() => {
                           const docLang = selectedContract.documentLanguage || "id";
                           // docTypeEn/titleEn diisi server saat /translate — sebelumnya tidak
                           // pernah dibaca di sini, jadi header (jenis surat + judul) selalu
@@ -14864,6 +14897,13 @@ export default function App() {
                         // Indonesia walau mode dokumen "en"/"bilingual" (cuma pasal
                         // biasa yang ikut berubah bahasa, recital-nya tidak).
                         const hasRecitalEn = !!selectedContract.addendumRecitalEn;
+                        // Sebelumnya tanggal parent/previous dipakai MENTAH (ISO
+                        // "2026-07-01") di sini — beda dari narasi pembuka biasa yang
+                        // StartDate-nya sudah diformat panjang (lihat
+                        // getPreambleTemplateAndTokens). Diformat sama supaya gaya
+                        // tanggalnya konsisten se-dokumen, bukan cuma di narasi pembuka.
+                        const fmtIdDate = (d?: string) =>
+                          d ? new Date(d).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" }) : "";
                         const idContent = (
                           <p>
                             {selectedContractTemplate?.addendumRecitalParagraph ? (
@@ -14871,28 +14911,28 @@ export default function App() {
                                 ...selectedContract.variables,
                                 ParentDocType: selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian",
                                 ParentNumber: selectedContractAddendumInfo.parent?.contractNumber || "",
-                                ParentDate: selectedContractAddendumInfo.parent?.startDate || "",
-                                ParentEndDate: selectedContractAddendumInfo.parent?.endDate || "",
+                                ParentDate: fmtIdDate(selectedContractAddendumInfo.parent?.startDate),
+                                ParentEndDate: fmtIdDate(selectedContractAddendumInfo.parent?.endDate),
                                 PreviousOrdinal: previousAddendumOrdinal || "",
                                 PreviousNumber: selectedContractAddendumInfo.previous?.contractNumber || "",
-                                PreviousDate: selectedContractAddendumInfo.previous?.startDate || "",
+                                PreviousDate: fmtIdDate(selectedContractAddendumInfo.previous?.startDate),
                               })
                             ) : (
                               <>
                                 Bahwa PARA PIHAK telah membuat dan menandatangani{" "}
                                 {selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian"}{" "}
                                 Nomor <strong>{selectedContractAddendumInfo.parent?.contractNumber}</strong> tanggal{" "}
-                                <strong>{selectedContractAddendumInfo.parent?.startDate}</strong>
+                                <strong>{fmtIdDate(selectedContractAddendumInfo.parent?.startDate)}</strong>
                                 {selectedContractAddendumInfo.previous && (
                                   <>
                                     , yang telah diubah terakhir kali melalui Addendum{" "}
                                     {previousAddendumOrdinal} Nomor{" "}
                                     <strong>{selectedContractAddendumInfo.previous.contractNumber}</strong> tanggal{" "}
-                                    <strong>{selectedContractAddendumInfo.previous.startDate}</strong>
+                                    <strong>{fmtIdDate(selectedContractAddendumInfo.previous.startDate)}</strong>
                                   </>
                                 )}
                                 {" "}(selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut
-                                akan berakhir pada tanggal <strong>{selectedContractAddendumInfo.parent?.endDate}</strong>.
+                                akan berakhir pada tanggal <strong>{fmtIdDate(selectedContractAddendumInfo.parent?.endDate)}</strong>.
                                 Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah
                                 ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:
                               </>
@@ -14903,7 +14943,14 @@ export default function App() {
                         // addendumRecitalEn sudah dibekukan nilainya (ParentNumber dkk
                         // sudah disubstitusi di server, lihat composeAddendumRecitalForTranslation)
                         // — render dgn tokens KOSONG, persis pola preambleEn.
-                        const enContent = <p>{renderClauseContent(String(selectedContract.addendumRecitalEn), {})}</p>;
+                        // renderClauseContent TIDAK memahami **tebal** markdown (cuma
+                        // substitusi {{token}} + passthrough HTML) — addendumRecitalEn
+                        // berisi **tebal** ala AI penerjemah (lihat
+                        // composeAddendumRecitalForTranslation di server), jadi dulu
+                        // tanda bintangnya muncul apa adanya, bukan jadi tebal beneran.
+                        // renderPreambleBlock paham **tebal** (dan tetap aman kalau
+                        // isinya HTML), sama seperti dipakai preambleEn di atas.
+                        const enContent = <>{renderPreambleBlock(String(selectedContract.addendumRecitalEn), {})}</>;
                         if (docLang === "en") return enContent;
                         return (
                           <div className="flex gap-3">
@@ -15208,7 +15255,9 @@ export default function App() {
                         // supaya tetap sinkron kalau isian variabel diedit belakangan.
                         const hasClosingEn = !!selectedContract.closingParagraphEn;
                         if (!hasClosingEn || docLang === "id") return idContent;
-                        const enContent = <p>{renderClauseContent(String(selectedContract.closingParagraphEn), selectedContract.variables)}</p>;
+                        // Sama seperti fix addendumRecitalEn di atas — renderPreambleBlock
+                        // paham **tebal**, renderClauseContent tidak.
+                        const enContent = <>{renderPreambleBlock(String(selectedContract.closingParagraphEn), selectedContract.variables)}</>;
                         if (docLang === "en") return enContent;
                         return (
                           <div className="flex gap-3">

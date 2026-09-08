@@ -5021,7 +5021,7 @@ function composeContractPreambleForTranslation(db: any, contract: Contract, sour
 // historis yang jarang berubah setelah addendum ini final, jadi hasil
 // terjemahannya aman disimpan sebagai teks jadi (frontend render dgn tokens
 // kosong, persis preambleEn — lihat addendumRecitalEn di src/App.tsx).
-function composeAddendumRecitalForTranslation(db: any, contract: Contract): string | undefined {
+function composeAddendumRecitalForTranslation(db: any, contract: Contract, sourceLang: "id" | "en"): string | undefined {
   if (!contract.amendsContractId) return undefined;
   const info = getAddendumInfoServer(db, contract);
   if (!info) return undefined;
@@ -5029,15 +5029,22 @@ function composeAddendumRecitalForTranslation(db: any, contract: Contract): stri
     contract.templateSnapshot?.addendumRecitalParagraph ||
     (db.templates as Template[]).find((t) => t.id === contract.templateId)?.addendumRecitalParagraph;
   const previousOrdinal = info.previous ? (getAddendumInfoServer(db, info.previous)?.ordinal || "") : "";
+  // Sama seperti composeContractPreambleForTranslation: format tanggal jadi
+  // kalimat panjang (bukan ISO mentah "2026-07-01") SEBELUM dikirim ke AI,
+  // supaya AI ikut menerjemahkan/melokalkan tanggalnya juga — kalau dikirim
+  // mentah, prompt yang minta AI "mempertahankan tanggal apa adanya" bikin
+  // tanggalnya nyangkut ISO di kedua bahasa (baik ID maupun EN).
+  const fmtDate = (d?: string) =>
+    d ? new Date(d).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { day: "numeric", month: "long", year: "numeric" }) : "";
   if (template) {
     const tokens: Record<string, string> = {
       ParentDocType: info.parent?.docType || info.parent?.category || "Perjanjian",
       ParentNumber: info.parent?.contractNumber || "",
-      ParentDate: info.parent?.startDate || "",
-      ParentEndDate: info.parent?.endDate || "",
+      ParentDate: fmtDate(info.parent?.startDate),
+      ParentEndDate: fmtDate(info.parent?.endDate),
       PreviousOrdinal: previousOrdinal,
       PreviousNumber: info.previous?.contractNumber || "",
-      PreviousDate: info.previous?.startDate || "",
+      PreviousDate: fmtDate(info.previous?.startDate),
     };
     return template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
   }
@@ -5045,9 +5052,9 @@ function composeAddendumRecitalForTranslation(db: any, contract: Contract): stri
   // — kalau JSX itu diubah, sinkronkan juga di sini.
   const parentLabel = info.parent?.docType || info.parent?.category || "Perjanjian";
   const previousClause = info.previous
-    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${info.previous.startDate}**`
+    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${fmtDate(info.previous.startDate)}**`
     : "";
-  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${info.parent?.startDate || ""}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${info.parent?.endDate || ""}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
+  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${fmtDate(info.parent?.startDate)}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${fmtDate(info.parent?.endDate)}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
 }
 
 // Teks sumber utk terjemahan paragraf PENUTUP addendum ("Demikian Addendum
@@ -5110,7 +5117,7 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
 
   const preambleSource = composeContractPreambleForTranslation(db, contract, sourceLang);
   const isAddendum = !!contract.amendsContractId;
-  const addendumRecitalSource = isAddendum ? composeAddendumRecitalForTranslation(db, contract) : undefined;
+  const addendumRecitalSource = isAddendum ? composeAddendumRecitalForTranslation(db, contract, sourceLang) : undefined;
   const addendumClosingSource = isAddendum ? composeAddendumClosingForTranslation(db, contract) : undefined;
   const docTypeSource = contract.docType || "Surat Perjanjian Kerjasama";
   const payload = {

@@ -216,7 +216,14 @@ export interface Contract {
   // tampil bahasa aslinya (lihat /api/contracts/:id/translate) sampai
   // diterjemahkan ulang atau dikoreksi manual.
   translationWarnings?: string[];
-  preambleEn?: string; // terjemahan narasi pembuka (dipakai mode en/bilingual)
+  preambleEn?: string; // terjemahan narasi pembuka (dipakai mode en/bilingual) — BISA diedit manual di editor
+  // Salinan hasil AI translate ASLI untuk preambleEn di atas, TIDAK PERNAH
+  // ikut diedit manual — dipakai tombol "Kembalikan ke bawaan" di editor EN
+  // supaya user bisa balik ke hasil terjemahan AI kalau editannya sendiri
+  // ternyata salah, tanpa perlu menerjemahkan ulang seluruh dokumen (yang
+  // akan ikut menimpa editan manual di pasal lain). Diisi bersamaan dengan
+  // preambleEn tiap kali /translate sukses (lihat server.ts).
+  preambleEnOriginal?: string;
   titleEn?: string; // terjemahan judul dokumen (header) — dipakai mode en/bilingual
   docTypeEn?: string; // terjemahan jenis surat, mis. "Cooperation Agreement Letter" — dipakai mode en/bilingual
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF

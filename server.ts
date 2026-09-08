@@ -3486,6 +3486,7 @@ app.post("/api/contracts/:id/ocr", requireAuth, async (req: AuthedRequest, res) 
     // ulang saat toggle EN/ID+EN dipilih lagi (lihat handleSetDocumentLanguage).
     if (contract.preambleEn || contract.translationUpdatedAt) {
       contract.preambleEn = undefined;
+      contract.preambleEnOriginal = undefined;
       contract.translationUpdatedAt = undefined;
       contract.translationSimulated = undefined;
       contract.translationWarnings = undefined;
@@ -5107,6 +5108,7 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
       warnings.push("Narasi Pembuka");
     } else {
       contract.preambleEn = fixedPreamble || contract.preambleEn;
+      contract.preambleEnOriginal = fixedPreamble || contract.preambleEnOriginal;
     }
     // Judul dokumen & jenis surat (header) — teksnya pendek dan jarang memuat
     // token {{Variabel}}, jadi cukup dipakai langsung kalau ada hasilnya.

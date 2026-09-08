@@ -2010,6 +2010,16 @@ export default function App() {
   // user masih mengetik.
   const [dcsNumberingRule, setDcsNumberingRule] = useState<{ id: string; tenantId: string; mask: string; scopeTokens: string[]; isOverride: boolean } | null>(null);
   const [dcsNumberingMaskDraft, setDcsNumberingMaskDraft] = useState("");
+  // Toggle tampilan (UI-only, TIDAK dikirim ke server) untuk kartu gabungan
+  // "Format Nomor Dokumen" & "Margin Halaman Dokumen" di tab Format Nomor
+  // Default & Dropdown. Satu kartu, dua mode — DCS masih baca/tulis
+  // dcsNumberingMaskDraft/dcsPageMargins, Kontrak masih baca/tulis
+  // masterData.defaultNumberMask/contractPageMargins — cuma tampilannya yang
+  // digabung supaya orang awam tidak perlu bolak-balik 2 kartu terpisah untuk
+  // konsep yang serupa. Dua state terpisah (bukan satu) supaya user bisa
+  // sedang lihat Format Nomor Kontrak sambil Margin masih di mode DCS, dst.
+  const [numberFormatModule, setNumberFormatModule] = useState<"dcs" | "kontrak">("dcs");
+  const [marginModule, setMarginModule] = useState<"dcs" | "kontrak">("dcs");
   // Rule override milik SATU jenis dokumen yang sedang dibuka di form edit
   // (dcsDocTypeForm) — state TERPISAH dari dcsNumberingRule di atas (bukan
   // dipakai bersama) supaya kartu format default dan panel override per-jenis
@@ -4905,17 +4915,20 @@ export default function App() {
   // tersimpan di kontrak (lihat /translate).
   const handleSetDocumentLanguage = async (lang: "id" | "en" | "bilingual") => {
     if (!selectedContract) return;
-    // needsTranslation juga true kalau titleEn/docTypeEn belum ada — ini
-    // indikasi kontrak ini diterjemahkan pakai versi server yang LEBIH LAMA
-    // (sebelum header + format tanggal/bold ikut diterjemahkan). Tanpa cek
-    // ini, kontrak yang sudah py contentEn dari terjemahan lama tidak akan
-    // PERNAH manggil /translate lagi walau tombol EN/ID+EN diklik ulang —
-    // cuma toggle documentLanguage, jadi header & narasi pembuka permanen
-    // ketinggalan format lama (tanggal ISO, tanpa bold, tanpa versi Inggris).
+    // needsTranslation juga true kalau titleEn/docTypeEn/preambleEn belum
+    // ada — ini indikasi kontrak ini diterjemahkan pakai versi server yang
+    // LEBIH LAMA (sebelum header + format tanggal/bold ikut diterjemahkan),
+    // ATAU salah satu field itu baru saja dikosongkan otomatis karena
+    // sumbernya diedit (lihat handleSaveEditPartyModal — fix bug "qqq").
+    // Tanpa cek ini, kontrak yang sudah py contentEn dari terjemahan lama
+    // tidak akan PERNAH manggil /translate lagi walau tombol EN/ID+EN
+    // diklik ulang — cuma toggle documentLanguage, jadi header & narasi
+    // pembuka permanen ketinggalan format lama/basi (tanpa versi Inggris).
     const needsTranslation = lang !== "id" && (
       !selectedContract.clauses.some((c) => c.contentEn)
       || !selectedContract.titleEn
       || !selectedContract.docTypeEn
+      || !selectedContract.preambleEn
     );
     if (!needsTranslation) {
       const updated = { ...selectedContract, documentLanguage: lang };
@@ -5052,10 +5065,38 @@ export default function App() {
       showToast("Nama Pihak Kedua tidak boleh kosong", "warning");
       return;
     }
+
+    const newTitle = editPartyForm.title.trim();
+    const newDocType = editPartyForm.docType.trim() || undefined;
+
+    // BUG: field-field ini semua ikut ditanam sbg nilai ASLI (bukan token
+    // {{...}} yang disubstitusi ulang tiap render) ke dalam titleEn/docTypeEn/
+    // preambleEn saat /translate (lihat composeContractPreambleForTranslation
+    // & endpoint /api/contracts/:id/translate di server). Dulu modal ini cuma
+    // update field ID-nya tanpa membersihkan padanan *_En — begitu salah satu
+    // diedit di sini, sisi Inggris yang sudah tersimpan jadi basi/tidak
+    // nyambung lagi dengan data ID yang baru (mis. judul diganti tapi titleEn
+    // lama ikut kebawa terus tanpa disadari — persis laporan bug "qqq").
+    // Dibandingkan dulu vs form baru di SINI (sebelum overwrite di bawah),
+    // supaya tahu persis field mana yang benar-benar berubah.
+    const titleChanged = newTitle !== selectedContract.title;
+    const docTypeChanged = newDocType !== (selectedContract.docType || undefined);
+    const preambleFieldsChanged =
+      editPartyForm.startDate !== selectedContract.startDate ||
+      editPartyForm.party1Address.trim() !== (selectedContract.party1Address || "") ||
+      editPartyForm.party1Position.trim() !== (selectedContract.party1Position || "") ||
+      editPartyForm.party1IdLabel.trim() !== (selectedContract.party1IdLabel || "") ||
+      editPartyForm.party1IdNumber.trim() !== (selectedContract.party1IdNumber || "") ||
+      editPartyForm.party2Name.trim() !== (selectedContract.party2Name || "") ||
+      editPartyForm.party2Address.trim() !== (selectedContract.party2Address || "") ||
+      editPartyForm.party2Position.trim() !== (selectedContract.party2Position || "") ||
+      editPartyForm.party2IdLabel.trim() !== (selectedContract.party2IdLabel || "") ||
+      editPartyForm.party2IdNumber.trim() !== (selectedContract.party2IdNumber || "");
+
     setSelectedContract({
       ...selectedContract,
-      title: editPartyForm.title.trim(),
-      docType: editPartyForm.docType.trim() || undefined,
+      title: newTitle,
+      docType: newDocType,
       startDate: editPartyForm.startDate,
       party1Address: editPartyForm.party1Address.trim() || undefined,
       party1Position: editPartyForm.party1Position.trim() || undefined,
@@ -5070,9 +5111,27 @@ export default function App() {
       party2LogoUrl: editPartyForm.party2LogoUrl.trim() || undefined,
       party2LogoKey: editPartyForm.party2LogoKey.trim() || undefined,
       party2LogoMimeType: editPartyForm.party2LogoMimeType.trim() || undefined,
+      // Bersihkan HANYA padanan *_En yang sumbernya benar-benar berubah —
+      // titleEn/docTypeEn independen satu sama lain, dan keduanya independen
+      // dari preambleEn. Kosong = jatuh ke fallback yang SUDAH ADA (titleEn
+      // || title di header, !hasPreambleEn → tampil idContent) — bukan
+      // perilaku baru, cuma memicu fallback itu dgn benar alih-alih
+      // membiarkan teks basi nyangkut.
+      ...(titleChanged ? { titleEn: undefined } : {}),
+      ...(docTypeChanged ? { docTypeEn: undefined } : {}),
+      ...(preambleFieldsChanged ? {
+        preambleEn: undefined,
+        preambleEnOriginal: undefined,
+        translationWarnings: undefined,
+      } : {}),
     });
     setEditPartyModalContract(null);
-    showToast("Perubahan diterapkan ke draft — klik \"Simpan Draft Baru\" untuk menyimpan.", "info");
+    showToast(
+      (titleChanged || docTypeChanged || preambleFieldsChanged)
+        ? "Perubahan diterapkan ke draft. Versi Inggris yang terpengaruh dikosongkan — buka toggle EN/ID+EN lagi untuk menerjemahkan ulang."
+        : "Perubahan diterapkan ke draft — klik \"Simpan Draft Baru\" untuk menyimpan.",
+      "info",
+    );
   };
 
   // Open the Extend/Renew preview modal, prefilled with a suggested next period
@@ -6863,6 +6922,7 @@ export default function App() {
     if (k === "pengguna") { fetchTenantUsers(); if (currentUser?.role === "super_admin") fetchAllTenants(); }
     if (k === "perusahaan") { fetchAllTenants(); fetchBackups(); fetchEmailStatus(); fetchStorageStatus(); }
     if (k === "dcsdoctypes") { fetchDcsDocTypes(); fetchDcsNumberingRule(); }
+    if (k === "masterdata") fetchDcsNumberingRule();
     if (k === "dcsclauses") fetchDcsClauses();
   };
 
@@ -6874,7 +6934,7 @@ export default function App() {
     { label: "Identitas Perusahaan", hint: "Nama, logo, alamat, kop surat", keywords: "perusahaan identitas logo alamat kop surat nama company letterhead", tab: "app" },
     { label: "e-Meterai & Tanda Tangan", hint: "Metode meterai & tanda tangan", keywords: "meterai emeterai e-meterai tanda tangan ttd signature materai", tab: "app" },
     { label: "Jenis Dokumen (Semua Modul) & Format Nomornya", hint: "DCS, Kontrak Eksternal & Karyawan — kode, format nomor, judul bagian", keywords: "jenis dokumen tipe doctype semua modul dcs sop ik kebijakan memo kontrak eksternal karyawan bagian section judul heading template rename tambah kode format nomor penomoran mask", tab: "dcsdoctypes" },
-    { label: "Format Nomor Default & Dropdown", hint: "Format nomor bawaan, prefix, tipe pihak, mata uang", keywords: "nomor penomoran format masker mask prefix urut sequence numbering default dropdown tipe pihak mata uang currency status departemen", tab: "masterdata" },
+    { label: "Format Nomor Default & Dropdown", hint: "Format nomor & margin bawaan (DCS + Kontrak), prefix, tipe pihak, mata uang", keywords: "nomor penomoran format masker mask prefix urut sequence numbering default dropdown tipe pihak mata uang currency status departemen margin halaman kertas dcs kontrak", tab: "masterdata" },
     { label: "Klausul Kontrak & Template", hint: "Pustaka pasal + template kontrak", keywords: "klausul pasal kontrak template library pustaka clause", tab: "clauses", main: "clauses" },
     { label: "Narasi Pembuka & Para Pihak", hint: "Kalimat pembuka + identifikasi pihak (per kategori)", keywords: "narasi pembuka para pihak pihak pertama kedua kalimat preamble opening alamat jabatan", tab: "clauses", main: "clauses" },
     { label: "Klausul DCS (SOP/IK)", hint: "Pustaka klausul dokumen internal", keywords: "klausul dcs sop ik internal dokumen clause", tab: "dcsclauses" },
@@ -11134,31 +11194,186 @@ export default function App() {
                       </button>
                     </div>
 
-                    {/* Margin halaman PDF kontrak (mm) — beda mesin dari margin DCS
-                        (kontrak = screenshot preview via html2canvas, bukan digambar
-                        pdf-lib), jadi butuh setting terpisah dari "Margin Halaman
-                        Dokumen" di tab Jenis Dokumen (yang cuma berlaku utk DCS). */}
+                    {/* ==== Format Nomor Dokumen — SATU kartu, dua mode ====
+                        Sebelumnya 2 kartu terpisah ("Format Nomor Dokumen DCS"
+                        & "Format Nomor Dokumen Kontrak") dengan mekanisme
+                        simpan yang beda di baliknya: DCS punya tabel rule
+                        sendiri di Postgres (disimpan lewat tombol "Simpan"
+                        khusus di sini → handleSaveDcsNumberingRule), Kontrak
+                        cuma field JSON di appSettings.masterData (ikut
+                        tersimpan lewat tombol "Simpan Master Data" di atas
+                        halaman). Digabung jadi 1 kartu dengan toggle supaya
+                        orang awam tidak bingung ada 2 kartu mirip — tapi
+                        state & endpoint di baliknya TETAP terpisah persis
+                        seperti sebelumnya, cuma switch tampilan saja. */}
                     <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
-                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                        <FileText className="w-4 h-4 text-violet-400" /> Margin Halaman Kontrak (mm)
-                      </h4>
-                      <p className="text-[10px] text-slate-500">
-                        Berlaku untuk PDF Kontrak Eksternal &amp; Kontrak Karyawan (hasil "Export to PDF" dari preview kontrak). Terpisah dari margin dokumen DCS di tab Jenis Dokumen. Tidak ada standar hukum wajib untuk kontrak bisnis (beda dengan naskah dinas pemerintah) — default 30/30/30/30 (3cm rata) mengikuti konvensi profesional umum. Isi 40 di Kiri kalau dokumen akan dijilid.
-                      </p>
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                        {([["top", "Atas"], ["right", "Kanan"], ["bottom", "Bawah"], ["left", "Kiri"]] as const).map(([side, label]) => (
-                          <div key={side} className="space-y-1">
-                            <label className="text-[10px] text-slate-500">{label}</label>
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          <FileDigit className="w-4 h-4 text-violet-400" /> Format Nomor Dokumen
+                        </h4>
+                        <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setNumberFormatModule("dcs")}
+                            className={`px-3 py-1 rounded-md text-[10px] font-bold cursor-pointer transition ${numberFormatModule === "dcs" ? "bg-violet-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                          >
+                            DCS
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNumberFormatModule("kontrak")}
+                            className={`px-3 py-1 rounded-md text-[10px] font-bold cursor-pointer transition ${numberFormatModule === "kontrak" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                          >
+                            Kontrak
+                          </button>
+                        </div>
+                      </div>
+
+                      {numberFormatModule === "dcs" ? (
+                        <>
+                          <p className="text-[10px] text-slate-500">
+                            Format bawaan untuk jenis dokumen <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan) yang belum punya format khusus sendiri. Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di tab <b>Jenis Dokumen (Semua Modul)</b>. Token tersedia: <code>{"{DocType} {Department} {Year} {Month} {MonthRoman} {Day} {Sequence:4}"}</code>
+                          </p>
+                          <div className="flex items-center gap-2">
                             <input
-                              type="number"
-                              min={5}
-                              max={60}
-                              value={appSettings.contractPageMargins?.[side] ?? ""}
-                              onChange={(e) => setAppSettings({ ...appSettings, contractPageMargins: { ...(appSettings.contractPageMargins || { top: 30, right: 30, bottom: 30, left: 30 }), [side]: Number(e.target.value) } })}
-                              className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                              type="text"
+                              value={dcsNumberingMaskDraft}
+                              onChange={(e) => setDcsNumberingMaskDraft(e.target.value)}
+                              placeholder="{DocType}/{Department}/{Year}/{Sequence:4}"
+                              className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
+                            />
+                            <button
+                              onClick={handleSaveDcsNumberingRule}
+                              disabled={dcsBusy || dcsNumberingMaskDraft === dcsNumberingRule?.mask}
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg cursor-pointer"
+                            >
+                              Simpan
+                            </button>
+                          </div>
+                          <span className="block text-[10px] font-mono text-slate-600">
+                            Preview: {previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
+                            <p className="text-[11px] text-slate-300 font-semibold">Cara kerja penomoran (Kontrak)</p>
+                            <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside leading-relaxed">
+                              <li>Tiap <b>Jenis Dokumen</b> boleh punya "Format Nomor" sendiri (diatur di panel Jenis Kontrak / Dokumen di atas).</li>
+                              <li>Jenis dokumen yang <b>tidak</b> punya format sendiri memakai <b>Format Nomor Dokumen Kontrak</b> di bawah ini.</li>
+                              <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — jadi PKS dan Sewa punya urutan masing-masing, dan tiap ganti tahun keduanya mulai lagi dari 1.</li>
+                              <li>Nomor dibuat otomatis &amp; terkunci saat dokumen <b>disusun di sistem</b>. Untuk dokumen <b>hasil unggahan PDF</b>, nomor diisi bebas sesuai dokumen aslinya dan tidak memakai urutan ini.</li>
+                            </ol>
+                          </div>
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] text-slate-500">Klik untuk menyisipkan ke format di bawah:</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {[
+                                { t: "{Sequence:3}", l: "Nomor urut", d: "001, 002, 003 — dihitung per jenis dokumen per tahun. Angka 3 = jumlah digit." },
+                                { t: "{DocTypeCode}", l: "Kode jenis", d: "Kode singkat jenis dokumen, mis. PKS" },
+                                { t: "{Codes}", l: "Kode tambahan", d: "Kode ekstra jenis dokumen bila diisi, mis. TBK" },
+                                { t: "{MonthRoman}", l: "Bulan Romawi", d: "I, II, III … XII" },
+                                { t: "{Year}", l: "Tahun", d: "2026" },
+                                { t: "{Prefix}", l: "Prefix", d: "Prefix kategori, atau Prefix Default bila kategori tak punya" },
+                                { t: "{Category}", l: "Kategori", d: "Nama kategori, mis. Vendor" },
+                                { t: "{DocType}", l: "Nama jenis", d: "Nama lengkap jenis dokumen" },
+                                { t: "{Month}", l: "Bulan angka", d: "1 … 12" },
+                                { t: "{Day}", l: "Tanggal", d: "1 … 31 — sama seperti token yang tersedia di format nomor Dokumen Internal (DCS)" },
+                              ].map((tok) => (
+                                <button
+                                  key={tok.t}
+                                  type="button"
+                                  title={`${tok.t} — ${tok.d}`}
+                                  onClick={() => {
+                                    // Sisipkan dengan pemisah "/" otomatis, kalau
+                                    // tidak hasilnya menempel jadi {Year}{Year}.
+                                    const cur = masterData.defaultNumberMask || "";
+                                    const needsSep = cur.length > 0 && !/[/.\-_]$/.test(cur);
+                                    setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: cur + (needsSep ? "/" : "") + tok.t } });
+                                  }}
+                                  className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/50 rounded-lg text-[10px] text-slate-300 cursor-pointer transition"
+                                >
+                                  + {tok.l}
+                                </button>
+                              ))}
+                            </div>
+                            <p className="text-[10px] text-slate-600">Arahkan kursor ke chip untuk melihat artinya. Segmen yang kosong (mis. kode tambahan tak diisi) otomatis dirapikan agar tidak ada garis miring dobel.</p>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] text-slate-500 mb-1">Prefix Default (dipakai token {"{Prefix}"} kalau kategori tak punya prefix sendiri)</label>
+                            <input
+                              type="text"
+                              value={masterData.defaultNumberPrefix}
+                              onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberPrefix: e.target.value.trim().toUpperCase() } })}
+                              className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
                             />
                           </div>
-                        ))}
+                          <input
+                            type="text"
+                            value={masterData.defaultNumberMask}
+                            onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: e.target.value } })}
+                            className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
+                          />
+                          <span className="block text-[10px] font-mono text-slate-600">
+                            Preview: {previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) })}
+                          </span>
+                          <p className="text-[10px] text-slate-600 italic">Mode Kontrak tersimpan lewat tombol "Simpan Master Data" di atas halaman ini (bukan tombol "Simpan" tersendiri seperti mode DCS).</p>
+                        </>
+                      )}
+                    </div>
+
+                    {/* ==== Margin Halaman Dokumen — SATU kartu, dua mode ====
+                        Beda dari kartu Format Nomor di atas: margin DCS &
+                        Kontrak SAMA-SAMA cuma field appSettings (bukan tabel
+                        Postgres terpisah), jadi keduanya SAMA-SAMA tersimpan
+                        lewat tombol "Simpan Margin" di kartu ini — tidak ada
+                        perbedaan mekanisme simpan seperti pada kartu Format
+                        Nomor di atas. */}
+                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                          <FileText className="w-4 h-4 text-violet-400" /> Margin Halaman Dokumen (mm)
+                        </h4>
+                        <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setMarginModule("dcs")}
+                            className={`px-3 py-1 rounded-md text-[10px] font-bold cursor-pointer transition ${marginModule === "dcs" ? "bg-violet-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                          >
+                            DCS
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setMarginModule("kontrak")}
+                            className={`px-3 py-1 rounded-md text-[10px] font-bold cursor-pointer transition ${marginModule === "kontrak" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
+                          >
+                            Kontrak
+                          </button>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        {marginModule === "dcs"
+                          ? "Berlaku untuk semua PDF dokumen DCS yang disusun di sistem. Margin kiri biasanya lebih besar untuk ruang penjilidan."
+                          : "Berlaku untuk PDF Kontrak Eksternal & Kontrak Karyawan (hasil \"Export to PDF\" dari preview kontrak) — mesin render beda dari DCS (screenshot html2canvas, bukan digambar pdf-lib). Tidak ada standar hukum wajib untuk kontrak bisnis (beda dengan naskah dinas pemerintah) — default 30/30/30/30 (3cm rata) mengikuti konvensi profesional umum. Isi 40 di Kiri kalau dokumen akan dijilid."}
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {([["top", "Atas"], ["right", "Kanan"], ["bottom", "Bawah"], ["left", "Kiri"]] as const).map(([side, label]) => {
+                          const marginsKey: "dcsPageMargins" | "contractPageMargins" = marginModule === "dcs" ? "dcsPageMargins" : "contractPageMargins";
+                          const marginsDefault = marginModule === "dcs" ? { top: 20, right: 18, bottom: 18, left: 25 } : { top: 30, right: 30, bottom: 30, left: 30 };
+                          return (
+                            <div key={side} className="space-y-1">
+                              <label className="text-[10px] text-slate-500">{label}</label>
+                              <input
+                                type="number"
+                                min={5}
+                                max={60}
+                                value={appSettings[marginsKey]?.[side] ?? ""}
+                                onChange={(e) => setAppSettings({ ...appSettings, [marginsKey]: { ...(appSettings[marginsKey] || marginsDefault), [side]: Number(e.target.value) } })}
+                                className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                              />
+                            </div>
+                          );
+                        })}
                       </div>
                       <button onClick={handleSaveSettings} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer">Simpan Margin</button>
                     </div>
@@ -11247,78 +11462,9 @@ export default function App() {
                       </p>
                     </div>
 
-                    {/* Format nomor token dinamis (default tenant, bisa di-override per jenis dokumen di atas) */}
-                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3">
-                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                        <FileDigit className="w-4 h-4 text-violet-400" /> Format Nomor Default
-                      </h4>
-                      {/* Aturan main penomoran dulu tersebar: prioritas ditulis
-                          samar, daftar token cuma deretan kode tanpa arti, dan
-                          KAPAN nomor urut mulai dari 1 lagi tidak pernah
-                          dijelaskan sama sekali — padahal itu yang paling
-                          sering ditanyakan. */}
-                      <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
-                        <p className="text-[11px] text-slate-300 font-semibold">Cara kerja penomoran</p>
-                        <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside leading-relaxed">
-                          <li>Tiap <b>Jenis Dokumen</b> boleh punya "Format Nomor" sendiri (diatur di panel Jenis Kontrak / Dokumen di atas).</li>
-                          <li>Jenis dokumen yang <b>tidak</b> punya format sendiri memakai <b>Format Nomor Default</b> di bawah ini.</li>
-                          <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — jadi PKS dan Sewa punya urutan masing-masing, dan tiap ganti tahun keduanya mulai lagi dari 1.</li>
-                          <li>Nomor dibuat otomatis &amp; terkunci saat dokumen <b>disusun di sistem</b>. Untuk dokumen <b>hasil unggahan PDF</b>, nomor diisi bebas sesuai dokumen aslinya dan tidak memakai urutan ini.</li>
-                        </ol>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-[10px] text-slate-500">Klik untuk menyisipkan ke format di bawah:</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {[
-                            { t: "{Sequence:3}", l: "Nomor urut", d: "001, 002, 003 — dihitung per jenis dokumen per tahun. Angka 3 = jumlah digit." },
-                            { t: "{DocTypeCode}", l: "Kode jenis", d: "Kode singkat jenis dokumen, mis. PKS" },
-                            { t: "{Codes}", l: "Kode tambahan", d: "Kode ekstra jenis dokumen bila diisi, mis. TBK" },
-                            { t: "{MonthRoman}", l: "Bulan Romawi", d: "I, II, III … XII" },
-                            { t: "{Year}", l: "Tahun", d: "2026" },
-                            { t: "{Prefix}", l: "Prefix", d: "Prefix kategori, atau Prefix Default bila kategori tak punya" },
-                            { t: "{Category}", l: "Kategori", d: "Nama kategori, mis. Vendor" },
-                            { t: "{DocType}", l: "Nama jenis", d: "Nama lengkap jenis dokumen" },
-                            { t: "{Month}", l: "Bulan angka", d: "1 … 12" },
-                            { t: "{Day}", l: "Tanggal", d: "1 … 31 — sama seperti token yang tersedia di format nomor Dokumen Internal (DCS)" },
-                          ].map((tok) => (
-                            <button
-                              key={tok.t}
-                              type="button"
-                              title={`${tok.t} — ${tok.d}`}
-                              onClick={() => {
-                                // Sisipkan dengan pemisah "/" otomatis, kalau
-                                // tidak hasilnya menempel jadi {Year}{Year}.
-                                const cur = masterData.defaultNumberMask || "";
-                                const needsSep = cur.length > 0 && !/[/.\-_]$/.test(cur);
-                                setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: cur + (needsSep ? "/" : "") + tok.t } });
-                              }}
-                              className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/50 rounded-lg text-[10px] text-slate-300 cursor-pointer transition"
-                            >
-                              + {tok.l}
-                            </button>
-                          ))}
-                        </div>
-                        <p className="text-[10px] text-slate-600">Arahkan kursor ke chip untuk melihat artinya. Segmen yang kosong (mis. kode tambahan tak diisi) otomatis dirapikan agar tidak ada garis miring dobel.</p>
-                      </div>
-                      <div>
-                        <label className="block text-[10px] text-slate-500 mb-1">Prefix Default (dipakai token {"{Prefix}"} kalau kategori tak punya prefix sendiri)</label>
-                        <input
-                          type="text"
-                          value={masterData.defaultNumberPrefix}
-                          onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberPrefix: e.target.value.trim().toUpperCase() } })}
-                          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
-                        />
-                      </div>
-                      <input
-                        type="text"
-                        value={masterData.defaultNumberMask}
-                        onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: e.target.value } })}
-                        className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
-                      />
-                      <span className="block text-[10px] font-mono text-slate-600">
-                        Preview: {previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) })}
-                      </span>
-                    </div>
+                    {/* Kartu "Format Nomor Dokumen Kontrak" yang dulu berdiri sendiri
+                        di sini sudah digabung ke kartu "Format Nomor Dokumen"
+                        (toggle DCS/Kontrak) di atas — lihat numberFormatModule. */}
 
                     {/* Opsi hari reminder */}
                     <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
@@ -11362,59 +11508,10 @@ export default function App() {
                 <div className="space-y-4">
                   <p className="text-xs text-slate-500">Satu tempat untuk semua jenis dokumen di ketiga modul. Saat menambah jenis, pilih modul tujuannya: <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan — template bagian & kolom TTD sendiri), <b className="text-indigo-300">Kontrak Eksternal</b>, atau <b className="text-emerald-300">Kontrak Karyawan</b>. Jenis yang dibuat otomatis muncul di form create modul terkait.</p>
 
-                  <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 max-w-2xl">
-                    <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                      <FileDigit className="w-4 h-4 text-violet-400" /> Format Nomor Dokumen DCS
-                    </h4>
-                    <p className="text-[10px] text-slate-500">
-                      Format bawaan untuk jenis dokumen yang belum punya format khusus sendiri. Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di bawah — beda jenis dokumen jadi bisa beda penamaan sekaligus beda nomor urut. Token tersedia: <code>{"{DocType} {Department} {Year} {Month} {MonthRoman} {Day} {Sequence:4}"}</code>
-                    </p>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={dcsNumberingMaskDraft}
-                        onChange={(e) => setDcsNumberingMaskDraft(e.target.value)}
-                        placeholder="{DocType}/{Department}/{Year}/{Sequence:4}"
-                        className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
-                      />
-                      <button
-                        onClick={handleSaveDcsNumberingRule}
-                        disabled={dcsBusy || dcsNumberingMaskDraft === dcsNumberingRule?.mask}
-                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg cursor-pointer"
-                      >
-                        Simpan
-                      </button>
-                    </div>
-                    <span className="block text-[10px] font-mono text-slate-600">
-                      Preview: {previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })}
-                    </span>
-                  </div>
-
-                  {/* Margin halaman PDF dokumen DCS (global per perusahaan) */}
-                  <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 max-w-2xl">
-                    <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                      <FileText className="w-4 h-4 text-violet-400" /> Margin Halaman Dokumen (mm)
-                    </h4>
-                    <p className="text-[10px] text-slate-500">
-                      Berlaku untuk semua PDF dokumen DCS yang disusun di sistem. Margin kiri biasanya lebih besar untuk ruang penjilidan.
-                    </p>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      {([["top", "Atas"], ["right", "Kanan"], ["bottom", "Bawah"], ["left", "Kiri"]] as const).map(([side, label]) => (
-                        <div key={side} className="space-y-1">
-                          <label className="text-[10px] text-slate-500">{label}</label>
-                          <input
-                            type="number"
-                            min={5}
-                            max={60}
-                            value={appSettings.dcsPageMargins?.[side] ?? ""}
-                            onChange={(e) => setAppSettings({ ...appSettings, dcsPageMargins: { ...(appSettings.dcsPageMargins || { top: 20, right: 18, bottom: 18, left: 25 }), [side]: Number(e.target.value) } })}
-                            className="w-full px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                    <button onClick={handleSaveSettings} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer">Simpan Margin</button>
-                  </div>
+                  {/* Format Nomor Dokumen DCS & Margin Halaman Dokumen DCS pindah ke
+                      tab "Format Nomor Default & Dropdown" (configTab === "masterdata")
+                      supaya berdampingan dengan pasangan Kontrak-nya (satu tempat untuk
+                      semua "format nomor default & margin", dikelompokkan per modul). */}
 
                   {!dcsDocTypeForm ? (
                     contractTypeEdit !== null && masterData.docTypes[contractTypeEdit] ? (() => {
@@ -11500,8 +11597,8 @@ export default function App() {
                                   tersirat dari teks placeholder yang abu-abu. */}
                               <p className="text-[10px] text-slate-600">
                                 {dt.numberMask?.trim()
-                                  ? "Jenis ini memakai format sendiri (menimpa Format Nomor Default)."
-                                  : "Kosong = mengikuti Format Nomor Default."}
+                                  ? "Jenis ini memakai format sendiri (menimpa Format Nomor Dokumen Kontrak)."
+                                  : "Kosong = mengikuti Format Nomor Dokumen Kontrak."}
                               </p>
                             </div>
                           </div>
@@ -11812,7 +11909,7 @@ export default function App() {
                           <div className="flex items-center justify-between">
                             <label className="block text-xs font-semibold text-slate-300 flex items-center gap-1">
                               Format Nomor Dokumen
-                              <HelpCircle className="w-3 h-3 text-slate-500" title="Isi untuk memberi jenis dokumen ini penamaan DAN nomor urut sendiri, terpisah dari jenis dokumen lain. Kembalikan ke default untuk ikut format tenant di kartu 'Format Nomor Dokumen DCS' di atas." />
+                              <HelpCircle className="w-3 h-3 text-slate-500" title="Isi untuk memberi jenis dokumen ini penamaan DAN nomor urut sendiri, terpisah dari jenis dokumen lain. Kembalikan ke default untuk ikut format tenant di kartu 'Format Nomor Dokumen DCS' pada tab Format Nomor Default & Dropdown." />
                             </label>
                             {dcsDocTypeNumberingRule && (
                               <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase ${dcsDocTypeNumberingRule.isOverride ? "bg-violet-500/15 text-violet-300" : "bg-slate-800 text-slate-500"}`}>
@@ -14405,10 +14502,65 @@ export default function App() {
                 {/* Left Side: Real-time Live Document Preview (8 cols on large screens) */}
                 <div className="xl:col-span-7 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl flex flex-col justify-between">
                   <div>
+                    {/* Setelah aktivasi via "Unggah Bukti TTD & Aktifkan", dokumen
+                        yang MENGIKAT SECARA HUKUM adalah berkas yang diunggah itu
+                        (masterPdfUrl) — BUKAN preview "LIVE" di bawah, yang tetap
+                        render ulang dari data pasal/variabel (masih dipakai utuh utk
+                        riwayat/Perpanjang/Addendum/Mode Tinjau — TIDAK dihapus/diubah).
+                        Sebelumnya keduanya kelihatan "menyatu" padahal terpisah total:
+                        preview live tidak pernah otomatis menampilkan berkas yang
+                        sungguhan diunggah, cuma nyambung lewat link kecil "Buka
+                        Berkas" di pojok kanan atas. Panel ini menaruh berkas resmi
+                        itu di posisi PALING ATAS supaya tidak mungkin terlewat,
+                        pakai activationProofHash (bukan cuma status "Aktif" saja)
+                        sbg penanda supaya cuma tampil utk kontrak yang benar-benar
+                        lewat alur unggah bukti TTD (bukan status Aktif dari jalur
+                        lain, mis. data lama/import). */}
+                    {selectedContract.status === "Aktif" && selectedContract.activationProofHash && (
+                      <div className="mb-6 p-4 bg-blue-500/5 border border-blue-500/25 rounded-xl space-y-2">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                          <h4 className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
+                            <FileCheck className="w-4 h-4" /> Berkas Resmi (Hasil TTD) — Dokumen yang Mengikat
+                          </h4>
+                          <div className="flex items-center gap-3 text-[10px]">
+                            <a
+                              href={`/api/contracts/${selectedContract.id}/view-pdf`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-blue-300 hover:text-blue-200 underline font-semibold"
+                            >
+                              Buka di tab baru
+                            </a>
+                            <a
+                              href={`/api/contracts/${selectedContract.id}/view-pdf?download=1`}
+                              className="text-blue-300 hover:text-blue-200 underline font-semibold"
+                            >
+                              Unduh
+                            </a>
+                          </div>
+                        </div>
+                        <p className="text-[10px] text-blue-200/70">
+                          Ini persis berkas yang Anda unggah lewat "Unggah Bukti TTD &amp; Aktifkan" — bukan hasil render ulang. Preview "LIVE" di bawah tetap ditampilkan untuk riwayat/Perpanjang/Addendum, tapi yang berlaku secara hukum adalah berkas ini.
+                        </p>
+                        {/* <iframe>, bukan <object> — pola sama seperti pratinjau
+                            dokumen DCS (lihat komentar di dekat "hasFile ?" pada
+                            modul DCS): beberapa browser diam-diam menampilkan panel
+                            kosong dengan <object> tanpa fallback yang jelas. */}
+                        <iframe
+                          key={selectedContract.id}
+                          src={`/api/contracts/${selectedContract.id}/view-pdf`}
+                          title="Berkas resmi hasil tanda tangan"
+                          className="w-full h-[420px] rounded-xl border border-blue-500/20 bg-slate-950"
+                        />
+                      </div>
+                    )}
                     <div className="flex items-center justify-between pb-4 border-b border-slate-850 mb-4">
                       <h3 className="font-bold text-sm tracking-wide flex items-center gap-1.5 text-slate-300">
                         <FileCheck className="text-indigo-400 w-4 h-4" />
                         PREVIEW DOKUMEN DIGITAL (LIVE)
+                        {selectedContract.status === "Aktif" && selectedContract.activationProofHash && (
+                          <span className="text-[9px] text-slate-500 font-normal normal-case">— draf digital, bukan salinan resmi (lihat Berkas Resmi di atas)</span>
+                        )}
                         {selectedContract.ocrSimulated && (
                           <span className="text-[9px] bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded font-bold uppercase">
                             Teks OCR Simulasi
@@ -14666,13 +14818,18 @@ export default function App() {
                           </div>
                         );
                         if (!hasPreambleEn || docLang === "id") return idContent;
-                        // preambleEn = paragraf dipisah baris kosong, dengan **tebal** dari
-                        // AI penerjemah (lihat composeContractPreambleForTranslation di
-                        // server) — pakai renderPreambleParagraphs yang sama dengan sisi
-                        // Indonesia supaya bold-nya ikut tampil, bukan teks polos rata.
+                        // preambleEn dulu SELALU teks markdown polos dari AI
+                        // penerjemah (paragraf dipisah baris kosong, **tebal**).
+                        // Sejak editornya diupgrade jadi RichTextEditor (sama
+                        // seperti sisi Indonesia), preambleEn bisa berisi HTML
+                        // hasil edit manual JUGA. renderPreambleBlock menangani
+                        // keduanya (cek looksLikeHtml lalu pilih jalur yang
+                        // sesuai) — sama seperti idContent di atas — sehingga
+                        // preambleEn lama (markdown) maupun baru (HTML) sama-sama
+                        // tampil benar, tidak ada migrasi data yang diperlukan.
                         const enContent = (
                           <div className="space-y-2 text-slate-300">
-                            {renderPreambleParagraphs(String(selectedContract.preambleEn), {})}
+                            {renderPreambleBlock(String(selectedContract.preambleEn), {})}
                           </div>
                         );
                         if (docLang === "en") {
@@ -15124,28 +15281,28 @@ export default function App() {
                             <div className="space-y-2">
                               <p className="font-bold text-amber-400 text-xs">Narasi Pembuka (Indonesia)</p>
                               {(() => {
+                                // Dulu: kalau belum ada override tersimpan, tampil
+                                // tombol "Muat teks aktif untuk diedit" — user harus
+                                // klik dulu sebelum bisa lihat/edit apa pun, padahal
+                                // sisi EN & preview read-only sama-sama langsung
+                                // menampilkan teks aktif tanpa tombol perantara.
+                                // Sekarang: editor SELALU tampil berisi teks yang
+                                // sedang aktif (override kalau ada, kalau tidak ya
+                                // template bawaan — persis logika yang sama dipakai
+                                // preview read-only via getPreambleTemplateAndTokens).
+                                // customOpeningParagraph BARU tercatat begitu user
+                                // benar-benar mengetik (onChange), jadi sekadar
+                                // membuka form ini TIDAK diam-diam membuat override —
+                                // perilaku itu tidak berubah, cuma langkah klik
+                                // "muat" yang dihapus.
                                 const val = selectedContract.customOpeningParagraph || "";
-                                if (!val.trim()) {
-                                  const { template } = getPreambleTemplateAndTokens();
-                                  return (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        setSelectedContract({
-                                          ...selectedContract,
-                                          customOpeningParagraph: mdToHtmlForEditor(template),
-                                        })
-                                      }
-                                      className="text-[10px] px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg cursor-pointer font-semibold flex items-center gap-1"
-                                    >
-                                      <FileText className="w-3 h-3" /> Muat teks aktif untuk diedit
-                                    </button>
-                                  );
-                                }
+                                const hasOverride = !!val.trim();
+                                const { template } = getPreambleTemplateAndTokens();
+                                const displayValue = hasOverride ? val : template;
                                 return (
                                   <>
                                     <RichTextEditor
-                                      valueHtml={looksLikeHtml(val) ? val : mdToHtmlForEditor(val)}
+                                      valueHtml={looksLikeHtml(displayValue) ? displayValue : mdToHtmlForEditor(displayValue)}
                                       onChange={(html) =>
                                         setSelectedContract({ ...selectedContract, customOpeningParagraph: html })
                                       }
@@ -15154,15 +15311,17 @@ export default function App() {
                                     />
                                     <div className="flex items-center justify-between gap-2">
                                       <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })
-                                        }
-                                        className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
-                                      >
-                                        Kembalikan ke bawaan
-                                      </button>
+                                      {hasOverride && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })
+                                          }
+                                          className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
+                                        >
+                                          Kembalikan ke bawaan
+                                        </button>
+                                      )}
                                     </div>
                                   </>
                                 );
@@ -15171,22 +15330,48 @@ export default function App() {
                           );
 
                           // preambleEn diisi AI saat toggle EN/ID+EN pertama kali
-                          // diklik — teks mentah (paragraf dipisah baris kosong,
-                          // **tebal** markdown), BUKAN HTML seperti
-                          // customOpeningParagraph, jadi diedit sbg teks polos.
+                          // diklik — dulu teks mentah markdown (**tebal**), diedit
+                          // via textarea polos. Sekarang disamakan dengan sisi
+                          // Indonesia: RichTextEditor + PREAMBLE_TOKENS yang sama
+                          // (toolbar format teks & chip "Sisipkan" identik), plus
+                          // tombol "Kembalikan ke bawaan" yang balik ke
+                          // preambleEnOriginal (hasil AI translate asli, tersimpan
+                          // terpisah — lihat types.ts). SENGAJA tidak memanggil
+                          // ulang /translate: endpoint itu menerjemahkan SELURUH
+                          // dokumen sekaligus dan akan ikut menimpa editan manual
+                          // di pasal lain, bukan cuma narasi pembuka ini. Value
+                          // lama yang masih markdown otomatis dikonversi ke HTML
+                          // sekali lewat mdToHtmlForEditor (persis pola cl.contentEn
+                          // di enFields pasal di bawah) — sesudah diedit sekali,
+                          // tersimpan sebagai HTML seterusnya.
+                          const enHasCustomEdit = !!selectedContract.preambleEnOriginal
+                            && selectedContract.preambleEn !== selectedContract.preambleEnOriginal;
                           const enEditor = (
                             <div className="space-y-2">
                               <p className="font-bold text-sky-400 text-xs">Opening Narrative (English)</p>
                               {selectedContract.preambleEn ? (
                                 <>
-                                  <textarea
-                                    value={selectedContract.preambleEn}
-                                    onChange={(e) => setSelectedContract({ ...selectedContract, preambleEn: e.target.value })}
-                                    rows={5}
-                                    className="w-full bg-slate-950 border border-slate-850 px-2.5 py-2 rounded-lg text-xs text-slate-200 leading-relaxed focus:outline-none focus:border-sky-500"
-                                    placeholder="Opening narrative in English"
+                                  <RichTextEditor
+                                    valueHtml={looksLikeHtml(selectedContract.preambleEn) ? selectedContract.preambleEn : mdToHtmlForEditor(selectedContract.preambleEn)}
+                                    onChange={(html) => setSelectedContract({ ...selectedContract, preambleEn: html })}
+                                    tokens={PREAMBLE_TOKENS}
+                                    minHeight={100}
                                   />
-                                  <p className="text-[10px] text-slate-500">Pakai **tebal** untuk cetak tebal, baris kosong ganda = paragraf baru.</p>
+                                  <div className="flex items-center justify-between gap-2">
+                                    <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
+                                    {enHasCustomEdit && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setSelectedContract({ ...selectedContract, preambleEn: selectedContract.preambleEnOriginal })
+                                        }
+                                        title="Kembali ke hasil terjemahan AI asli, buang editan manual di narasi pembuka ini"
+                                        className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
+                                      >
+                                        Kembalikan ke bawaan
+                                      </button>
+                                    )}
+                                  </div>
                                 </>
                               ) : (
                                 <p className="text-[10px] text-slate-500 italic">

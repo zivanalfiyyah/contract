@@ -226,6 +226,15 @@ export interface Contract {
   preambleEnOriginal?: string;
   titleEn?: string; // terjemahan judul dokumen (header) — dipakai mode en/bilingual
   docTypeEn?: string; // terjemahan jenis surat, mis. "Cooperation Agreement Letter" — dipakai mode en/bilingual
+  // Terjemahan paragraf KHUSUS ADDENDUM (recital "Bahwa PARA PIHAK telah
+  // membuat dan menandatangani..." & penutup "Demikian Addendum ini dibuat
+  // dan ditandatangani..."). Hanya terisi kalau kontrak ini addendum
+  // (amendsContractId ada) dan sudah pernah lewat /translate versi baru.
+  // Token {{ParentDocType}}/{{ParentNumber}}/dll TETAP ada di teks hasil
+  // terjemahan (tidak disubstitusi di server) — disubstitusi saat render,
+  // sama seperti preambleEn.
+  addendumRecitalEn?: string;
+  closingParagraphEn?: string;
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF
   numberSeq?: number; // Nomor urut yang dikonsumsi dari counter persisten (per jenis+tahun) — dipakai sbg baseline anti-duplikat
   docType?: string; // Jenis dokumen saat pendaftaran arsip (Perjanjian, MOU, Addendum, dll)

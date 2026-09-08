@@ -4929,6 +4929,12 @@ export default function App() {
       || !selectedContract.titleEn
       || !selectedContract.docTypeEn
       || !selectedContract.preambleEn
+      // Kalau kontrak ini Addendum, cek juga addendumRecitalEn/closingParagraphEn
+      // — addendum yang dibuat/diterjemahkan SEBELUM kedua field ini ada belum
+      // pernah punya versi Inggrisnya sama sekali, jadi paragraf pembuka &
+      // penutup addendum-nya akan permanen Bahasa Indonesia kalau tidak dipicu
+      // translate ulang di sini.
+      || (!!selectedContract.amendsContractId && (!selectedContract.addendumRecitalEn || !selectedContract.closingParagraphEn))
     );
     if (!needsTranslation) {
       const updated = { ...selectedContract, documentLanguage: lang };
@@ -14850,41 +14856,62 @@ export default function App() {
                         );
                       })()}
 
-                      {selectedContractAddendumInfo ? (
-                        <p>
-                          {selectedContractTemplate?.addendumRecitalParagraph ? (
-                            renderClauseContent(selectedContractTemplate.addendumRecitalParagraph, {
-                              ...selectedContract.variables,
-                              ParentDocType: selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian",
-                              ParentNumber: selectedContractAddendumInfo.parent?.contractNumber || "",
-                              ParentDate: selectedContractAddendumInfo.parent?.startDate || "",
-                              ParentEndDate: selectedContractAddendumInfo.parent?.endDate || "",
-                              PreviousOrdinal: previousAddendumOrdinal || "",
-                              PreviousNumber: selectedContractAddendumInfo.previous?.contractNumber || "",
-                              PreviousDate: selectedContractAddendumInfo.previous?.startDate || "",
-                            })
-                          ) : (
-                            <>
-                              Bahwa PARA PIHAK telah membuat dan menandatangani{" "}
-                              {selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian"}{" "}
-                              Nomor <strong>{selectedContractAddendumInfo.parent?.contractNumber}</strong> tanggal{" "}
-                              <strong>{selectedContractAddendumInfo.parent?.startDate}</strong>
-                              {selectedContractAddendumInfo.previous && (
-                                <>
-                                  , yang telah diubah terakhir kali melalui Addendum{" "}
-                                  {previousAddendumOrdinal} Nomor{" "}
-                                  <strong>{selectedContractAddendumInfo.previous.contractNumber}</strong> tanggal{" "}
-                                  <strong>{selectedContractAddendumInfo.previous.startDate}</strong>
-                                </>
-                              )}
-                              {" "}(selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut
-                              akan berakhir pada tanggal <strong>{selectedContractAddendumInfo.parent?.endDate}</strong>.
-                              Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah
-                              ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:
-                            </>
-                          )}
-                        </p>
-                      ) : (() => {
+                      {selectedContractAddendumInfo ? (() => {
+                        const docLang = selectedContract.documentLanguage || "id";
+                        // addendumRecitalEn diisi server saat /translate (lihat
+                        // composeAddendumRecitalForTranslation di server.ts) — sebelum
+                        // ini ditambahkan, narasi recital Addendum SELALU Bahasa
+                        // Indonesia walau mode dokumen "en"/"bilingual" (cuma pasal
+                        // biasa yang ikut berubah bahasa, recital-nya tidak).
+                        const hasRecitalEn = !!selectedContract.addendumRecitalEn;
+                        const idContent = (
+                          <p>
+                            {selectedContractTemplate?.addendumRecitalParagraph ? (
+                              renderClauseContent(selectedContractTemplate.addendumRecitalParagraph, {
+                                ...selectedContract.variables,
+                                ParentDocType: selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian",
+                                ParentNumber: selectedContractAddendumInfo.parent?.contractNumber || "",
+                                ParentDate: selectedContractAddendumInfo.parent?.startDate || "",
+                                ParentEndDate: selectedContractAddendumInfo.parent?.endDate || "",
+                                PreviousOrdinal: previousAddendumOrdinal || "",
+                                PreviousNumber: selectedContractAddendumInfo.previous?.contractNumber || "",
+                                PreviousDate: selectedContractAddendumInfo.previous?.startDate || "",
+                              })
+                            ) : (
+                              <>
+                                Bahwa PARA PIHAK telah membuat dan menandatangani{" "}
+                                {selectedContractAddendumInfo.parent?.docType || selectedContractAddendumInfo.parent?.category || "Perjanjian"}{" "}
+                                Nomor <strong>{selectedContractAddendumInfo.parent?.contractNumber}</strong> tanggal{" "}
+                                <strong>{selectedContractAddendumInfo.parent?.startDate}</strong>
+                                {selectedContractAddendumInfo.previous && (
+                                  <>
+                                    , yang telah diubah terakhir kali melalui Addendum{" "}
+                                    {previousAddendumOrdinal} Nomor{" "}
+                                    <strong>{selectedContractAddendumInfo.previous.contractNumber}</strong> tanggal{" "}
+                                    <strong>{selectedContractAddendumInfo.previous.startDate}</strong>
+                                  </>
+                                )}
+                                {" "}(selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut
+                                akan berakhir pada tanggal <strong>{selectedContractAddendumInfo.parent?.endDate}</strong>.
+                                Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah
+                                ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:
+                              </>
+                            )}
+                          </p>
+                        );
+                        if (!hasRecitalEn || docLang === "id") return idContent;
+                        // addendumRecitalEn sudah dibekukan nilainya (ParentNumber dkk
+                        // sudah disubstitusi di server, lihat composeAddendumRecitalForTranslation)
+                        // — render dgn tokens KOSONG, persis pola preambleEn.
+                        const enContent = <p>{renderClauseContent(String(selectedContract.addendumRecitalEn), {})}</p>;
+                        if (docLang === "en") return enContent;
+                        return (
+                          <div className="flex gap-3">
+                            <div className="flex-1 min-w-0">{idContent}</div>
+                            <div className="flex-1 min-w-0">{enContent}</div>
+                          </div>
+                        );
+                      })() : (() => {
                         // Kalimat baku (bukan hasil AI — memang tidak berubah antar
                         // dokumen) yang menjembatani narasi pembuka ke daftar pasal.
                         // Sebelumnya hardcoded Indonesia terus dan tidak pernah ikut
@@ -15168,13 +15195,28 @@ export default function App() {
                       /* Closing paragraph — hanya untuk Addendum (kontrak biasa
                           tidak pernah punya ini, tidak ada regresi tampilan).
                           Override lewat Template.closingParagraph kalau ada. */
-                      selectedContractAddendumInfo && (
-                        <p>
-                          {selectedContractTemplate?.closingParagraph
-                            ? renderClauseContent(selectedContractTemplate.closingParagraph, selectedContract.variables)
-                            : 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.'}
-                        </p>
-                      )
+                      selectedContractAddendumInfo && (() => {
+                        const docLang = selectedContract.documentLanguage || "id";
+                        const closingIdSource = selectedContractTemplate?.closingParagraph
+                          || 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.';
+                        const idContent = <p>{renderClauseContent(closingIdSource, selectedContract.variables)}</p>;
+                        // closingParagraphEn diisi server saat /translate (lihat
+                        // composeAddendumClosingForTranslation) — {{Variabel}} di
+                        // dalamnya SENGAJA dipertahankan mentah (bukan dibekukan,
+                        // beda dari addendumRecitalEn), disubstitusi ulang di sini
+                        // dari selectedContract.variables, persis pola clause.contentEn,
+                        // supaya tetap sinkron kalau isian variabel diedit belakangan.
+                        const hasClosingEn = !!selectedContract.closingParagraphEn;
+                        if (!hasClosingEn || docLang === "id") return idContent;
+                        const enContent = <p>{renderClauseContent(String(selectedContract.closingParagraphEn), selectedContract.variables)}</p>;
+                        if (docLang === "en") return enContent;
+                        return (
+                          <div className="flex gap-3">
+                            <div className="flex-1 min-w-0">{idContent}</div>
+                            <div className="flex-1 min-w-0">{enContent}</div>
+                          </div>
+                        );
+                      })()
                         );
 
                         // Blok TTD SEBARIS seperti semula (semua pihak tampil

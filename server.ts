@@ -3032,6 +3032,25 @@ function addendumOrdinal(n: number): string {
   return ADDENDUM_ORDINALS[n] || `Ke-${n}`;
 }
 
+// Versi server dari getAddendumInfo() di src/App.tsx — dipakai HANYA buat
+// menyusun teks sumber terjemahan (recital & closing addendum, lihat
+// composeAddendumRecitalForTranslation/composeAddendumClosingForTranslation
+// di bawah). Cari induk (parent) & addendum sebelumnya (previous) dari
+// db.contracts, persis logika frontend, supaya kalimat "yang telah diubah
+// terakhir kali melalui Addendum ... Nomor ... tanggal ..." konsisten.
+function getAddendumInfoServer(db: any, contract: Contract): { parent: Contract | null; previous: Contract | null; ordinal: string } | null {
+  if (!contract.amendsContractId) return null;
+  const all = db.contracts as Contract[];
+  const parent = all.find((c) => c.id === contract.amendsContractId) || null;
+  const siblings = all
+    .filter((c) => c.amendsContractId === contract.amendsContractId)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  const myIndex = siblings.findIndex((c) => c.id === contract.id);
+  const sequence = myIndex >= 0 ? myIndex + 1 : siblings.length + 1;
+  const previous = myIndex > 0 ? siblings[myIndex - 1] : null;
+  return { parent, previous, ordinal: addendumOrdinal(sequence) };
+}
+
 app.get("/api/contracts/:id/addendum-context", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const parent = findOwnedContract(db, req, req.params.id);
@@ -4990,6 +5009,63 @@ function composeContractPreambleForTranslation(db: any, contract: Contract, sour
 // cuma tanda bintangnya). Dipaksa benar di sini, terlepas dari perilaku
 // model, karena frasa ini SELALU berasal dari template baku (bukan input
 // bebas pengguna) sehingga aman dipetakan langsung tanpa AI.
+// Teks sumber utk terjemahan paragraf RECITAL addendum ("Bahwa PARA PIHAK
+// telah membuat dan menandatangani ... Nomor ... tanggal ..., yang telah
+// diubah terakhir kali melalui Addendum ... (selanjutnya disebut
+// "Perjanjian")..."). undefined kalau kontrak ini BUKAN addendum (tidak ada
+// yang perlu diterjemahkan). Beda dari closing paragraph di bawah: token
+// ParentDocType/ParentNumber/dll di sini DIBEKUKAN (disubstitusi nilai
+// asli) di sini — sama seperti composeContractPreambleForTranslation
+// membekukan StartDate/Party1Name dst — karena nilainya berasal dari
+// kontrak INDUK/SEBELUMNYA (bukan dari selectedContract.variables), fakta
+// historis yang jarang berubah setelah addendum ini final, jadi hasil
+// terjemahannya aman disimpan sebagai teks jadi (frontend render dgn tokens
+// kosong, persis preambleEn — lihat addendumRecitalEn di src/App.tsx).
+function composeAddendumRecitalForTranslation(db: any, contract: Contract): string | undefined {
+  if (!contract.amendsContractId) return undefined;
+  const info = getAddendumInfoServer(db, contract);
+  if (!info) return undefined;
+  const template =
+    contract.templateSnapshot?.addendumRecitalParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.addendumRecitalParagraph;
+  const previousOrdinal = info.previous ? (getAddendumInfoServer(db, info.previous)?.ordinal || "") : "";
+  if (template) {
+    const tokens: Record<string, string> = {
+      ParentDocType: info.parent?.docType || info.parent?.category || "Perjanjian",
+      ParentNumber: info.parent?.contractNumber || "",
+      ParentDate: info.parent?.startDate || "",
+      ParentEndDate: info.parent?.endDate || "",
+      PreviousOrdinal: previousOrdinal,
+      PreviousNumber: info.previous?.contractNumber || "",
+      PreviousDate: info.previous?.startDate || "",
+    };
+    return template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
+  }
+  // Sama persis dgn default JSX di src/App.tsx (blok selectedContractAddendumInfo)
+  // — kalau JSX itu diubah, sinkronkan juga di sini.
+  const parentLabel = info.parent?.docType || info.parent?.category || "Perjanjian";
+  const previousClause = info.previous
+    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${info.previous.startDate}**`
+    : "";
+  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${info.parent?.startDate || ""}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${info.parent?.endDate || ""}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
+}
+
+// Teks sumber utk terjemahan paragraf PENUTUP addendum ("Demikian Addendum
+// ini dibuat dan ditandatangani..."). undefined kalau bukan addendum. Beda
+// dari recital di atas: token {{Variabel}} di sini (kalau ada, dari
+// template kustom) TIDAK dibekukan — dikirim mentah ke AI (sama seperti
+// clause.content) supaya tetap sinkron kalau selectedContract.variables
+// diedit belakangan; frontend mensubstitusinya ulang saat render (lihat
+// closingParagraphEn di src/App.tsx), bukan dibekukan sekali di sini.
+function composeAddendumClosingForTranslation(db: any, contract: Contract): string | undefined {
+  if (!contract.amendsContractId) return undefined;
+  const template =
+    contract.templateSnapshot?.closingParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.closingParagraph;
+  if (template) return template;
+  return 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.';
+}
+
 function fixFixedPartyLabels(text: string | undefined, targetLang: "id" | "en"): string | undefined {
   if (!text) return text;
   const pairs: [RegExp, string][] =
@@ -5033,12 +5109,20 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
   const to = sourceLang === "en" ? "Bahasa Indonesia" : "Bahasa Inggris";
 
   const preambleSource = composeContractPreambleForTranslation(db, contract, sourceLang);
+  const isAddendum = !!contract.amendsContractId;
+  const addendumRecitalSource = isAddendum ? composeAddendumRecitalForTranslation(db, contract) : undefined;
+  const addendumClosingSource = isAddendum ? composeAddendumClosingForTranslation(db, contract) : undefined;
   const docTypeSource = contract.docType || "Surat Perjanjian Kerjasama";
   const payload = {
     title: contract.title,
     docType: docTypeSource,
     preamble: preambleSource,
     clauses: contract.clauses.map((c) => ({ id: c.id, title: c.title, content: c.content })),
+    // Dua field ini HANYA ada kalau kontrak ini Addendum (lihat isAddendum di
+    // atas) — kontrak biasa tidak pernah punya paragraf ini sama sekali,
+    // jadi tidak perlu dikirim/diterjemahkan.
+    ...(addendumRecitalSource ? { addendumRecital: addendumRecitalSource } : {}),
+    ...(addendumClosingSource ? { addendumClosing: addendumClosingSource } : {}),
   };
 
   try {
@@ -5063,12 +5147,16 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
         mempertahankan sepasang tanda ** di sekeliling hasil terjemahannya. Ini termasuk label baku seperti "PIHAK
         PERTAMA"/"PIHAK KEDUA" — label semacam ini WAJIB ikut diterjemahkan juga (mis. "**PIHAK PERTAMA:**" menjadi
         "**FIRST PARTY:**"), TIDAK BOLEH dibiarkan sama seperti bahasa sumbernya walau ditulis huruf kapital semua.
+      - Kalau field "addendumRecital" dan/atau "addendumClosing" ADA di dokumen sumber (cuma muncul kalau dokumen ini
+        Addendum), terjemahkan juga keduanya dengan aturan yang SAMA persis seperti di atas (nama/nomor/tanggal
+        dipertahankan atau dilokalkan sesuai aturan, ** dipertahankan & isinya diterjemahkan). Kalau field itu TIDAK
+        ADA di dokumen sumber, JANGAN dimunculkan di balasan sama sekali.
 
       === DOKUMEN SUMBER (JSON) ===
       ${JSON.stringify(payload)}
       === AKHIR DOKUMEN ===
 
-      Balas HANYA JSON: { "title": "...", "docType": "...", "preamble": "...", "clauses": [ { "id": "...", "title": "...", "content": "..." } ] }`,
+      Balas HANYA JSON: { "title": "...", "docType": "...", "preamble": "...", "clauses": [ { "id": "...", "title": "...", "content": "..." } ]${addendumRecitalSource ? ', "addendumRecital": "..."' : ""}${addendumClosingSource ? ', "addendumClosing": "..."' : ""} }`,
       config: { responseMimeType: "application/json" },
     });
     const parsed = parseAiJson(response.text);
@@ -5109,6 +5197,24 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
     } else {
       contract.preambleEn = fixedPreamble || contract.preambleEn;
       contract.preambleEnOriginal = fixedPreamble || contract.preambleEnOriginal;
+    }
+    // Recital & closing Addendum — cuma diproses kalau memang dikirim di
+    // payload (isAddendum true DAN compose-nya menghasilkan sesuatu).
+    if (addendumRecitalSource) {
+      const fixedRecital = fixFixedPartyLabels(parsed.addendumRecital, targetLang);
+      if (fixedRecital && !sameTokens(tokensOf(addendumRecitalSource), tokensOf(fixedRecital))) {
+        warnings.push("Narasi Pembuka Addendum");
+      } else {
+        contract.addendumRecitalEn = fixedRecital || contract.addendumRecitalEn;
+      }
+    }
+    if (addendumClosingSource) {
+      const fixedClosing = fixFixedPartyLabels(parsed.addendumClosing, targetLang);
+      if (fixedClosing && !sameTokens(tokensOf(addendumClosingSource), tokensOf(fixedClosing))) {
+        warnings.push("Kalimat Penutup Addendum");
+      } else {
+        contract.closingParagraphEn = fixedClosing || contract.closingParagraphEn;
+      }
     }
     // Judul dokumen & jenis surat (header) — teksnya pendek dan jarang memuat
     // token {{Variabel}}, jadi cukup dipakai langsung kalau ada hasilnya.

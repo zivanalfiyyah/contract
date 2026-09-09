@@ -1054,6 +1054,21 @@ function createDefaultDB() {
 // Global app configuration (dynamic, editable via Konfigurasi page)
 function defaultSettings() {
   return {
+    // Hak akses menu sidebar per role (RBAC) — dikonfigurasi lewat UI
+    // (Konfigurasi > Hak Akses), BUKAN hardcode di kode, supaya admin bisa
+    // ubah kapan saja tanpa deploy ulang. Key = UserRole, value = daftar id
+    // menu yang BOLEH diakses (lihat MENU_ITEMS di src/App.tsx untuk daftar
+    // id-nya). Role yang TIDAK ADA sebagai key di sini = akses PENUH ke semua
+    // menu (kondisi "belum pernah diatur" — floor default aman untuk tenant
+    // lama yang upgrade, tidak ada yang mendadak terkunci keluar dari
+    // fiturnya sendiri). super_admin SELALU penuh, tidak pernah dibatasi
+    // config ini (lihat canAccessMenu di src/App.tsx).
+    rolePermissions: {} as Record<string, string[]>,
+    // Akses per FOLDER (kategori) di halaman "Arsip Dokumen Kontrak" — beda
+    // level dgn rolePermissions di atas (itu per MENU/halaman; ini per
+    // folder DI DALAM satu halaman itu). Konvensi sama: role tidak ada di
+    // sini/array kosong = akses penuh ke semua folder (default aman).
+    folderPermissions: {} as Record<string, string[]>,
     // Sengaja kosong (bukan nama perusahaan contoh) — ini floor default yang
     // dipakai withSettingsDefaults() untuk SETIAP tenant yang belum pernah
     // menyimpan pengaturannya sendiri, jadi tenant baru tidak pernah mewarisi
@@ -1560,9 +1575,11 @@ app.post("/api/subfolders", requireAuth, requireRole("admin", "staff", "legal", 
   if (parentId) {
     const parent = (db.subFolders as SubFolder[]).find((f) => f.id === parentId && f.tenantId === tid);
     if (!parent) return res.status(400).json({ error: "Parent folder tidak ditemukan" });
-    if (parent.parentId) {
-      return res.status(400).json({ error: "Maksimal 2 level sub folder di bawah folder utama (sub folder > sub-sub folder)" });
-    }
+    // Dulu ada batas keras "maksimal 2 level" di sini (ditolak kalau parent-
+    // nya sendiri sudah punya parent). Dihapus atas permintaan user — sub
+    // folder sekarang boleh bersarang berapa level pun, tidak ada langit-
+    // langit lagi. Padanan di frontend (canAddDeeper, src/App.tsx) dihapus
+    // di request yang sama.
     if (parent.category !== category) {
       return res.status(400).json({ error: "Parent folder harus berada di kategori yang sama" });
     }

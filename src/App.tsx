@@ -89,6 +89,7 @@ import {
   ContractSharingFeeItem,
   ContractVendorSnapshot,
   ContractApprovalStep,
+  UserRole,
 } from "./types";
 
 // Mirrors dcs/pdf-compose.ts's layoutFlowGraph 1:1 (same algorithm, TS
@@ -1612,6 +1613,54 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
 export default function App() {
   // ===== AUTH =====
   const [currentUser, setCurrentUser] = useState<any>(null);
+  // RBAC menu sidebar — id di sini HARUS sama dengan activeTab id yang dipakai
+  // di tombol sidebar. "ai-tools" itu grup (Pusat Peraturan/Putusan/Opini/dst),
+  // digating SEBAGAI SATU KESATUAN, bukan per-item, biar konfigurasinya tidak
+  // kepanjangan. Dipakai UI Konfigurasi > Hak Akses untuk render matriksnya.
+  const MENU_ITEMS: { id: string; label: string }[] = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "monitoring", label: "Monitoring Kontrak" },
+    { id: "kontrak-karyawan", label: "Kontrak Karyawan" },
+    { id: "clauses", label: "Library Klausul & Template" },
+    { id: "internal-docs", label: "Dokumen Internal (DCS)" },
+    { id: "arsip", label: "Arsip per Folder" },
+    { id: "all-docs", label: "Tabel Semua Dokumen" },
+    { id: "konfigurasi", label: "Konfigurasi & Master Data" },
+    { id: "audits", label: "Audit Trail" },
+    { id: "audit-kontrak-dcs", label: "Audit Kontrak & DCS" },
+    { id: "kalender-legal", label: "Kalender Legal" },
+    { id: "retensi-arsip", label: "Retensi Arsip" },
+    { id: "performa-vendor", label: "Performa Vendor" },
+    { id: "ai-tools", label: "AI Tools Hukum (semua submenu)" },
+  ];
+  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["admin", "legal", "manager", "staff", "viewer"];
+  // Boleh lihat menu `id` atau tidak, untuk role saat ini. super_admin SELALU
+  // penuh (tidak pernah dibatasi config ini — sesuai keputusan "yang bebas
+  // cuma super admin"). Role yang belum pernah diatur di rolePermissions =
+  // akses PENUH juga (floor default aman, lihat komentar defaultSettings di
+  // server.ts) — supaya tenant yang belum sempat konfigurasi tidak mendadak
+  // kehilangan akses ke fiturnya sendiri.
+  const canSee = (menuId: string): boolean => {
+    const role = currentUser?.role;
+    if (!role || role === "super_admin") return true;
+    const allowed = appSettings?.rolePermissions?.[role];
+    if (!Array.isArray(allowed)) return true;
+    return allowed.includes(menuId);
+  };
+  // Sama seperti canSee di atas, tapi buat FOLDER (kategori) di dalam
+  // halaman "Arsip Dokumen Kontrak" — beda cakupan: canSee menentukan boleh
+  // buka halamannya atau tidak sama sekali; ini menentukan folder MANA yang
+  // kelihatan begitu sudah di dalam halamannya. Dua lapis independen,
+  // sengaja dipisah dari canSee/rolePermissions supaya matriksnya tidak
+  // campur aduk (menu vs folder beda ukuran/beda daftar).
+  const canSeeFolder = (category: string): boolean => {
+    const role = currentUser?.role;
+    if (!role || role === "super_admin") return true;
+    const allowed = appSettings?.folderPermissions?.[role];
+    if (!Array.isArray(allowed)) return true;
+    return allowed.includes(category);
+  };
+
   // Delegasi persetujuan (dua arah, dikirim /api/auth/me):
   //  - delegatedToMe : orang-orang yang menunjuk SAYA sebagai pengganti hari ini
   //  - myDelegation  : penunjukan yang SAYA buat (aktif atau terjadwal)
@@ -1845,6 +1894,14 @@ export default function App() {
   const [vendorEvalForm, setVendorEvalForm] = useState<{ rating: number; onTimeDelivery?: boolean; disputeCount: number; notes: string }>({ rating: 0, disputeCount: 0, notes: "" });
   const [integrityCheck, setIntegrityCheck] = useState<{ busy?: boolean; match?: boolean; currentHash?: string; error?: string }>({});
   const [auditSort, setAuditSort] = useState<SortState>({ key: "waktu", dir: "desc" });
+  // Halaman "Audit Kontrak & DCS" — tabel & filter TERPISAH dari auditSearch/
+  // auditPage/auditSort di atas (yang punya "Audit Trail" utama), supaya
+  // pencarian/halaman/urutan di kedua halaman tidak saling menimpa kalau
+  // dibuka bergantian.
+  const [auditKdSearch, setAuditKdSearch] = useState("");
+  const [auditKdPage, setAuditKdPage] = useState(1);
+  const [auditKdSort, setAuditKdSort] = useState<SortState>({ key: "waktu", dir: "desc" });
+  const [auditKdModule, setAuditKdModule] = useState<"semua" | "eksternal" | "karyawan" | "dcs">("semua");
 
   // Arsip Dokumen (folder per kategori) + form pendaftaran dokumen upload
   const [arsipFolder, setArsipFolder] = useState<string | null>(null);
@@ -8608,6 +8665,7 @@ export default function App() {
                 MENU UTAMA
               </p>
 
+              {canSee("dashboard") && (
               <button
                 onClick={() => {
                   setActiveTab("dashboard");
@@ -8622,10 +8680,12 @@ export default function App() {
                 <LayoutDashboard className="w-4 h-4" />
                 Dashboard
               </button>
+              )}
 
               <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5" title="Perjanjian dengan pihak kedua — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
                 Dokumen Eksternal &middot; Kontrak
               </p>
+              {canSee("monitoring") && (
               <button
                 onClick={() => {
                   setActiveTab("monitoring");
@@ -8656,7 +8716,9 @@ export default function App() {
                   ) : null;
                 })()}
               </button>
+              )}
 
+              {canSee("kontrak-karyawan") && (
               <button
                 onClick={() => {
                   setActiveTab("kontrak-karyawan");
@@ -8680,7 +8742,9 @@ export default function App() {
                   ) : null;
                 })()}
               </button>
+              )}
 
+              {canSee("clauses") && (
               <button
                 onClick={() => {
                   setActiveTab("clauses");
@@ -8695,10 +8759,12 @@ export default function App() {
                 <Sliders className="w-4 h-4" />
                 Library Klausul & Tpl
               </button>
+              )}
 
               <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5" title="SOP, Instruksi Kerja, Memo, Kebijakan — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem, tidak perlu meterai.">
                 Dokumen Internal &middot; DCS
               </p>
+              {canSee("internal-docs") && (
               <button
                 onClick={() => {
                   setActiveTab("internal-docs");
@@ -8713,10 +8779,12 @@ export default function App() {
                 <Workflow className="w-4 h-4" />
                 Dokumen Internal (DCS)
               </button>
+              )}
 
               <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5" title="Gabungan dokumen dari kedua jalur — menampilkan kontrak eksternal maupun dokumen DCS bersama-sama.">
                 Arsip &amp; Daftar &middot; Gabungan
               </p>
+              {canSee("arsip") && (
               <button
                 onClick={() => {
                   setActiveTab("arsip");
@@ -8732,7 +8800,9 @@ export default function App() {
                 <FolderOpen className="w-4 h-4" />
                 Arsip per Folder
               </button>
+              )}
 
+              {canSee("all-docs") && (
               <button
                 onClick={() => {
                   setActiveTab("all-docs");
@@ -8748,7 +8818,9 @@ export default function App() {
                 <CheckSquare className="w-4 h-4" />
                 Tabel Semua Dokumen
               </button>
+              )}
 
+              {canSee("konfigurasi") && (
               <button
                 onClick={() => {
                   setActiveTab("konfigurasi");
@@ -8763,7 +8835,9 @@ export default function App() {
                 <Sliders className="w-4 h-4" />
                 Konfigurasi & Master Data
               </button>
+              )}
 
+              {canSee("audits") && (
               <button
                 onClick={() => {
                   setActiveTab("audits");
@@ -8778,7 +8852,27 @@ export default function App() {
                 <Settings className="w-4 h-4" />
                 Audit Trail
               </button>
+              )}
 
+              {canSee("audit-kontrak-dcs") && (
+              <button
+                onClick={() => {
+                  setActiveTab("audit-kontrak-dcs");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === "audit-kontrak-dcs"
+                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
+                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                }`}
+                title="Audit Trail yang sama, disaring khusus Kontrak Eksternal, Kontrak Karyawan, dan Dokumen DCS."
+              >
+                <Layers className="w-4 h-4" />
+                Audit Kontrak &amp; DCS
+              </button>
+              )}
+
+              {canSee("kalender-legal") && (
               <button
                 onClick={() => {
                   setActiveTab("kalender-legal");
@@ -8793,7 +8887,9 @@ export default function App() {
                 <CalendarDays className="w-4 h-4" />
                 Kalender Legal
               </button>
+              )}
 
+              {canSee("retensi-arsip") && (
               <button
                 onClick={() => {
                   setActiveTab("retensi-arsip");
@@ -8808,7 +8904,9 @@ export default function App() {
                 <Archive className="w-4 h-4" />
                 Retensi Arsip
               </button>
+              )}
 
+              {canSee("performa-vendor") && (
               <button
                 onClick={() => {
                   setActiveTab("performa-vendor");
@@ -8823,9 +8921,11 @@ export default function App() {
                 <Star className="w-4 h-4" />
                 Performa Vendor
               </button>
+              )}
 
             </div>
 
+            {canSee("ai-tools") && (
             <div className="pt-2">
               <button
                 onClick={() => setShowToolsMenu(!showToolsMenu)}
@@ -8977,6 +9077,7 @@ export default function App() {
                 </div>
               )}
             </div>
+            )}
           </div>
 
         </aside>
@@ -10962,6 +11063,7 @@ export default function App() {
                   { group: "Perusahaan & Sistem", items: [
                     { k: "app", label: "Perusahaan & e-Meterai" },
                     ...(currentUser.role === "admin" || currentUser.role === "super_admin" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
+                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
                     ...(currentUser.role === "super_admin" ? [{ k: "perusahaan", label: "Kelola Perusahaan" }] : []),
                   ] },
                 ] as { group: string; items: { k: string; label: string; main?: string }[] }[]).map((grp) => (
@@ -12367,6 +12469,169 @@ export default function App() {
                 </div>
               )}
 
+              {/* HAK AKSES PER ROLE (RBAC) — matriks menu x role, disimpan di
+                  appSettings.rolePermissions (bukan hardcode di kode), jadi
+                  admin bisa ubah kapan saja tanpa deploy ulang. super_admin
+                  tidak ditampilkan sebagai kolom karena selalu akses penuh,
+                  tidak bisa dibatasi dari sini (lihat canSee()). Role yang
+                  checkbox-nya SEMUA kosong = akses penuh (belum diatur),
+                  bukan "tidak boleh apa-apa" — supaya nyalain fitur ini
+                  pertama kali tidak mendadak mengunci semua orang. */}
+              {(currentUser.role === "admin" || currentUser.role === "super_admin") && configTab === "hakakses" && (() => {
+                const rp: Record<string, string[]> = appSettings.rolePermissions || {};
+                const isChecked = (role: string, menuId: string) =>
+                  !Array.isArray(rp[role]) || rp[role].includes(menuId);
+                const toggle = (role: string, menuId: string) => {
+                  const current = Array.isArray(rp[role]) ? rp[role] : MENU_ITEMS.map((m) => m.id);
+                  const next = current.includes(menuId) ? current.filter((m) => m !== menuId) : [...current, menuId];
+                  setAppSettings({ ...appSettings, rolePermissions: { ...rp, [role]: next } });
+                };
+                const resetRole = (role: string) => {
+                  const { [role]: _drop, ...rest } = rp;
+                  setAppSettings({ ...appSettings, rolePermissions: rest });
+                };
+                return (
+                  <div className="space-y-4">
+                    <div className="space-y-0.5">
+                      <h3 className="text-base font-semibold text-slate-100">Hak Akses Menu per Role</h3>
+                      <p className="text-[13px] text-slate-500">Centang = role itu BOLEH buka menu tersebut. <b>super_admin</b> selalu penuh, tidak ada di tabel ini. Kosongkan semua centang di satu kolom role = role itu diperlakukan "belum diatur" (akses penuh juga).</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="text-[12px] border-collapse">
+                        <thead>
+                          <tr>
+                            <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950">Menu</th>
+                            {ALL_ROLES_EXCEPT_SUPER.map((role) => (
+                              <th key={role} className="px-3 py-2 text-slate-300 font-bold uppercase text-center">
+                                {role}
+                                <button
+                                  type="button"
+                                  onClick={() => resetRole(role)}
+                                  title="Reset role ini ke akses penuh"
+                                  className="block mx-auto mt-0.5 text-[9px] font-normal normal-case text-slate-600 hover:text-indigo-400 cursor-pointer"
+                                >
+                                  reset
+                                </button>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {MENU_ITEMS.map((m) => (
+                            <tr key={m.id} className="border-t border-slate-850">
+                              <td className="px-3 py-2 text-slate-200 sticky left-0 bg-slate-950">{m.label}</td>
+                              {ALL_ROLES_EXCEPT_SUPER.map((role) => (
+                                <td key={role} className="px-3 py-2 text-center">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked(role, m.id)}
+                                    onChange={() => toggle(role, m.id)}
+                                    className="w-4 h-4 accent-indigo-600 cursor-pointer"
+                                  />
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <button
+                      onClick={handleSaveSettings}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Check className="w-4 h-4" /> Simpan Hak Akses
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* HAK AKSES FOLDER ARSIP PER ROLE — lapis KEDUA, independen dari
+                  matriks menu di atas. Matriks di atas cuma menentukan boleh
+                  buka halaman "Arsip per Folder" atau tidak SAMA SEKALI;
+                  yang ini menentukan folder (kategori) MANA yang kelihatan
+                  begitu role tsb sudah di dalam halaman itu — disimpan
+                  terpisah di appSettings.folderPermissions (bukan
+                  rolePermissions), dibaca lewat canSeeFolder(). Cuma
+                  memengaruhi grid folder di halaman Arsip Dokumen Kontrak —
+                  SENGAJA tidak menyentuh dropdown kategori di tempat lain
+                  (bikin kontrak baru, Library Klausul, filter Monitoring,
+                  dst), supaya role yang folder arsipnya dibatasi di sini
+                  tetap bisa memilih kategori itu saat membuat kontrak baru
+                  seperti biasa — cuma "melihat arsipnya" yang dibatasi. */}
+              {(currentUser.role === "admin" || currentUser.role === "super_admin") && configTab === "hakakses" && (() => {
+                const fp: Record<string, string[]> = appSettings.folderPermissions || {};
+                const isChecked = (role: string, cat: string) =>
+                  !Array.isArray(fp[role]) || fp[role].includes(cat);
+                const toggle = (role: string, cat: string) => {
+                  const current = Array.isArray(fp[role]) ? fp[role] : clauseCategories;
+                  const next = current.includes(cat) ? current.filter((c) => c !== cat) : [...current, cat];
+                  setAppSettings({ ...appSettings, folderPermissions: { ...fp, [role]: next } });
+                };
+                const resetRole = (role: string) => {
+                  const { [role]: _drop, ...rest } = fp;
+                  setAppSettings({ ...appSettings, folderPermissions: rest });
+                };
+                return (
+                  <div className="space-y-4 pt-6 mt-6 border-t border-slate-800">
+                    <div className="space-y-0.5">
+                      <h3 className="text-base font-semibold text-slate-100">Hak Akses Folder Arsip per Role</h3>
+                      <p className="text-[13px] text-slate-500">Centang = role itu BOLEH lihat/buka folder tersebut di halaman "Arsip Dokumen Kontrak". Tidak memengaruhi pemilihan kategori di tempat lain (bikin kontrak, Library Klausul, dst). Kosongkan semua centang di satu kolom role = role itu diperlakukan "belum diatur" (akses penuh juga).</p>
+                    </div>
+                    {clauseCategories.length === 0 ? (
+                      <p className="text-[12px] text-slate-500 italic">Belum ada folder/kategori yang dibuat.</p>
+                    ) : (
+                      <>
+                        <div className="overflow-x-auto">
+                          <table className="text-[12px] border-collapse">
+                            <thead>
+                              <tr>
+                                <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950">Folder</th>
+                                {ALL_ROLES_EXCEPT_SUPER.map((role) => (
+                                  <th key={role} className="px-3 py-2 text-slate-300 font-bold uppercase text-center">
+                                    {role}
+                                    <button
+                                      type="button"
+                                      onClick={() => resetRole(role)}
+                                      title="Reset role ini ke akses penuh"
+                                      className="block mx-auto mt-0.5 text-[9px] font-normal normal-case text-slate-600 hover:text-indigo-400 cursor-pointer"
+                                    >
+                                      reset
+                                    </button>
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {clauseCategories.map((cat) => (
+                                <tr key={cat} className="border-t border-slate-850">
+                                  <td className="px-3 py-2 text-slate-200 sticky left-0 bg-slate-950">{cat}</td>
+                                  {ALL_ROLES_EXCEPT_SUPER.map((role) => (
+                                    <td key={role} className="px-3 py-2 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={isChecked(role, cat)}
+                                        onChange={() => toggle(role, cat)}
+                                        className="w-4 h-4 accent-indigo-600 cursor-pointer"
+                                      />
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <button
+                          onClick={handleSaveSettings}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Check className="w-4 h-4" /> Simpan Hak Akses Folder
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* TENANT / COMPANY MANAGEMENT (super_admin) */}
               {configTab === "perusahaan" && (
                 <div className="space-y-4">
@@ -12492,65 +12757,23 @@ export default function App() {
                       : "Semua kontrak (dibuat di sistem maupun dokumen upload) dipantau masa berlakunya di sini."}
                   </p>
                 </div>
-                <div className="flex flex-wrap gap-3">
-                  <input
-                    type="text"
-                    placeholder="Cari judul, nomor, pihak, atau ISI pasal…"
-                    title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
-                    value={monitorSearch}
-                    onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
-                    className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500 w-full md:w-64"
-                  />
-                  <select
-                    value={monitorCategory}
-                    onChange={(e) => { setMonitorCategory(e.target.value); setMonitorPage(1); }}
-                    className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="Semua">Semua Kategori</option>
-                    {clauseCategories.map((cat) => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
-                  </select>
-                  <select
-                    value={monitorStatus}
-                    onChange={(e) => { setMonitorStatus(e.target.value); setMonitorPage(1); }}
-                    className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="Semua">Semua Status</option>
-                    {Array.from(new Set(contracts.map((c) => c.status)))
-                      .sort()
-                      .map((st) => (
-                        <option key={st} value={st}>{contractStatusLabel(st as ContractStatus)}</option>
-                      ))}
-                  </select>
-                  <select
-                    value={monitorScope}
-                    onChange={(e) => { setMonitorScope(e.target.value as "all" | "aktif" | "nonaktif"); setMonitorPage(1); }}
-                    title="Tampilkan kontrak Aktif, Tidak Aktif (diakhiri/diarsipkan), atau keduanya."
-                    className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="all">Aktif &amp; Tidak Aktif</option>
-                    <option value="aktif">Hanya Aktif</option>
-                    <option value="nonaktif">Hanya Tidak Aktif</option>
-                  </select>
-                  <button
-                    onClick={() => {
-                      const locked = activeTab === "kontrak-karyawan" ? "employee" : "external";
-                      setCreationLockedParty(locked);
-                      setNewContractForm((f) => ({
-                        ...f,
-                        party2Type: locked === "employee" ? "Karyawan" : (masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type),
-                        category: locked === "employee" ? "Employment" : f.category,
-                      }));
-                      setCreationStep(1);
-                      setIsCreating(true);
-                    }}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    {activeTab === "kontrak-karyawan" ? "Buat Kontrak Karyawan" : "Buat Kontrak Eksternal"}
-                  </button>
-                </div>
+                <button
+                  onClick={() => {
+                    const locked = activeTab === "kontrak-karyawan" ? "employee" : "external";
+                    setCreationLockedParty(locked);
+                    setNewContractForm((f) => ({
+                      ...f,
+                      party2Type: locked === "employee" ? "Karyawan" : (masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type),
+                      category: locked === "employee" ? "Employment" : f.category,
+                    }));
+                    setCreationStep(1);
+                    setIsCreating(true);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg cursor-pointer shrink-0"
+                >
+                  <Plus className="w-4 h-4" />
+                  {activeTab === "kontrak-karyawan" ? "Buat Kontrak Karyawan" : "Buat Kontrak Eksternal"}
+                </button>
               </div>
 
               {(() => {
@@ -12699,6 +12922,55 @@ export default function App() {
                         {isiOnlyCount} dokumen cocok dari <b>isi pasal / teks OCR</b>, bukan dari judul atau nomornya — kata kuncinya dicuplik di bawah judul.
                       </p>
                     )}
+
+                    {/* Search & filter — dipindah ke sini (di bawah kartu ringkasan,
+                        di atas tabel) atas permintaan user, terpisah dari baris
+                        judul supaya judul + tombol "Buat Kontrak" tetap ringkas
+                        sejajar di atas. State (monitorSearch/Category/Status/
+                        Scope) & perilakunya SAMA PERSIS, cuma lokasi JSX-nya
+                        pindah — tidak ada logic yang berubah. */}
+                    <div className="flex flex-wrap gap-3">
+                      <input
+                        type="text"
+                        placeholder="Cari judul, nomor, pihak, atau ISI pasal…"
+                        title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
+                        value={monitorSearch}
+                        onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
+                        className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500 w-full md:w-64"
+                      />
+                      <select
+                        value={monitorCategory}
+                        onChange={(e) => { setMonitorCategory(e.target.value); setMonitorPage(1); }}
+                        className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="Semua">Semua Kategori</option>
+                        {clauseCategories.map((cat) => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                      </select>
+                      <select
+                        value={monitorStatus}
+                        onChange={(e) => { setMonitorStatus(e.target.value); setMonitorPage(1); }}
+                        className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="Semua">Semua Status</option>
+                        {Array.from(new Set(contracts.map((c) => c.status)))
+                          .sort()
+                          .map((st) => (
+                            <option key={st} value={st}>{contractStatusLabel(st as ContractStatus)}</option>
+                          ))}
+                      </select>
+                      <select
+                        value={monitorScope}
+                        onChange={(e) => { setMonitorScope(e.target.value as "all" | "aktif" | "nonaktif"); setMonitorPage(1); }}
+                        title="Tampilkan kontrak Aktif, Tidak Aktif (diakhiri/diarsipkan), atau keduanya."
+                        className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="all">Aktif &amp; Tidak Aktif</option>
+                        <option value="aktif">Hanya Aktif</option>
+                        <option value="nonaktif">Hanya Tidak Aktif</option>
+                      </select>
+                    </div>
 
                     <div className="flex items-center justify-between gap-3 flex-wrap">
                       <p className="text-[11px] text-slate-500">
@@ -13720,65 +13992,78 @@ export default function App() {
                     Gabungan kontrak eksternal &amp; dokumen internal (DCS) — kelola dan lakukan aksi massal pada kontrak aktif maupun non-aktif.
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="relative">
-                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
-                    <input
-                      type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
-                      placeholder="Cari nomor, judul, atau ISI pasal…"
-                      title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
-                      className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-60"
-                    />
-                  </div>
-                  <button
-                    onClick={() => handleOpenActivateModal()}
-                    title="Unggah bukti TTD untuk kontrak yang sudah FullyApproved — statusnya otomatis jadi Aktif"
-                    className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/40 border border-emerald-600/30 text-emerald-300 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
-                  >
-                    <Upload className="w-3.5 h-3.5" /> Unggah &amp; Aktifkan
-                  </button>
-                  <button
-                    onClick={() => { setBulkImportOpen(true); setBulkImportPhase("pilih"); setBulkImportRows([]); setBulkImportInfo(""); }}
-                    title="Migrasi kontrak lama: unggah banyak PDF/scan sekaligus (dibaca OCR), atau impor register dari CSV."
-                    className="px-3 py-2 bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-800 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
-                  >
-                    <Upload className="w-3.5 h-3.5" /> Impor Massal
-                  </button>
-                  <button
-                    onClick={exportAllDocs}
-                    disabled={visibleContracts.length + visibleDcsDocs.length === 0}
-                    title="Mengunduh daftar gabungan yang sedang tampil (kontrak + DCS) sebagai CSV — langsung bisa dibuka di Excel."
-                    className="px-3 py-2 bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-emerald-300 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                  >
-                    <Download className="w-3.5 h-3.5" /> Ekspor CSV
-                  </button>
-                  <select
-                    value={allDocsStatusFilter}
-                    onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); setAllDocsPage(1); }}
-                    className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                  >
-                    <option value="all">Semua Status ({totalCount})</option>
-                    <option value="aktif">Aktif ({aktifCount})</option>
-                    <option value="nonaktif">Non-Aktif ({totalCount - aktifCount})</option>
-                  </select>
-                  {selectedContractIds.length > 0 && (
-                    <div className="flex flex-wrap items-center gap-2 bg-indigo-500/10 p-2 rounded-xl border border-indigo-500/20">
-                      <span className="text-xs font-bold text-indigo-400 px-2">{selectedContractIds.length} Terpilih</span>
-                      <button onClick={() => setIsBulkMoveModalOpen(true)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shadow-lg">
-                        <FolderOpen className="w-3.5 h-3.5" /> Pindahkan ke Arsip
-                      </button>
-                      <button onClick={handleBulkDownload} disabled={isBulkDownloading} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition border border-slate-700">
-                        {isBulkDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Download PDF (Zip)
-                      </button>
-                      <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-700 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
-                        <Bell className="w-3.5 h-3.5" /> Kirim Pengingat
-                      </button>
-                      <button onClick={handleBulkDelete} className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 border border-rose-600/30 text-rose-300 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
-                        <Trash2 className="w-3.5 h-3.5" /> Hapus
-                      </button>
-                    </div>
-                  )}
+                <button
+                  onClick={() => handleOpenActivateModal()}
+                  title="Unggah bukti TTD untuk kontrak yang sudah FullyApproved — statusnya otomatis jadi Aktif"
+                  className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/40 border border-emerald-600/30 text-emerald-400 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shrink-0"
+                >
+                  <Upload className="w-3.5 h-3.5" /> Unggah &amp; Aktifkan
+                </button>
+              </div>
+
+              {/* Search & kontrol lain — dipindah ke baris sendiri di bawah
+                  judul (di atas tabel) atas permintaan user, supaya baris
+                  judul tetap 1 baris ringkas dengan "Unggah & Aktifkan" saja
+                  sebagai aksi utama. State & fungsinya SAMA PERSIS, cuma
+                  lokasi JSX-nya pindah.
+                  Warna teks tombol beraksen (emerald/violet/amber/rose) di
+                  blok ini dipakai shade -400, BUKAN -300 — lihat index.css:
+                  cuma -400 yang dikalibrasi ulang utk kontras di tema
+                  terang ("accent text, icons, active-nav labels on light");
+                  -300 tetap nilai Tailwind standar yg dibuat utk teks di
+                  atas latar GELAP, jadi nyaris tak kebaca di atas
+                  bg-{warna}-600/20 yg pucat di tema terang ini. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                  <input
+                    type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
+                    placeholder="Cari nomor, judul, atau ISI pasal…"
+                    title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
+                    className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-60"
+                  />
                 </div>
+                <button
+                  onClick={() => { setBulkImportOpen(true); setBulkImportPhase("pilih"); setBulkImportRows([]); setBulkImportInfo(""); }}
+                  title="Migrasi kontrak lama: unggah banyak PDF/scan sekaligus (dibaca OCR), atau impor register dari CSV."
+                  className="px-3 py-2 bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-400 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
+                >
+                  <Upload className="w-3.5 h-3.5" /> Impor Massal
+                </button>
+                <select
+                  value={allDocsStatusFilter}
+                  onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); setAllDocsPage(1); }}
+                  className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="all">Semua Status ({totalCount})</option>
+                  <option value="aktif">Aktif ({aktifCount})</option>
+                  <option value="nonaktif">Non-Aktif ({totalCount - aktifCount})</option>
+                </select>
+                <button
+                  onClick={exportAllDocs}
+                  disabled={visibleContracts.length + visibleDcsDocs.length === 0}
+                  title="Mengunduh daftar gabungan yang sedang tampil (kontrak + DCS) sebagai CSV — langsung bisa dibuka di Excel."
+                  className="px-3 py-2 bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-emerald-400 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <Download className="w-3.5 h-3.5" /> Ekspor CSV
+                </button>
+                {selectedContractIds.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 bg-indigo-500/10 p-2 rounded-xl border border-indigo-500/20">
+                    <span className="text-xs font-bold text-indigo-400 px-2">{selectedContractIds.length} Terpilih</span>
+                    <button onClick={() => setIsBulkMoveModalOpen(true)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shadow-lg">
+                      <FolderOpen className="w-3.5 h-3.5" /> Pindahkan ke Arsip
+                    </button>
+                    <button onClick={handleBulkDownload} disabled={isBulkDownloading} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition border border-slate-700">
+                      {isBulkDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Download PDF (Zip)
+                    </button>
+                    <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
+                      <Bell className="w-3.5 h-3.5" /> Kirim Pengingat
+                    </button>
+                    <button onClick={handleBulkDelete} className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 border border-rose-600/30 text-rose-400 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
+                      <Trash2 className="w-3.5 h-3.5" /> Hapus
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="bg-slate-950/60 border border-slate-800 rounded-2xl overflow-hidden">
@@ -13970,7 +14255,7 @@ export default function App() {
 
               {!arsipFolder ? (
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {clauseCategories.map((cat) => {
+                  {clauseCategories.filter(canSeeFolder).map((cat) => {
                     const docsIn = contracts.filter((c) => c.category === cat);
                     const withPdf = docsIn.filter((c) => !!c.masterPdfUrl);
                     const draftCount = docsIn.filter((c) => !isSignedContract(c)).length;
@@ -14076,7 +14361,23 @@ export default function App() {
                   (d) => d.archiveCategory === arsipFolder && (d.archiveSubFolderId || null) === currentFolderId
                     && d.versions.some((v) => v.status === "effective"),
                 ) : [];
-                const canAddDeeper = arsipSubPath.length < 2;
+                // Dulu dibatasi keras 2 level (Kategori > Sub > Sub-Sub) — lihat
+                // juga batas kembarannya di server.ts (POST /api/subfolders,
+                // dihapus di request yang sama dgn ini). Sekarang TANPA BATAS:
+                // arsipSubPath cuma array id folder yang sedang didrill-down,
+                // breadcrumb & handleAddSubFolder di bawah sudah generik utk
+                // kedalaman berapa pun (parentId = currentFolderId apa adanya),
+                // jadi cukup selalu izinkan tombol tambah tampil.
+                const canAddDeeper = true;
+                // Label dulu cuma 2 varian ("Sub" / "Sub-Sub") krn dulu memang
+                // mentok di situ. Sekarang generik: nama levelnya ikut angka
+                // kedalaman saat ini + 1, supaya tetap masuk akal di level
+                // manapun (3, 4, 5, dst), bukan cuma "Sub-Sub Folder Baru"
+                // yang berulang tak jelas begitu lebih dalam dari level 2.
+                const subFolderLevelLabel =
+                  arsipSubPath.length === 0 ? "Sub Folder Baru"
+                  : arsipSubPath.length === 1 ? "Sub-Sub Folder Baru"
+                  : `Sub Folder Baru (Level ${arsipSubPath.length + 1})`;
                 return (
                   <div className="space-y-4">
                     <div className="flex items-center flex-wrap gap-1 text-xs">
@@ -14161,7 +14462,7 @@ export default function App() {
                         {canAddDeeper && (
                           <button
                             onClick={() => askText({
-                              title: arsipSubPath.length === 0 ? "Sub Folder Baru" : "Sub-Sub Folder Baru",
+                              title: subFolderLevelLabel,
                               label: "Nama folder",
                               onConfirm: (name) => handleAddSubFolder(arsipFolder!, currentFolderId, name),
                             })}
@@ -14169,7 +14470,7 @@ export default function App() {
                           >
                             <Plus className="w-6 h-6 mb-2" />
                             <p className="font-bold text-xs">
-                              {arsipSubPath.length === 0 ? "Sub Folder Baru" : "Sub-Sub Folder Baru"}
+                              {subFolderLevelLabel}
                             </p>
                           </button>
                         )}
@@ -17693,6 +17994,249 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {activeTab === "audit-kontrak-dcs" && (() => {
+            // Halaman baru: SUMBER DATA SAMA dgn tab "Audit Trail" di atas
+            // (satu array db.audits — lihat pushAudit di server.ts &
+            // pushDcsAudit di dcs/routes.ts), tapi disaring KHUSUS 3
+            // kategori: Kontrak Eksternal, Kontrak Karyawan (internal), dan
+            // Dokumen DCS — mengecualikan aktivitas modul lain (pengguna,
+            // pengaturan tenant, master data, vendor master, dst) yang tidak
+            // relevan di sini.
+            //
+            // Klasifikasi murni di FRONTEND (tidak nambah kolom/field baru
+            // di database, tidak menyentuh server.ts/dcs sama sekali):
+            // - DCS dikenali dari action yang SELALU diakhiri "Dokumen DCS"
+            //   (lihat pushDcsAudit di dcs/routes.ts — SEMUA actionnya
+            //   konsisten begitu by design, komentarnya bilang eksplisit
+            //   "seragam tanpa perubahan apa pun di sisi pembaca").
+            // - Karyawan vs Eksternal dikenali dari party2Type kontrak yang
+            //   berkaitan (lookup by contractNumber ke state `contracts`,
+            //   pola sama dgn isEmployeeParty yg sudah dipakai di tab
+            //   "Kontrak Karyawan").
+            // - Entry tanpa contractNumber & bukan DCS (create user, ganti
+            //   password, update tenant/settings, vendor master, dst) di
+            //   luar cakupan 3 kategori ini → disembunyikan.
+            // Batasan yang disadari: kalau kontraknya SUDAH dihapus, lookup
+            // party2Type gagal dan entry itu jatuh default ke "eksternal"
+            // (bukan salah row-nya, cuma label modulnya bisa kurang presisi
+            // utk kasus langka ini).
+            const classify = (a: any): "dcs" | "karyawan" | "eksternal" | null => {
+              if (String(a.action || "").includes("DCS")) return "dcs";
+              if (!a.contractNumber) return null;
+              const c = (contracts as Contract[]).find((x) => x.contractNumber === a.contractNumber);
+              if (c && isEmployeeParty(c.party2Type)) return "karyawan";
+              return "eksternal";
+            };
+            const scoped = (audits as any[])
+              .map((a) => ({ ...a, __modul: classify(a) }))
+              .filter((a) => a.__modul !== null) as Array<any & { __modul: "dcs" | "karyawan" | "eksternal" }>;
+            const countEksternal = scoped.filter((a) => a.__modul === "eksternal").length;
+            const countKaryawan = scoped.filter((a) => a.__modul === "karyawan").length;
+            const countDcs = scoped.filter((a) => a.__modul === "dcs").length;
+            const byModule = auditKdModule === "semua" ? scoped : scoped.filter((a) => a.__modul === auditKdModule);
+            const q = auditKdSearch.toLowerCase();
+            const searched = byModule.filter((a) => !q ||
+              String(a.userName || "").toLowerCase().includes(q) ||
+              String(a.action || "").toLowerCase().includes(q) ||
+              String(a.details || "").toLowerCase().includes(q) ||
+              String(a.contractNumber || "").toLowerCase().includes(q) ||
+              String(a.userRole || "").toLowerCase().includes(q));
+            const rows = sortRows(searched, auditKdSort, {
+              pengguna: (a: any) => a.userName,
+              modul: (a: any) => a.__modul,
+              aktivitas: (a: any) => a.action,
+              detail: (a: any) => a.details,
+              kontrak: (a: any) => a.contractNumber,
+              waktu: (a: any) => new Date(a.timestamp).getTime(),
+            });
+            const onSort = (k: string) => setAuditKdSort((s) => nextSort(s, k));
+            const KD_PAGE_SIZE = 10;
+            const totalPages = Math.max(1, Math.ceil(rows.length / KD_PAGE_SIZE));
+            const safePage = Math.min(auditKdPage, totalPages);
+            const pageRows = rows.slice((safePage - 1) * KD_PAGE_SIZE, safePage * KD_PAGE_SIZE);
+            const moduleBadge = (m: "dcs" | "karyawan" | "eksternal") => {
+              if (m === "dcs") return <span className="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 font-semibold text-[10px]">DCS</span>;
+              if (m === "karyawan") return <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 font-semibold text-[10px]">Karyawan</span>;
+              return <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 font-semibold text-[10px]">Eksternal</span>;
+            };
+            return (
+            <div className="space-y-6 animate-fadeIn text-xs">
+              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
+                <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                  <Layers className="text-indigo-400 w-5 h-5" />
+                  Audit Trail Kontrak &amp; DCS
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Log forensik yang sama dengan halaman "Audit Trail" utama, disaring
+                  khusus tiga kategori: Kontrak Eksternal, Kontrak Karyawan (internal),
+                  dan Dokumen Internal (DCS) — tanpa aktivitas modul lain (pengguna,
+                  pengaturan, master data, dst).
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
+                {/* Log Kontrak & DCS (8 cols) */}
+                <div className="xl:col-span-8 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-3 flex-wrap">
+                    <h3 className="font-bold text-sm">
+                      Log Aktivitas Kontrak &amp; DCS
+                    </h3>
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                      <input
+                        type="text" value={auditKdSearch} onChange={(e) => { setAuditKdSearch(e.target.value); setAuditKdPage(1); }}
+                        placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
+                        className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-72"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {([
+                      ["semua", `Semua (${scoped.length})`],
+                      ["eksternal", `Kontrak Eksternal (${countEksternal})`],
+                      ["karyawan", `Kontrak Karyawan (${countKaryawan})`],
+                      ["dcs", `DCS (${countDcs})`],
+                    ] as const).map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => { setAuditKdModule(key); setAuditKdPage(1); }}
+                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-semibold cursor-pointer transition border ${
+                          auditKdModule === key
+                            ? "bg-indigo-600/20 text-indigo-300 border-indigo-500/40"
+                            : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left border-collapse">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase">
+                          <SortableTh label="Pengguna & Jabatan" colKey="pengguna" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
+                          <SortableTh label="Modul" colKey="modul" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
+                          <SortableTh label="Aktivitas" colKey="aktivitas" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
+                          <SortableTh label="Detail Perubahan" colKey="detail" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
+                          <SortableTh label="No. Kontrak/Dokumen" colKey="kontrak" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
+                          <SortableTh label="Waktu & IP" colKey="waktu" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-850">
+                        {pageRows.length === 0 && (
+                          <tr><td colSpan={6} className="py-8 text-center text-slate-500 italic">Tidak ada log yang cocok.</td></tr>
+                        )}
+                        {pageRows.map((a, i) => (
+                          <tr
+                            key={a.id || i}
+                            className="hover:bg-slate-900/40 transition"
+                          >
+                            <td className="py-3 px-3">
+                              <p className="font-bold text-slate-200">
+                                {a.userName}
+                              </p>
+                              <span className="text-[9px] text-indigo-400 font-semibold">
+                                {a.userRole}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3">{moduleBadge(a.__modul)}</td>
+                            <td className="py-3 px-3">
+                              <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 font-semibold">
+                                {a.action}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 text-slate-300">
+                              {a.details}
+                            </td>
+                            <td className="py-3 px-3 font-mono text-indigo-400">
+                              {a.contractNumber || "-"}
+                            </td>
+                            <td className="py-3 px-3 text-slate-500">
+                              <p>
+                                {new Date(a.timestamp).toLocaleString("id-ID")}
+                              </p>
+                              <span className="text-[9px]">{a.ipAddress}</span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {rows.length > KD_PAGE_SIZE && (
+                    <div className="flex items-center justify-between pt-2 text-[11px] text-slate-400">
+                      <span>
+                        Menampilkan {(safePage - 1) * KD_PAGE_SIZE + 1}–{Math.min(safePage * KD_PAGE_SIZE, rows.length)} dari {rows.length} log
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => setAuditKdPage((p) => Math.max(1, p - 1))}
+                          disabled={safePage <= 1}
+                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                        >
+                          Sebelumnya
+                        </button>
+                        <span className="px-2 font-semibold text-slate-300">
+                          {safePage} / {totalPages}
+                        </span>
+                        <button
+                          onClick={() => setAuditKdPage((p) => Math.min(totalPages, p + 1))}
+                          disabled={safePage >= totalPages}
+                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                        >
+                          Berikutnya
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Ringkasan per Modul (4 cols) */}
+                <div className="xl:col-span-4 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+                  <div className="border-b border-slate-800 pb-2">
+                    <h3 className="font-bold text-sm">
+                      Ringkasan per Modul
+                    </h3>
+                    <p className="text-[10px] text-slate-500">
+                      Total aktivitas tercatat, semua waktu
+                    </p>
+                  </div>
+                  <div className="space-y-2.5">
+                    <div className="p-3 bg-slate-900 rounded-xl border border-slate-855 flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-slate-200">Kontrak Eksternal</p>
+                        <p className="text-[10px] text-slate-500">Vendor / Customer / Mitra</p>
+                      </div>
+                      <span className="text-lg font-bold text-indigo-400">{countEksternal}</span>
+                    </div>
+                    <div className="p-3 bg-slate-900 rounded-xl border border-slate-855 flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-slate-200">Kontrak Karyawan</p>
+                        <p className="text-[10px] text-slate-500">Internal (PKWT/PKWTT)</p>
+                      </div>
+                      <span className="text-lg font-bold text-emerald-400">{countKaryawan}</span>
+                    </div>
+                    <div className="p-3 bg-slate-900 rounded-xl border border-slate-855 flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-slate-200">Dokumen DCS</p>
+                        <p className="text-[10px] text-slate-500">SOP / IK / Memo / Kebijakan</p>
+                      </div>
+                      <span className="text-lg font-bold text-violet-400">{countDcs}</span>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-600 pt-2 border-t border-slate-850">
+                    Sumber data sama dengan halaman "Audit Trail" utama — cuma
+                    disaring. Aktivitas modul lain (pengguna, pengaturan, master
+                    data, vendor, dst) tidak ditampilkan di sini.
+                  </p>
+                </div>
+              </div>
+            </div>
+            );
+          })()}
         </main>
       </div>
 

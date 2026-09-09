@@ -24,6 +24,7 @@ import {
   Sparkles,
   RefreshCw,
   ChevronRight,
+  ChevronLeft,
   ArrowLeftRight,
   Check,
   AlertTriangle,
@@ -71,6 +72,10 @@ import {
   Send,
   Percent,
   Lock,
+  Sun,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import {
   Clause,
@@ -1611,6 +1616,31 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
 }
 
 export default function App() {
+  // ===== THEME (dark/light) =====
+  // Persisted in localStorage; falls back to the OS preference on first
+  // visit. Toggling just flips a class on <html> — every color in the app
+  // resolves through the CSS variables in index.css (see the comment there),
+  // so nothing else needs to change per component.
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    if (typeof window === "undefined") return "light";
+    const saved = window.localStorage.getItem("clm_theme");
+    if (saved === "light" || saved === "dark") return saved;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    window.localStorage.setItem("clm_theme", theme);
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+
+  // Sidebar bisa disembunyikan/dimunculkan lewat tombol di navbar.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Kotak pencarian di navbar — Enter akan membawa ke "Tabel Semua Dokumen"
+  // dengan filter yang sama dipakai di sana (matchContract, dst).
+  const [navbarSearch, setNavbarSearch] = useState("");
+
   // ===== AUTH =====
   const [currentUser, setCurrentUser] = useState<any>(null);
   // RBAC menu sidebar — id di sini HARUS sama dengan activeTab id yang dipakai
@@ -8581,12 +8611,23 @@ export default function App() {
       })()}
 
       {/* Top Header */}
-      <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur px-6 py-4 flex items-center justify-between sticky top-0 z-40">
-        <div className="flex items-center gap-2.5">
-          <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-center">
+      <header className="border-b border-white/5 bg-slate-950/40 backdrop-blur-xl px-6 py-4 flex items-center justify-between sticky top-0 z-40">
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Fallback toggle buat mobile — di desktop dipindah jadi handle
+              di pembatas sidebar (lihat dekat <aside>). */}
+          <button
+            onClick={() => setSidebarOpen((o) => !o)}
+            className="md:hidden p-2 rounded-lg hover:bg-slate-800/40 transition cursor-pointer text-slate-400 hover:text-slate-100 shrink-0"
+            title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
+            aria-label="Tampilkan/sembunyikan sidebar"
+          >
+            {sidebarOpen ? <PanelLeftClose className="w-[18px] h-[18px]" /> : <PanelLeftOpen className="w-[18px] h-[18px]" />}
+          </button>
+
+          <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-center shrink-0">
             <FileText className="text-indigo-400 w-[18px] h-[18px]" strokeWidth={2.25} />
           </div>
-          <div>
+          <div className="hidden sm:block shrink-0">
             <h1 className="font-semibold text-[15px] leading-tight text-slate-100 tracking-tight">
               Smart CLM Enterprise
             </h1>
@@ -8594,19 +8635,76 @@ export default function App() {
               General Affair &amp; Legal · {currentTenant?.name || "…"}
             </p>
           </div>
+
+          {/* Ucapan selamat datang — cuma tampil di Dashboard, ilang di tab lain. */}
+          {activeTab === "dashboard" && (
+            <div className="hidden lg:flex items-center gap-2 pl-4 ml-1 border-l border-slate-800 min-w-0 animate-fadeIn">
+              <span className="text-base leading-none shrink-0">👋</span>
+              <p className="text-[13px] text-slate-300 truncate">
+                Selamat datang kembali, <span className="font-semibold text-slate-100">{currentUser.name}</span>
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Quick notification count */}
+          {/* Search bar — ikon di ujung kanan, dalam tombol berwarna (aksen indigo). */}
+          <div className="hidden md:flex items-center gap-1.5 bg-slate-900/50 border border-slate-800 rounded-full pl-4 pr-1.5 py-1.5 w-56 lg:w-80 focus-within:border-indigo-500/50 transition">
+            <input
+              type="text"
+              value={navbarSearch}
+              onChange={(e) => setNavbarSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && navbarSearch.trim()) {
+                  setAllDocsSearch(navbarSearch.trim());
+                  setAllDocsPage(1);
+                  setActiveTab("all-docs");
+                  setSelectedContract(null);
+                }
+              }}
+              placeholder="Cari kontrak & dokumen…"
+              className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
+            />
+            <button
+              onClick={() => {
+                if (!navbarSearch.trim()) return;
+                setAllDocsSearch(navbarSearch.trim());
+                setAllDocsPage(1);
+                setActiveTab("all-docs");
+                setSelectedContract(null);
+              }}
+              className="shrink-0 w-7 h-7 rounded-full bg-indigo-500 hover:bg-indigo-400 flex items-center justify-center transition cursor-pointer"
+              title="Cari"
+              aria-label="Cari"
+            >
+              <Search className="w-3.5 h-3.5 text-white" />
+            </button>
+          </div>
+
+          {/* Dark / light theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-lg bg-slate-900/60 border border-slate-800 hover:bg-slate-800 transition cursor-pointer shrink-0"
+            title={theme === "dark" ? "Ganti ke mode terang" : "Ganti ke mode gelap"}
+            aria-label="Ganti tema"
+          >
+            {theme === "dark" ? (
+              <Sun className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Moon className="w-4 h-4 text-slate-400" />
+            )}
+          </button>
+
+          {/* Notifikasi — badge menumpuk di sudut ikon, gaya bulat. */}
           <div className="relative group">
             <button
               onClick={handleMarkNotificationsRead}
-              className="p-2 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 transition cursor-pointer flex items-center gap-2"
+              className="relative p-2.5 rounded-full hover:bg-slate-800/40 transition cursor-pointer"
               title="Tandai semua telah dibaca"
             >
-              <Bell className="w-4 h-4 text-amber-400" />
+              <Bell className="w-5 h-5 text-slate-300" />
               {notifications.filter((n) => !n.read).length > 0 && (
-                <span className="bg-rose-500 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
+                <span className="absolute top-0.5 right-0.5 bg-rose-500 text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full font-bold ring-2 ring-slate-950">
                   {notifications.filter((n) => !n.read).length}
                 </span>
               )}
@@ -8614,12 +8712,17 @@ export default function App() {
           </div>
 
           <div className="relative group">
-            <button className="flex items-center gap-2 bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 text-xs cursor-pointer hover:border-slate-700 transition">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-slate-300 font-semibold">{currentUser.name}</span>
-              <span className="text-[9px] bg-indigo-500/20 text-indigo-400 px-1.5 py-0.5 rounded-full font-bold uppercase">
-                {({ super_admin: "Super Admin", admin: "Admin", legal: "Legal", manager: "Manager", staff: "Staff", viewer: "Viewer" } as any)[currentUser.role] || currentUser.role}
-              </span>
+            <button className="flex items-center gap-2.5 pl-1 pr-2 py-1 rounded-full hover:bg-slate-800/40 transition cursor-pointer">
+              <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white font-bold text-xs shrink-0">
+                {(currentUser.name || "U").trim().charAt(0).toUpperCase()}
+              </div>
+              <div className="hidden sm:block text-left leading-tight">
+                <p className="text-xs font-bold text-slate-100">{currentUser.name}</p>
+                <p className="text-[10.5px] text-slate-500">
+                  {({ super_admin: "Super Admin", admin: "Admin", legal: "Legal", manager: "Manager", staff: "Staff", viewer: "Viewer" } as any)[currentUser.role] || currentUser.role}
+                </p>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
             </button>
             <div className="absolute right-0 top-full mt-1 w-48 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl py-1.5 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition z-50">
               <button
@@ -8658,7 +8761,22 @@ export default function App() {
 
       {/* Main Body */}
       <div className="flex-1 flex flex-col md:flex-row">
-        <aside className="w-full md:w-64 bg-slate-950/60 border-r border-slate-800 p-4 space-y-4 shrink-0 flex flex-col justify-between">
+        {/* Handle pembatas sidebar — nempel di garis batas sidebar/konten,
+            posisi fixed di tengah layar biar tetap kelihatan walau discroll.
+            Cuma di desktop (mobile tetap pakai tombol di navbar). */}
+        <button
+          onClick={() => setSidebarOpen((o) => !o)}
+          className={`hidden md:flex items-center justify-center fixed top-1/2 -translate-y-1/2 z-30 w-5 h-14 rounded-r-lg bg-slate-900/90 border border-l-0 border-slate-800 hover:bg-slate-800 hover:w-6 transition-all cursor-pointer text-slate-400 hover:text-slate-100 ${
+            sidebarOpen ? "left-64" : "left-0"
+          }`}
+          title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
+          aria-label="Tampilkan/sembunyikan sidebar"
+        >
+          {sidebarOpen ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+        </button>
+
+        {sidebarOpen && (
+        <aside className="w-full md:w-64 bg-slate-950/30 backdrop-blur-xl border-r border-white/5 p-4 space-y-4 shrink-0 flex flex-col justify-between animate-fadeIn">
           <div className="space-y-4">
             <div>
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2">
@@ -9081,6 +9199,7 @@ export default function App() {
           </div>
 
         </aside>
+        )}
 
         {/* Center Dynamic Content Area */}
         <main className="flex-1 p-6 overflow-y-auto">

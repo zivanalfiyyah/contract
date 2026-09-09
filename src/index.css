@@ -52,6 +52,53 @@
   --radius-3xl: 1.125rem;   /* 18px */
 }
 
+:root {
+  --scrollbar-thumb: #cbd3e0;
+  --scrollbar-thumb-hover: #b3bccb;
+  --selection-text: #1c2837;
+}
+
+.dark {
+  --selection-text: #eef1f6;
+}
+
+/* ---- DARK MODE ----
+   Toggle by adding class="dark" to <html> (done in App.tsx via a small
+   ThemeProvider that reads/writes localStorage + prefers-color-scheme).
+   Because every component is authored with the same slate-* utilities and
+   those utilities resolve through the CSS variables above, we don't touch
+   any component: overriding the variables under `.dark` re-skins the whole
+   app back to the original dark theme in one place, same trick as the
+   light remap above but reversed. */
+.dark {
+  --color-slate-950: #0b0f19;  /* page background / recessed input fill */
+  --color-slate-900: #10161f;  /* card / panel surface */
+  --color-slate-850: #141b26;  /* subtle raised surface */
+  --color-slate-800: #1c2534;  /* hover / elevated fill AND default border */
+  --color-slate-750: #212b3d;
+  --color-slate-700: #2b3750;  /* stronger border / secondary-button fill */
+  --color-slate-650: #34405e;
+
+  --color-slate-600: #64748b;  /* faintest labels */
+  --color-slate-500: #7d8ba0;  /* most-muted text */
+  --color-slate-400: #97a3b8;  /* muted text */
+  --color-slate-300: #b6c0d1;  /* secondary text */
+  --color-slate-200: #d3d9e4;  /* near-primary text */
+  --color-slate-100: #eef1f6;  /* primary text (headings/body) */
+  --color-slate-50:  #ffffff;  /* deepest/brightest text */
+
+  /* Accent -400 shades restored to their brighter, dark-ground-friendly hues. */
+  --color-indigo-400: #818cf8;
+  --color-emerald-400: #34d399;
+  --color-rose-400: #fb7185;
+  --color-amber-400: #fbbf24;
+  --color-violet-400: #a78bfa;
+  --color-sky-400: #38bdf8;
+
+  --scrollbar-thumb: #2a3345;
+  --scrollbar-thumb-hover: #3a465c;
+}
+
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
@@ -60,10 +107,12 @@
     font-feature-settings: "cv02", "cv03", "cv04", "ss01";
   }
 
-  /* Soft light-gray ground so white cards read as deliberately elevated. */
+  /* Soft light-gray ground so white cards read as deliberately elevated.
+     Uses the theme variables (not hardcoded hex) so it flips with .dark. */
   body {
-    background-color: #f4f6f9;
-    color: #1c2837;
+    background-color: var(--color-slate-950);
+    color: var(--color-slate-100);
+    transition: background-color 0.15s ease, color 0.15s ease;
   }
 
   /* Premium micro-detail: headings track slightly tighter, digits align. */
@@ -83,13 +132,13 @@
 
   ::selection {
     background-color: color-mix(in oklch, var(--color-indigo-500) 22%, transparent);
-    color: #1c2837;
+    color: var(--selection-text);
   }
 
-  /* Thin, quiet light scrollbars. */
+  /* Thin, quiet scrollbars — colors follow the theme variables. */
   * {
     scrollbar-width: thin;
-    scrollbar-color: #cbd3e0 transparent;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
   *::-webkit-scrollbar {
     width: 9px;
@@ -99,12 +148,12 @@
     background: transparent;
   }
   *::-webkit-scrollbar-thumb {
-    background-color: #cbd3e0;
+    background-color: var(--scrollbar-thumb);
     border-radius: 9999px;
     border: 2px solid transparent;
     background-clip: content-box;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background-color: #b3bccb;
+    background-color: var(--scrollbar-thumb-hover);
   }
 }

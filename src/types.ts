@@ -224,6 +224,13 @@ export interface Contract {
   // akan ikut menimpa editan manual di pasal lain). Diisi bersamaan dengan
   // preambleEn tiap kali /translate sukses (lihat server.ts).
   preambleEnOriginal?: string;
+  // Kalimat transisi baku antara narasi pembuka & daftar pasal (mis. "Masing-
+  // masing pihak sepakat untuk mengikatkan diri..."). Dulu hardcoded penuh,
+  // sama di SEMUA kontrak, tidak bisa diedit sama sekali. Sekarang override
+  // per kontrak (HTML, lewat RichTextEditor) — kosong = pakai kalimat baku
+  // bawaan (lihat closingIdDefault/closingEnDefault di src/App.tsx).
+  closingStatement?: string;
+  closingStatementEn?: string;
   titleEn?: string; // terjemahan judul dokumen (header) — dipakai mode en/bilingual
   docTypeEn?: string; // terjemahan jenis surat, mis. "Cooperation Agreement Letter" — dipakai mode en/bilingual
   // Terjemahan paragraf KHUSUS ADDENDUM (recital "Bahwa PARA PIHAK telah

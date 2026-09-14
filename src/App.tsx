@@ -1640,6 +1640,7 @@ export default function App() {
   // Kotak pencarian di navbar — Enter akan membawa ke "Tabel Semua Dokumen"
   // dengan filter yang sama dipakai di sana (matchContract, dst).
   const [navbarSearch, setNavbarSearch] = useState("");
+  const [navbarSearchFocused, setNavbarSearchFocused] = useState(false);
 
   // ===== AUTH =====
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -2403,6 +2404,50 @@ export default function App() {
     return null;
   };
 
+  // ===== SEARCH BAR NAVBAR =====
+  // Digabung dari 2 sumber supaya "cari" di navbar beneran nyambung ke
+  // SEMUA fitur (bukan cuma tabel dokumen): (1) daftar menu/halaman yang
+  // memang bisa diakses role ini (MENU_ITEMS + canSee), dan (2) kontrak yang
+  // cocok lewat index pencarian yang sama dipakai "Tabel Semua Dokumen".
+  const navbarFeatureResults = useMemo(() => {
+    const q = navbarSearch.trim().toLowerCase();
+    if (!q) return [];
+    return MENU_ITEMS.filter(
+      (m) => canSee(m.id) && (m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q))
+    ).slice(0, 6);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navbarSearch, appSettings, currentUser]);
+
+  const navbarDocResults = useMemo(() => {
+    const q = navbarSearch.trim();
+    if (!q) return [] as Contract[];
+    return contracts.filter((c) => matchContract(c, q) !== null).slice(0, 5);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navbarSearch, contracts, contractSearchIndex]);
+
+  const goToNavbarFeature = (menuId: string) => {
+    setActiveTab(menuId);
+    setSelectedContract(null);
+    setNavbarSearch("");
+    setNavbarSearchFocused(false);
+  };
+
+  const goToNavbarDoc = (c: Contract) => {
+    handleOpenWorkspace(c);
+    setNavbarSearch("");
+    setNavbarSearchFocused(false);
+  };
+
+  const submitNavbarSearch = () => {
+    if (!navbarSearch.trim()) return;
+    setAllDocsSearch(navbarSearch.trim());
+    setAllDocsPage(1);
+    setActiveTab("all-docs");
+    setSelectedContract(null);
+    setNavbarSearch("");
+    setNavbarSearchFocused(false);
+  };
+
   /** Cuplikan sekitar kata kunci, untuk ditampilkan di baris hasil. */
   const contentSnippet = (c: Contract, query: string, span = 60): string => {
     const q = query.trim().toLowerCase();
@@ -2523,6 +2568,7 @@ export default function App() {
     title: "",
     docType: "",
     startDate: "",
+    endDate: "",
     party1Address: "",
     party1Position: "",
     party1IdLabel: "",
@@ -5129,6 +5175,7 @@ export default function App() {
       title: contract.title || "",
       docType: contract.docType || "",
       startDate: contract.startDate || "",
+      endDate: contract.endDate || "",
       party1Address: contract.party1Address || "",
       party1Position: contract.party1Position || "",
       party1IdLabel: contract.party1IdLabel || "",
@@ -5191,6 +5238,7 @@ export default function App() {
       title: newTitle,
       docType: newDocType,
       startDate: editPartyForm.startDate,
+      endDate: editPartyForm.endDate,
       party1Address: editPartyForm.party1Address.trim() || undefined,
       party1Position: editPartyForm.party1Position.trim() || undefined,
       party1IdLabel: editPartyForm.party1IdLabel.trim() || undefined,
@@ -8648,37 +8696,94 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Search bar — ikon di ujung kanan, dalam tombol berwarna (aksen indigo). */}
-          <div className="hidden md:flex items-center gap-1.5 bg-slate-900/50 border border-slate-800 rounded-full pl-4 pr-1.5 py-1.5 w-56 lg:w-80 focus-within:border-indigo-500/50 transition">
-            <input
-              type="text"
-              value={navbarSearch}
-              onChange={(e) => setNavbarSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && navbarSearch.trim()) {
-                  setAllDocsSearch(navbarSearch.trim());
-                  setAllDocsPage(1);
-                  setActiveTab("all-docs");
-                  setSelectedContract(null);
-                }
-              }}
-              placeholder="Cari kontrak & dokumen…"
-              className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
-            />
-            <button
-              onClick={() => {
-                if (!navbarSearch.trim()) return;
-                setAllDocsSearch(navbarSearch.trim());
-                setAllDocsPage(1);
-                setActiveTab("all-docs");
-                setSelectedContract(null);
-              }}
-              className="shrink-0 w-7 h-7 rounded-full bg-indigo-500 hover:bg-indigo-400 flex items-center justify-center transition cursor-pointer"
-              title="Cari"
-              aria-label="Cari"
-            >
-              <Search className="w-3.5 h-3.5 text-white" />
-            </button>
+          {/* Search bar — ikon di ujung kanan, dalam tombol berwarna (aksen indigo).
+              Dropdown-nya nyari 2 hal sekaligus: fitur/halaman (MENU_ITEMS) dan
+              kontrak yang cocok — supaya bener-bener "search semua fitur", bukan
+              cuma tabel dokumen. */}
+          <div className="relative hidden md:block">
+            <div className="flex items-center gap-1.5 bg-slate-900/50 border border-slate-800 rounded-full pl-4 pr-1.5 py-1.5 w-56 lg:w-80 focus-within:border-indigo-500/50 transition">
+              <input
+                type="text"
+                value={navbarSearch}
+                onChange={(e) => setNavbarSearch(e.target.value)}
+                onFocus={() => setNavbarSearchFocused(true)}
+                onBlur={() => setTimeout(() => setNavbarSearchFocused(false), 150)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNavbarSearch();
+                  if (e.key === "Escape") {
+                    setNavbarSearchFocused(false);
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                placeholder="Cari fitur, kontrak & dokumen…"
+                className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
+              />
+              <button
+                onClick={submitNavbarSearch}
+                className="shrink-0 w-7 h-7 rounded-full bg-indigo-500 hover:bg-indigo-400 flex items-center justify-center transition cursor-pointer"
+                title="Cari"
+                aria-label="Cari"
+              >
+                <Search className="w-3.5 h-3.5 text-white" />
+              </button>
+            </div>
+
+            {navbarSearchFocused && navbarSearch.trim().length > 0 && (
+              <div className="absolute left-0 right-0 top-full mt-2 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl py-2 max-h-96 overflow-y-auto z-50">
+                {navbarFeatureResults.length > 0 && (
+                  <div className="px-2 pb-1.5">
+                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Fitur &amp; Halaman</p>
+                    {navbarFeatureResults.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => goToNavbarFeature(m.id)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-slate-200 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <LayoutDashboard className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {navbarDocResults.length > 0 && (
+                  <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 ? "border-t border-slate-800" : ""}`}>
+                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kontrak &amp; Dokumen</p>
+                    {navbarDocResults.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => goToNavbarDoc(c)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-slate-200 truncate">{c.title || "Tanpa judul"}</span>
+                          {c.contractNumber && <span className="block text-[10px] text-slate-500 truncate">{c.contractNumber}</span>}
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      onClick={submitNavbarSearch}
+                      className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
+                    >
+                      Lihat semua hasil di Tabel Semua Dokumen →
+                    </button>
+                  </div>
+                )}
+
+                {navbarFeatureResults.length === 0 && navbarDocResults.length === 0 && (
+                  <div className="px-2">
+                    <p className="px-2.5 py-2 text-xs text-slate-500">Tidak ada fitur/kontrak yang cocok dengan "{navbarSearch}".</p>
+                    <button
+                      onClick={submitNavbarSearch}
+                      className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
+                    >
+                      Cari tetap di Tabel Semua Dokumen →
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Dark / light theme toggle */}
@@ -11391,18 +11496,19 @@ export default function App() {
               {/* MASTER DATA DROPDOWN DINAMIS */}
               {configTab === "masterdata" && (
                 <div className="space-y-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <p className="text-xs text-slate-400 max-w-2xl">
-                      Semua daftar pilihan (dropdown) di form kontrak dikelola di sini — tidak ada lagi yang baku/hardcoded.
-                      Perubahan berlaku langsung di Form Pendaftaran Dokumen, wizard kontrak, dan pelacakan rangkap.
-                    </p>
-                    <button
-                      onClick={handleSaveSettings}
-                      className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold shrink-0 flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Check className="w-4 h-4" /> Simpan Master Data
-                    </button>
-                  </div>
+                  {/* Tombol "Simpan Master Data" global yang dulu di sini
+                      dihapus atas permintaan user — tiap kartu di bawah
+                      sekarang punya tombol "Simpan" sendiri (lihat masing-
+                      masing kartu), jadi user tidak perlu scroll balik ke
+                      atas tiap kali mengubah satu bagian. Semua tombol itu
+                      (termasuk yang lama seperti "Simpan Margin"/"Simpan
+                      Jenis") tetap manggil handleSaveSettings yang SAMA —
+                      cuma UI-nya yang berubah, mekanisme simpan di baliknya
+                      tidak disentuh sama sekali. */}
+                  <p className="text-xs text-slate-400 max-w-2xl">
+                    Semua daftar pilihan (dropdown) di form kontrak dikelola di sini — tidak ada lagi yang baku/hardcoded.
+                    Perubahan berlaku langsung di Form Pendaftaran Dokumen, wizard kontrak, dan pelacakan rangkap.
+                  </p>
 
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {/* Jenis Kontrak / Dokumen — kini dikelola di tab "Jenis Dokumen" (hub terpadu) */}
@@ -11419,6 +11525,24 @@ export default function App() {
                       >
                         Buka tab Jenis Dokumen →
                       </button>
+                    </div>
+
+                    {/* ==== Section: Format Nomor & Margin Halaman ====
+                        Header + kartu info ditaruh SEBELUM 2 kartu interaktif
+                        di bawahnya (Format Nomor Dokumen, Margin Halaman
+                        Dokumen) supaya pemula baca konsepnya dulu sebelum
+                        ketemu form-nya — bukan sekadar dekorasi. */}
+                    <div className="lg:col-span-2">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Format Nomor &amp; Margin Halaman</p>
+                    </div>
+
+                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
+                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                        <FileDigit className="w-4 h-4 text-violet-400" /> Penomoran Terintegrasi per Jenis Dokumen
+                      </h4>
+                      <p className="text-[11px] text-slate-400 leading-relaxed">
+                        Penomoran dokumen disatukan berpatokan pada <strong className="text-slate-200">Jenis Dokumen</strong> (seperti *Perjanjian, MOU, Addendum*). Setiap jenis dokumen memiliki Kode Singkatan dan Format Nomor tersendiri di panel Jenis Kontrak / Dokumen di atas, serta memiliki nomor urut independen yang dimulai dari <code>001</code> tiap tahunnya.
+                      </p>
                     </div>
 
                     {/* ==== Format Nomor Dokumen — SATU kartu, dua mode ====
@@ -11544,7 +11668,12 @@ export default function App() {
                           <span className="block text-[10px] font-mono text-slate-600">
                             Preview: {previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) })}
                           </span>
-                          <p className="text-[10px] text-slate-600 italic">Mode Kontrak tersimpan lewat tombol "Simpan Master Data" di atas halaman ini (bukan tombol "Simpan" tersendiri seperti mode DCS).</p>
+                          <button
+                            onClick={handleSaveSettings}
+                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer"
+                          >
+                            Simpan
+                          </button>
                         </>
                       )}
                     </div>
@@ -11603,6 +11732,11 @@ export default function App() {
                         })}
                       </div>
                       <button onClick={handleSaveSettings} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer">Simpan Margin</button>
+                    </div>
+
+                    {/* ==== Section: Daftar Pilihan (Dropdown Formulir) ==== */}
+                    <div className="lg:col-span-2 pt-2">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Daftar Pilihan (Dropdown Formulir)</p>
                     </div>
 
                     {/* Daftar string sederhana: tipe pihak, mata uang, status rangkap */}
@@ -11679,19 +11813,19 @@ export default function App() {
                       </div>
                     ))}
 
-                    {/* Informasi Penomoran Terintegrasi */}
-                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3">
-                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                        <FileDigit className="w-4 h-4 text-violet-400" /> Penomoran Terintegrasi per Jenis Dokumen
-                      </h4>
-                      <p className="text-[11px] text-slate-400 leading-relaxed">
-                        Penomoran dokumen disatukan berpatokan pada <strong className="text-slate-200">Jenis Dokumen</strong> (seperti *Perjanjian, MOU, Addendum*). Setiap jenis dokumen memiliki Kode Singkatan dan Format Nomor tersendiri di panel Jenis Kontrak / Dokumen di atas, serta memiliki nomor urut independen yang dimulai dari <code>001</code> tiap tahunnya.
-                      </p>
-                    </div>
-
+                    {/* Kartu "Penomoran Terintegrasi per Jenis Dokumen" dipindah
+                        ke atas, dekat section "Format Nomor & Margin Halaman"
+                        — lebih masuk akal dibaca di situ (menjelaskan konsep
+                        sebelum kartu inputnya), bukan nyempil di antara
+                        daftar dropdown yang topiknya beda sama sekali. */}
                     {/* Kartu "Format Nomor Dokumen Kontrak" yang dulu berdiri sendiri
                         di sini sudah digabung ke kartu "Format Nomor Dokumen"
                         (toggle DCS/Kontrak) di atas — lihat numberFormatModule. */}
+
+                    {/* ==== Section: Pengingat Kontrak ==== */}
+                    <div className="lg:col-span-2 pt-2">
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Pengingat Kontrak</p>
+                    </div>
 
                     {/* Opsi hari reminder */}
                     <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
@@ -13049,14 +13183,17 @@ export default function App() {
                         Scope) & perilakunya SAMA PERSIS, cuma lokasi JSX-nya
                         pindah — tidak ada logic yang berubah. */}
                     <div className="flex flex-wrap gap-3">
-                      <input
-                        type="text"
-                        placeholder="Cari judul, nomor, pihak, atau ISI pasal…"
-                        title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
-                        value={monitorSearch}
-                        onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
-                        className="px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500 w-full md:w-64"
-                      />
+                      <div className="relative w-full sm:w-72">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                        <input
+                          type="text"
+                          placeholder="Cari judul, nomor, pihak, atau ISI pasal…"
+                          title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
+                          value={monitorSearch}
+                          onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
+                          className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
+                        />
+                      </div>
                       <select
                         value={monitorCategory}
                         onChange={(e) => { setMonitorCategory(e.target.value); setMonitorPage(1); }}
@@ -13299,12 +13436,12 @@ export default function App() {
                 {/* Document list — grouped by Departemen like a folder tree, so a
                     folder always exists first and documents simply land inside it. */}
                 <aside className="space-y-3">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                  <div className="relative w-full sm:w-72">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                     <input
                       type="text" value={dcsSearch} onChange={(e) => setDcsSearch(e.target.value)}
                       placeholder="Cari nomor / judul dokumen..."
-                      className="w-full pl-9 pr-4 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                      className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
                     />
                   </div>
 
@@ -14133,13 +14270,13 @@ export default function App() {
                   atas latar GELAP, jadi nyaris tak kebaca di atas
                   bg-{warna}-600/20 yg pucat di tema terang ini. */}
               <div className="flex flex-wrap items-center gap-2">
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                <div className="relative w-full sm:w-72">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                   <input
                     type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
                     placeholder="Cari nomor, judul, atau ISI pasal…"
                     title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
-                    className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-60"
+                    className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
                   />
                 </div>
                 <button
@@ -14725,12 +14862,30 @@ export default function App() {
                     {selectedContract.title}
                   </h2>
                   <p className="text-xs text-slate-400">
-                    {selectedContract.parties &&
-                    selectedContract.parties.length > 0
-                      ? selectedContract.parties
-                          .map((p) => `${p.role}: ${p.name}`)
-                          .join(" | ")
-                      : `Pihak 1: ${appSettings.companyName || "[Nama perusahaan belum diisi]"} | Pihak 2: ${selectedContract.party2Name} (${selectedContract.party2Type})`}
+                    {(() => {
+                      // BUG: selectedContract.parties itu snapshot yang direkam
+                      // sekali (biasanya saat kontrak dibuat) dan TIDAK PERNAH
+                      // ikut ter-update lagi walau "Edit Data Pihak & Kontrak"
+                      // mengubah appSettings.companyName/party2Name setelahnya
+                      // — makanya baris ini bisa nyangkut nilai lama/placeholder
+                      // padahal isi pasal di preview sudah benar (preview baca
+                      // data live, bukan dari parties). Fix: index 0 & 1 (Pihak
+                      // Pertama & Kedua) SELALU dipaksa ikut data live; index 2+
+                      // (pihak tambahan spt Saksi/Penjamin lewat "Tambah Kolom
+                      // TTD") tetap pakai nama yang tersimpan di situ apa
+                      // adanya, karena pihak itu tidak punya field "legacy" utk
+                      // difallback-kan. Sama persis dipakai lagi di blok TTD
+                      // preview (lihat komentar serupa di dekat signatureRow).
+                      const liveName = (idx: number, fallback: string) =>
+                        idx === 0 ? (appSettings.companyName || fallback)
+                        : idx === 1 ? (selectedContract.party2Name || fallback)
+                        : fallback;
+                      return selectedContract.parties && selectedContract.parties.length > 0
+                        ? selectedContract.parties
+                            .map((p, idx) => `${p.role}: ${liveName(idx, p.name)}`)
+                            .join(" | ")
+                        : `Pihak 1: ${appSettings.companyName || "[Nama perusahaan belum diisi]"} | Pihak 2: ${selectedContract.party2Name} (${selectedContract.party2Type})`;
+                    })()}
                   </p>
                 </div>
 
@@ -14925,7 +15080,9 @@ export default function App() {
 
               {/* Workspace Split Panels */}
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-                {/* Left Side: Real-time Live Document Preview (8 cols on large screens) */}
+                {/* Left: preview dokumen digital SAJA. Editor Pasal Kontrak
+                    Ini dipindah jadi kolom kanan (di bawah) atas permintaan
+                    user, supaya preview & editor sebelahan. */}
                 <div className="xl:col-span-7 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl flex flex-col justify-between">
                   <div>
                     {/* Setelah aktivasi via "Unggah Bukti TTD & Aktifkan", dokumen
@@ -15379,28 +15536,33 @@ export default function App() {
                           </div>
                         );
                       })() : (() => {
-                        // Kalimat baku (bukan hasil AI — memang tidak berubah antar
-                        // dokumen) yang menjembatani narasi pembuka ke daftar pasal.
-                        // Sebelumnya hardcoded Indonesia terus dan tidak pernah ikut
-                        // dikirim ke /translate, jadi "isi surat" ini tidak berubah
-                        // walau mode dokumen sudah "en"/"bilingual".
+                        // Kalimat baku ini dulu hardcoded PENUH, sama persis di
+                        // semua kontrak, tidak ada cara mengeditnya sama sekali
+                        // — sekarang bisa dioverride per kontrak lewat field
+                        // closingStatement/closingStatementEn (lihat editor
+                        // "Kalimat Penutup Pembuka" di bawah preview). Kosong
+                        // = tetap pakai kalimat baku ini seperti sebelumnya,
+                        // jadi kontrak lama yang belum pernah menyentuhnya
+                        // tampil identik seperti dulu.
                         const docLang = selectedContract.documentLanguage || "id";
-                        const closingId = "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
-                        const closingEn = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
-                        if (docLang === "en") return <p>{closingEn}</p>;
+                        const closingIdDefault = "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
+                        const closingEnDefault = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
+                        const closingIdValue = selectedContract.closingStatement || closingIdDefault;
+                        const closingEnValue = selectedContract.closingStatementEn || closingEnDefault;
+                        if (docLang === "en") return <div>{renderPreambleBlock(closingEnValue, {})}</div>;
                         if (docLang === "bilingual") {
                           return (
                             <div className="flex gap-3">
                               <div className="flex-1 min-w-0">
-                                <p>{closingId}</p>
+                                {renderPreambleBlock(closingIdValue, {})}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <p>{closingEn}</p>
+                                {renderPreambleBlock(closingEnValue, {})}
                               </div>
                             </div>
                           );
                         }
-                        return <p>{closingId}</p>;
+                        return <div>{renderPreambleBlock(closingIdValue, {})}</div>;
                       })()}
 
                       {/* Template sumber sudah direvisi setelah dokumen ini dibuat.
@@ -15473,10 +15635,20 @@ export default function App() {
                       )}
 
                       {(() => {
+                        // Bug staleness yang sama dengan baris ringkasan pihak
+                        // di header workspace (lihat komentar di sana) — index
+                        // 0 & 1 dipaksa ikut appSettings.companyName/party2Name
+                        // yang live, pihak ke-3+ (kalau ditambah lewat "Tambah
+                        // Kolom TTD") tetap pakai nama tersimpannya sendiri.
+                        const liveParty1Name = appSettings.companyName || selectedContract.party1Name;
                         const parties = selectedContract.parties?.length
-                          ? selectedContract.parties
+                          ? selectedContract.parties.map((p, idx) => idx === 0
+                              ? { ...p, name: liveParty1Name }
+                              : idx === 1
+                                ? { ...p, name: selectedContract.party2Name || p.name }
+                                : p)
                           : [
-                              { role: "PIHAK PERTAMA", name: selectedContract.party1Name },
+                              { role: "PIHAK PERTAMA", name: liveParty1Name },
                               { role: "PIHAK KEDUA", name: selectedContract.party2Name },
                             ];
 
@@ -15766,16 +15938,24 @@ export default function App() {
                       )}
                     </div>
                   </div>
+                </div>
 
-                  {/* Editor pasal per-baris: judul + isi bisa diedit, baris bisa
-                      dihapus/ditambah — hanya selagi Draft. Persist lewat tombol
-                      "Simpan Draft Baru" (otomatis snapshot versi). */}
+                {/* Right: Editor Pasal Kontrak Ini — dipindah ke sini dari
+                    posisi lama (dulu di bawah preview, satu kolom dengan
+                    preview). Isi/logic blok ini TIDAK diubah sama sekali,
+                    cuma dipindah jadi kolom sendiri di sebelah preview. */}
+                <div className="xl:col-span-5 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl">
                   {isContractEditable(selectedContract) ? (
-                    <div className="pt-4 border-t border-slate-850 text-xs">
+                    <div className="text-xs">
                       <p className="font-bold text-slate-400 mb-2">
                         Editor Pasal Kontrak Ini (edit / hapus / tambah baris — simpan via "Simpan Draft Baru"):
                       </p>
-                      <div className="space-y-3">
+                      {/* max-h + overflow-y-auto disamakan dengan panel Preview
+                          di sebelah kiri (lihat max-h-[600px] di clauseListBlock)
+                          supaya kolom kanan tidak memanjang tak terbatas kalau
+                          pasalnya banyak — dua kolom tetap sama-sama muat di
+                          layar, tinggal discroll masing-masing secara terpisah. */}
+                      <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
                         {/* Narasi Pembuka — override HANYA utk kontrak ini
                             (prioritas tertinggi di atas Template.openingParagraph
                             & narasi kategori). Data pihak/tanggal/judul TIDAK
@@ -15892,6 +16072,68 @@ export default function App() {
                             </div>
                           );
 
+                          // Kalimat transisi baku (lihat komentar di render
+                          // preview di atas) — dulu tidak bisa diedit sama
+                          // sekali. Pola sama seperti idEditor/enEditor di
+                          // atas: SELALU tampil berisi teks aktif (override
+                          // atau bawaan), tidak perlu tombol "muat" dulu.
+                          // Beda dari enEditor: tidak ada AI-translate di
+                          // baliknya (kalimat ini memang statis/baku), jadi
+                          // "Kembalikan ke bawaan" cukup mengosongkan field,
+                          // sama seperti pola customOpeningParagraph.
+                          const closingIdDefault = "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
+                          const closingEnDefault = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
+                          const closingIdOverride = selectedContract.closingStatement || "";
+                          const closingIdEffective = closingIdOverride.trim() ? closingIdOverride : closingIdDefault;
+                          const closingIdEditor = (
+                            <div className="space-y-2">
+                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kalimat Penutup</p>
+                              <RichTextEditor
+                                valueHtml={looksLikeHtml(closingIdEffective) ? closingIdEffective : mdToHtmlForEditor(closingIdEffective)}
+                                onChange={(html) => setSelectedContract({ ...selectedContract, closingStatement: html })}
+                                tokens={[]}
+                                minHeight={60}
+                              />
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[10px] text-slate-500">Kalimat transisi sebelum daftar pasal.</p>
+                                {!!closingIdOverride.trim() && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedContract({ ...selectedContract, closingStatement: undefined })}
+                                    className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
+                                  >
+                                    Kembalikan ke bawaan
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                          const closingEnOverride = selectedContract.closingStatementEn || "";
+                          const closingEnEffective = closingEnOverride.trim() ? closingEnOverride : closingEnDefault;
+                          const closingEnEditor = (
+                            <div className="space-y-2">
+                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kalimat Penutup</p>
+                              <RichTextEditor
+                                valueHtml={looksLikeHtml(closingEnEffective) ? closingEnEffective : mdToHtmlForEditor(closingEnEffective)}
+                                onChange={(html) => setSelectedContract({ ...selectedContract, closingStatementEn: html })}
+                                tokens={[]}
+                                minHeight={60}
+                              />
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-[10px] text-slate-500">Kalimat transisi versi Inggris.</p>
+                                {!!closingEnOverride.trim() && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedContract({ ...selectedContract, closingStatementEn: undefined })}
+                                    className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
+                                  >
+                                    Kembalikan ke bawaan
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+
                           return (
                             <div className="p-2.5 bg-slate-900 border border-amber-500/20 rounded-lg space-y-2">
                               <p className="text-[10px] text-slate-500">
@@ -15905,6 +16147,16 @@ export default function App() {
                                   <div className="flex-1 min-w-0">{enEditor}</div>
                                 </div>
                               )}
+                              <div className="pt-1.5 space-y-1.5">
+                                {docLang === "id" && closingIdEditor}
+                                {docLang === "en" && closingEnEditor}
+                                {docLang === "bilingual" && (
+                                  <div className="flex gap-3">
+                                    <div className="flex-1 min-w-0">{closingIdEditor}</div>
+                                    <div className="flex-1 min-w-0">{closingEnEditor}</div>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           );
                         })()}
@@ -16034,16 +16286,20 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    <div className="pt-4 border-t border-slate-850 text-[11px] text-slate-500">
+                    <div className="text-[11px] text-slate-500">
                       Kontrak berstatus {contractStatusLabel(selectedContract.status)} — isi pasal terkunci. Gunakan "Perpanjang / Extend" untuk membuat draft baru bila perlu perubahan.
                     </div>
                   )}
                 </div>
+              </div>
 
-                {/* Right Side: Tabbed Tools Panel (5 cols) */}
-                <div className="xl:col-span-5 bg-slate-950 rounded-2xl border border-slate-800 p-5 flex flex-col justify-between shadow-2xl">
-                  {/* Workspace Tools Contents */}
-                  <div className="space-y-6">
+              {/* Status & Siklus Kontrak + Riwayat Addendum — dipindah ke
+                  bawah (lebar penuh), atas permintaan user. Dulu jadi kolom
+                  kanan sebelahan preview; sekarang di bawah grid preview+
+                  editor. Isi/logic blok ini TIDAK diubah sama sekali, cuma
+                  dipindah posisi & jadi lebar penuh (bukan 5/12 kolom lagi). */}
+              <div className="bg-slate-950 rounded-2xl border border-slate-800 p-5 shadow-2xl">
+                <div className="space-y-6">
                     {/* SECTION 3: STATUS & SIKLUS KONTRAK (Draft → OnReview →
                         FullyApproved → Aktif → Archived/Terminated) */}
                     <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
@@ -16322,7 +16578,6 @@ export default function App() {
                         </div>
                       </div>
                     )}
-                  </div>
                 </div>
               </div>
             </div>
@@ -17937,12 +18192,12 @@ export default function App() {
                     <h3 className="font-bold text-sm">
                       Log Forensik Aktivitas Sistem
                     </h3>
-                    <div className="relative">
-                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                    <div className="relative w-full sm:w-72">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                       <input
                         type="text" value={auditSearch} onChange={(e) => { setAuditSearch(e.target.value); setAuditPage(1); }}
                         placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
-                        className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-72"
+                        className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
                       />
                     </div>
                   </div>
@@ -18201,12 +18456,12 @@ export default function App() {
                     <h3 className="font-bold text-sm">
                       Log Aktivitas Kontrak &amp; DCS
                     </h3>
-                    <div className="relative">
-                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-500" />
+                    <div className="relative w-full sm:w-72">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
                       <input
                         type="text" value={auditKdSearch} onChange={(e) => { setAuditKdSearch(e.target.value); setAuditKdPage(1); }}
                         placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
-                        className="pl-8 pr-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500 w-72"
+                        className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
                       />
                     </div>
                   </div>
@@ -20598,6 +20853,18 @@ export default function App() {
                     type="date"
                     value={editPartyForm.startDate}
                     onChange={(e) => setEditPartyForm({ ...editPartyForm, startDate: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">Tanggal Berakhir Kontrak</label>
+                  <input
+                    type="date"
+                    value={editPartyForm.endDate}
+                    onChange={(e) => setEditPartyForm({ ...editPartyForm, endDate: e.target.value })}
                     className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                   />
                 </div>

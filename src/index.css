@@ -56,10 +56,24 @@
   --scrollbar-thumb: #cbd3e0;
   --scrollbar-thumb-hover: #b3bccb;
   --selection-text: #1c2837;
+
+  /* Ambient background glow — kalem di light mode. */
+  --ambient-1: color-mix(in oklch, var(--color-indigo-500) 8%, transparent);
+  --ambient-2: color-mix(in oklch, var(--color-violet-500) 6%, transparent);
+  --ambient-3: color-mix(in oklch, var(--color-emerald-500) 5%, transparent);
+  --accent-glow: 32%;
+  --card-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 28px -14px rgba(15, 23, 42, 0.10);
 }
 
 .dark {
   --selection-text: #eef1f6;
+
+  /* Lebih kelihatan di dark mode — inilah "vibe" modern-glow-nya. */
+  --ambient-1: color-mix(in oklch, var(--color-indigo-500) 20%, transparent);
+  --ambient-2: color-mix(in oklch, var(--color-violet-500) 16%, transparent);
+  --ambient-3: color-mix(in oklch, var(--color-emerald-500) 10%, transparent);
+  --accent-glow: 55%;
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 14px 36px -16px rgba(99, 102, 241, 0.28);
 }
 
 /* ---- DARK MODE ----
@@ -108,12 +122,57 @@
   }
 
   /* Soft light-gray ground so white cards read as deliberately elevated.
-     Uses the theme variables (not hardcoded hex) so it flips with .dark. */
+     Uses the theme variables (not hardcoded hex) so it flips with .dark.
+     The layered radial-gradients are the "ambient glow" from the modern
+     reference — subtle in light mode, richer in dark mode (see --ambient-*
+     above). background-attachment: fixed keeps it steady while the page
+     scrolls, like a backdrop rather than part of the content. */
   body {
     background-color: var(--color-slate-950);
+    background-image:
+      radial-gradient(1100px circle at 14% -10%, var(--ambient-1), transparent 60%),
+      radial-gradient(900px circle at 100% 15%, var(--ambient-2), transparent 55%),
+      radial-gradient(1000px circle at -5% 100%, var(--ambient-3), transparent 55%);
+    background-attachment: fixed;
     color: var(--color-slate-100);
     transition: background-color 0.15s ease, color 0.15s ease;
   }
+
+  /* ---- "Modern glass" polish, applied globally via attribute selectors ----
+     Every card/panel in the app is authored with the same handful of Tailwind
+     token combos (rounded-xl/2xl/3xl + border-slate-800, bg-*-600 solid CTA
+     buttons, bg-*-500/10 icon chips). Targeting those literal class tokens
+     here re-skins every card and accent across all tabs in one place — the
+     same trick as the slate remap above — without touching a single
+     component. */
+
+  /* Card depth: soft ambient shadow on any panel using the standard
+     border-slate-800 + large-radius combo (dashboard cards, modals, panels). */
+  [class*="border-slate-800"]:is([class~="rounded-xl"], [class~="rounded-2xl"], [class~="rounded-3xl"]) {
+    box-shadow: var(--card-shadow);
+  }
+
+  /* Solid accent buttons get a subtle glossy sheen + colored glow underneath,
+     instead of a flat fill. */
+  [class~="bg-indigo-600"],
+  [class~="bg-emerald-600"],
+  [class~="bg-rose-600"],
+  [class~="bg-amber-600"] {
+    background-image: linear-gradient(135deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 55%);
+  }
+  [class~="bg-indigo-600"] { box-shadow: 0 8px 20px -8px color-mix(in oklch, var(--color-indigo-500) var(--accent-glow), transparent); }
+  [class~="bg-emerald-600"] { box-shadow: 0 8px 20px -8px color-mix(in oklch, var(--color-emerald-500) var(--accent-glow), transparent); }
+  [class~="bg-rose-600"] { box-shadow: 0 8px 20px -8px color-mix(in oklch, var(--color-rose-500) var(--accent-glow), transparent); }
+  [class~="bg-amber-600"] { box-shadow: 0 8px 20px -8px color-mix(in oklch, var(--color-amber-500) var(--accent-glow), transparent); }
+
+  /* Soft-tint icon chips (bg-*-500/10) get a faint matching glow ring so the
+     colored icons feel lit-up rather than flat. */
+  [class~="bg-indigo-500/10"] { box-shadow: 0 0 22px -10px color-mix(in oklch, var(--color-indigo-500) 50%, transparent); }
+  [class~="bg-emerald-500/10"] { box-shadow: 0 0 22px -10px color-mix(in oklch, var(--color-emerald-500) 50%, transparent); }
+  [class~="bg-rose-500/10"] { box-shadow: 0 0 22px -10px color-mix(in oklch, var(--color-rose-500) 50%, transparent); }
+  [class~="bg-amber-500/10"] { box-shadow: 0 0 22px -10px color-mix(in oklch, var(--color-amber-500) 50%, transparent); }
+  [class~="bg-violet-500/10"] { box-shadow: 0 0 22px -10px color-mix(in oklch, var(--color-violet-500) 50%, transparent); }
+  [class~="bg-sky-500/10"] { box-shadow: 0 0 22px -10px color-mix(in oklch, var(--color-sky-500) 50%, transparent); }
 
   /* Premium micro-detail: headings track slightly tighter, digits align. */
   h1, h2, h3, h4, h5 {

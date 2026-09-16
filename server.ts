@@ -44,6 +44,11 @@ import { logger } from "./logger.js";
 
 import multer from "multer";
 import { PDFDocument, StandardFonts, rgb, degrees } from "pdf-lib";
+import mammoth from "mammoth";
+// pdf-parse: CommonJS, tapi kalau di-import langsung di top-level ia mencoba
+// membaca file test/data/05-versions-space.pdf bawaannya sendiri di beberapa
+// versi (bug lama paket ini) — import dinamis di dalam handler (lihat
+// extractTextFromUpload) menghindari itu tanpa mengubah cara paket dipakai.
 
 dotenv.config();
 
@@ -1941,6 +1946,186 @@ app.post("/api/master-contracts/upload", requireAuth, upload.single('file'), asy
   res.json({ url: stored.url });
 });
 
+// Pecah teks mentah hasil ekstraksi PDF/DOCX jadi array clauses[] siap-edit
+// (title+content per pasal) — dipakai fitur "Upload Dokumen (mode Template
+// Sendiri)": user upload file kontrak sendiri, ISI PASALNYA jadi bisa diedit
+// penuh di editor yang sama dgn mode "Buat dari Template" (tambah pasal,
+// sisip token, dst), BUKAN cuma viewer statis. Heuristik heading: baris yg
+// cocok /^PASAL\s+(angka|romawi)/i dianggap batas pasal baru; baris PENDEK
+// & MAYORITAS HURUF BESAR persis setelahnya dianggap sub-judul (mis.
+// "DEFINISI & PENAFSIRAN"); sisanya jadi isi sampai heading berikutnya.
+// Kalau tidak ada heading "PASAL" sama sekali (dokumen bentuk lain/bebas),
+// SELURUH teks dijadikan SATU pasal "Isi Dokumen" — supaya tetap ada sesuatu
+// yang bisa diedit, bukannya kosong total.
+function parseClausesFromText(rawText: string): { preamble: string; clauses: { title: string; content: string }[]; closing: string } {
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const toHtmlParagraphs = (block: string): string =>
+    block
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+      .map((p) => `<p>${escapeHtml(p)}</p>`)
+      .join("") || "";
+  // Preamble/closing dikirim sbg TEKS BIASA (paragraf dipisah baris kosong
+  // ganda), BUKAN HTML — field customOpeningParagraph/closingStatement di
+  // wizard itu textarea polos ber-markdown ringan ("**tebal**", baris kosong
+  // ganda = paragraf baru), beda dari clause.content yg memang HTML. Kalau
+  // di-HTML-kan di sini, textarea-nya bakal nampilin tag <p> mentah²an.
+  const toPlainParagraphs = (block: string): string =>
+    block
+      .split(/\n\s*\n/)
+      .map((p) => p.replace(/[ \t]+/g, " ").trim())
+      .filter(Boolean)
+      .join("\n\n");
+
+  const lines = rawText.replace(/\r\n/g, "\n").split("\n");
+  const headingRe = /^\s*PASAL\s+([0-9]+|[IVXLCDM]+)\b\s*[:.\-]?\s*$/i;
+  const isShortUppercaseLine = (s: string) => {
+    const t = s.trim();
+    if (!t || t.length > 90) return false;
+    const letters = t.replace(/[^A-Za-z]/g, "");
+    if (letters.length < 2) return false;
+    return letters === letters.toUpperCase();
+  };
+  // Baris "PIHAK PERTAMA (PERUSAHAAN)" / tanda tangan / "METERAI" dst dianggap
+  // penanda MULAI blok TTD — dipakai motong batas akhir "closing" (isi
+  // penutup sebelum TTD), supaya blok TTD asli dari file TIDAK ikut ke-dump
+  // sbg teks biasa (kotak TTD kontrak sudah digambar sistem sendiri).
+  const signatureBlockRe = /^\s*(PIHAK\s+(PERTAMA|KEDUA)\b|METERAI|TANDA\s+TANGAN)/i;
+
+  const headingIdx: number[] = [];
+  lines.forEach((l, i) => { if (headingRe.test(l)) headingIdx.push(i); });
+
+  // Isi SEBELUM "PASAL 1" (narasi pembuka: tanggal, deskripsi Pihak, dst) —
+  // dipetakan ke customOpeningParagraph di form, supaya bukan cuma isi pasal
+  // yang keambil, tapi "full isi file" beneran (sesuai permintaan user).
+  const preambleEndLine = headingIdx.length > 0 ? headingIdx[0] : lines.length;
+  const preamble = toPlainParagraphs(lines.slice(0, preambleEndLine).join("\n").trim());
+
+  if (headingIdx.length === 0) {
+    const whole = rawText.trim();
+    return { preamble: "", clauses: whole ? [{ title: "Isi Dokumen", content: toHtmlParagraphs(whole) || "<p></p>" }] : [], closing: "" };
+  }
+
+  const result: { title: string; content: string }[] = [];
+  let closing = "";
+  for (let h = 0; h < headingIdx.length; h++) {
+    const startLine = headingIdx[h];
+    let endLine = h + 1 < headingIdx.length ? headingIdx[h + 1] : lines.length;
+    const pasalLabel = lines[startLine].trim();
+    let contentStart = startLine + 1;
+    // Lewati baris kosong tepat setelah heading "PASAL N" sebelum mengecek
+    // apakah baris berikutnya adalah sub-judul.
+    while (contentStart < endLine && !lines[contentStart].trim()) contentStart++;
+    let title = pasalLabel.replace(/[:.\-]\s*$/, "");
+    if (contentStart < endLine && isShortUppercaseLine(lines[contentStart])) {
+      title = lines[contentStart].trim();
+      contentStart++;
+    }
+    // Pasal TERAKHIR: cari titik mulai blok TTD, lalu (kalau ada) pisahkan
+    // PARAGRAF PENUTUP baku (mis. "DENGAN DEMIKIAN, Para Pihak...") dari isi
+    // pasal itu sendiri — supaya TIDAK dobel tercatat di dua tempat (bug
+    // ketemu pas smoke test: closing & pasal terakhir sempat identik 100%
+    // krn keduanya diisi rentang baris yg SAMA). Kalau paragraf terakhir
+    // sebelum TTD BUKAN kalimat penutup baku, biarkan utuh jadi isi pasal
+    // saja (closing dikosongkan) — lebih aman drpd salah tebak & duplikat.
+    const closingPhraseRe = /^\s*(DENGAN\s+DEMIKIAN|DEMIKIAN(LAH)?)\b/i;
+    if (h === headingIdx.length - 1) {
+      let sigStart = -1;
+      for (let i = contentStart; i < endLine; i++) { if (signatureBlockRe.test(lines[i])) { sigStart = i; break; } }
+      if (sigStart >= 0) {
+        const blockLines = lines.slice(contentStart, sigStart);
+        const paragraphs = blockLines.join("\n").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+        const lastPara = paragraphs[paragraphs.length - 1] || "";
+        if (paragraphs.length > 1 && closingPhraseRe.test(lastPara)) {
+          closing = toPlainParagraphs(lastPara);
+          const contentBlock = paragraphs.slice(0, -1).join("\n\n");
+          result.push({ title, content: toHtmlParagraphs(contentBlock) || "<p></p>" });
+        } else {
+          const contentBlock = blockLines.join("\n").trim();
+          result.push({ title, content: toHtmlParagraphs(contentBlock) || "<p></p>" });
+        }
+        continue;
+      }
+    }
+    const contentBlock = lines.slice(contentStart, endLine).join("\n").trim();
+    result.push({ title, content: toHtmlParagraphs(contentBlock) || "<p></p>" });
+  }
+  return { preamble, clauses: result, closing };
+}
+
+// Ekstrak teks mentah dari PDF (teks asli, BUKAN hasil scan/gambar) atau
+// DOCX, lalu pecah jadi clauses[] siap-edit (lihat parseClausesFromText).
+// SENGAJA tanpa OCR (lihat diskusi produk) — utk PDF hasil scan/foto,
+// pdf-parse akan mengembalikan teks kosong/nyaris kosong, dan endpoint ini
+// otomatis melapor `supported:false` dgn pesan yg jelas, bukan berpura-pura
+// berhasil dgn hasil kosong/berantakan.
+app.post("/api/master-contracts/extract-text", requireAuth, upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "Tidak ada berkas diunggah" });
+  const name = (req.file.originalname || "").toLowerCase();
+  const mime = req.file.mimetype || "";
+  try {
+    let text = "";
+    let pageCount = 1;
+    if (mime === "application/pdf" || name.endsWith(".pdf")) {
+      // pdf-parse v2: API class-based (PDFParse), BUKAN lagi fungsi
+      // pdf(buffer) seperti v1 — lihat README paketnya utk migrasi.
+      const { PDFParse } = await import("pdf-parse");
+      const parser = new PDFParse({ data: req.file.buffer });
+      const result = await parser.getText();
+      await parser.destroy();
+      text = String(result?.text || "");
+      // pdf-parse v2 menyisipkan marker batas halaman "-- N of M --" di antara
+      // tiap halaman — kalau tidak dibuang, ikut kebawa jadi bagian ISI pasal
+      // terakhir per halaman (ketemu pas smoke test manual). Dibuang di sini,
+      // BUKAN cuma di-trim, karena posisinya bisa di tengah teks (antar
+      // halaman), bukan cuma di ujung.
+      text = text.replace(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gim, "");
+      pageCount = Number(result?.total) || 1;
+    } else if (
+      mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+      name.endsWith(".docx")
+    ) {
+      const { value } = await mammoth.extractRawText({ buffer: req.file.buffer });
+      text = String(value || "");
+    } else {
+      return res.json({
+        supported: false,
+        reason: "Format berkas ini (selain PDF/.docx teks-asli) belum bisa dibaca otomatis tanpa OCR — misalnya .doc lama atau hasil scan/gambar.",
+        text: "",
+        clauses: [],
+      });
+    }
+    const cleaned = text.replace(/\u0000/g, "").trim();
+    // Heuristik deteksi "PDF ini sebenarnya hasil scan/gambar (atau raster
+    // hasil export screenshot, mis. html2canvas)" — dicek PER HALAMAN, bukan
+    // cuma total, supaya dokumen panjang tapi tiap halamannya minim teks
+    // (footer doang, isinya gambar) tetap kena deteksi. ~150 karakter/halaman
+    // adalah ambang longgar — kontrak sungguhan biasanya ratusan-ribuan
+    // karakter per halaman.
+    const avgCharsPerPage = cleaned.length / Math.max(1, pageCount);
+    if (cleaned.length < 20 || avgCharsPerPage < 150) {
+      return res.json({
+        supported: false,
+        reason: "Nyaris tidak ada teks yang bisa dibaca dari berkas ini — kemungkinan hasil scan/foto (gambar) atau PDF hasil export gambar, bukan PDF teks asli. Fitur ini sengaja TIDAK memakai OCR, jadi pasal tidak bisa diekstrak otomatis untuk berkas seperti ini.",
+        text: cleaned,
+        clauses: [],
+      });
+    }
+    const parsed = parseClausesFromText(cleaned);
+    res.json({ supported: true, text: cleaned, preamble: parsed.preamble, clauses: parsed.clauses, closing: parsed.closing });
+  } catch (err: any) {
+    logger.error({ err }, "Gagal mengekstrak teks dari berkas upload");
+    res.json({
+      supported: false,
+      reason: "Gagal membaca berkas ini (kemungkinan rusak atau format tidak didukung).",
+      text: "",
+      clauses: [],
+    });
+  }
+});
+
 // Upload lampiran dokumen DCS (Word/PDF langsung, bukan form terstruktur di
 // sistem) — hasilnya cuma URL, dipakai mengisi field `appendix[].url` yang
 // sudah ada, tanpa perubahan skema.
@@ -2068,6 +2253,12 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
     party2IdLabel: req.body.party2IdLabel || undefined,
     party2IdNumber: req.body.party2IdNumber || undefined,
     customOpeningParagraph: req.body.customOpeningParagraph || undefined,
+    // Hasil auto-parse "kalimat penutup" dari file upload (lihat
+    // extract-text/parseClausesFromText) — sebelumnya field ini cuma bisa
+    // diisi lewat editor SETELAH kontrak dibuat, sekarang bisa langsung ikut
+    // dikirim saat create supaya mode Upload beneran bawa "full isi file".
+    closingStatement: req.body.closingStatement || undefined,
+    attachmentSections: Array.isArray(req.body.attachmentSections) ? req.body.attachmentSections : undefined,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   };
@@ -2182,6 +2373,7 @@ app.put("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal"
       templateId: req.body.templateId !== undefined ? req.body.templateId : oldContract.templateId,
       notes: req.body.notes !== undefined ? (req.body.notes || undefined) : oldContract.notes,
       amendmentAttachments: req.body.amendmentAttachments !== undefined ? req.body.amendmentAttachments : oldContract.amendmentAttachments,
+      attachmentSections: req.body.attachmentSections !== undefined ? req.body.attachmentSections : oldContract.attachmentSections,
       party1Address: req.body.party1Address !== undefined ? (req.body.party1Address || undefined) : oldContract.party1Address,
       party1Position: req.body.party1Position !== undefined ? (req.body.party1Position || undefined) : oldContract.party1Position,
       party1IdLabel: req.body.party1IdLabel !== undefined ? (req.body.party1IdLabel || undefined) : oldContract.party1IdLabel,
@@ -3149,6 +3341,7 @@ app.post("/api/contracts/:id/addendum", requireAuth, requireRole("admin", "staff
     docType: ADDENDUM_DOC_TYPE,
     amendsContractId: parent.id,
     amendmentAttachments: Array.isArray(req.body.amendmentAttachments) ? req.body.amendmentAttachments : [],
+    attachmentSections: Array.isArray(req.body.attachmentSections) ? req.body.attachmentSections : [],
     // Default 2 rangkap bermeterai (praktik umum: tiap pihak pegang 1 asli
     // bermeterai) — bisa diubah dari form Addendum, sama seperti kontrak baru.
     copies: buildContractCopies(Number(req.body.copyCount) || 2, req.body.hasMaterai !== false),
@@ -3196,8 +3389,15 @@ app.get("/api/contracts/:id/view-pdf", requireAuth, async (req: AuthedRequest, r
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
-  // Sebelum approval matrix selesai, dokumen tidak boleh diunduh sama sekali.
-  if (!["FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
+  // Sebelum approval matrix selesai, dokumen TIDAK BOLEH DIBAGIKAN/DIUNDUH ke
+  // luar sistem (lihat gate serupa di /export-share, itu tetap ketat) — tapi
+  // endpoint INI juga dipakai utk sekadar MELIHAT berkas milik sendiri di
+  // dalam app (panel "Dokumen/Template Anda (Diunggah)" & "Berkas Resmi" di
+  // preview kontrak). Draft karenanya diizinkan lewat sini: user berhak lihat
+  // file yang BARU SAJA dia unggah sendiri walau belum diajukan approval —
+  // yang tetap diblokir cuma status "belum jelas sama sekali" (mis. hasil
+  // impor data lama tanpa status valid), bukan Draft yang wajar.
+  if (!["Draft", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
     return res.status(403).json({ error: "Dokumen belum bisa diunduh — selesaikan approval matriks terlebih dahulu." });
   }
 

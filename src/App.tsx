@@ -76,6 +76,21 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  RotateCcw,
+  RotateCw,
+  Strikethrough,
+  Eraser,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  AlignJustify,
+  List,
+  ListOrdered,
+  Quote,
+  Edit3,
+  Link2,
+  Table2,
+  Minus as MinusIcon,
 } from "lucide-react";
 import {
   Clause,
@@ -95,6 +110,7 @@ import {
   ContractVendorSnapshot,
   ContractApprovalStep,
   UserRole,
+  ContractAttachmentSection,
 } from "./types";
 
 // Mirrors dcs/pdf-compose.ts's layoutFlowGraph 1:1 (same algorithm, TS
@@ -1401,7 +1417,7 @@ const looksLikeHtml = (s: string) => /<[a-z][\s\S]*>/i.test(s || "");
 const escapeHtml = (s: string) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 // Tag/atribut yang diizinkan di HTML narasi — cukup untuk format teks Word-like,
 // tanpa script/iframe/dll. Dipakai saat render (DOMPurify) & saat simpan.
-const RICH_ALLOWED = { ALLOWED_TAGS: ["p", "br", "b", "strong", "i", "em", "u", "s", "span", "div", "ul", "ol", "li", "h3", "h4", "font"], ALLOWED_ATTR: ["style", "color", "size", "align"] };
+const RICH_ALLOWED = { ALLOWED_TAGS: ["p", "br", "b", "strong", "i", "em", "u", "s", "span", "div", "ul", "ol", "li", "h3", "h4", "font", "table", "thead", "tbody", "tr", "td", "th", "img", "a", "hr", "blockquote"], ALLOWED_ATTR: ["style", "color", "size", "align", "src", "href", "target", "rel", "alt", "colspan", "rowspan", "contenteditable"] };
 const sanitizeRich = (html: string): string => DOMPurify.sanitize(html || "", RICH_ALLOWED as any) as unknown as string;
 // Substitusi {{Token}} lalu render HTML aman. Nilai token di-escape agar tak
 // bisa menyuntik tag lewat data kontrak.
@@ -1610,6 +1626,394 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
         onSelect={syncFontFromSelection}
         style={{ minHeight }}
         className="px-3 py-2 text-xs text-slate-100 focus:outline-none [&_b]:font-bold [&_strong]:font-bold [&_ul]:list-disc [&_ul]:pl-5"
+      />
+    </div>
+  );
+}
+
+// Palet token cepat utk dropdown "Sisipkan" di DocToolbar — gabungan dari
+// PREAMBLE_TOKENS & CLAUSE_TOKENS (yg letaknya di dalam App(), tidak bisa
+// diakses dari komponen top-level ini), supaya satu toolbar tetap bisa
+// menyisipkan token konfigurasi data (Pihak Pertama, tanggal, dll) di mana
+// pun dipakai — naskah, pasal, ATAUPUN lampiran.
+const DOC_INSERT_TOKENS: { label: string; token: string }[] = [
+  { label: "Nama Pihak 1", token: "{{Party1Name}}" },
+  { label: "Alamat Pihak 1", token: "{{Party1Address}}" },
+  { label: "Perwakilan Pihak 1", token: "{{Party1Representative}}" },
+  { label: "Jabatan Perwakilan Pihak 1", token: "{{Party1RepTitle}}" },
+  { label: "Nama Pihak 2", token: "{{Party2Name}}" },
+  { label: "Alamat Pihak 2", token: "{{Party2Address}}" },
+  { label: "Nama Perusahaan (PT)", token: "{{CompanyName}}" },
+  { label: "Nama Vendor/Pihak 2", token: "{{VendorName}}" },
+  { label: "Nilai Kontrak", token: "{{ContractValue}}" },
+  { label: "Mata Uang", token: "{{Currency}}" },
+  { label: "Termin Bayar", token: "{{PaymentTerm}}" },
+  { label: "Tanggal Mulai", token: "{{StartDate}}" },
+  { label: "Tanggal Selesai", token: "{{EndDate}}" },
+  { label: "Alamat", token: "{{Address}}" },
+];
+
+// Hapus deklarasi font-family dari HTML hasil paste (mis. dari Microsoft
+// Word yang selalu menyisipkan "font-family:Calibri" dkk di setiap span) —
+// supaya teks yang ditempel ikut font default dokumen (Times New Roman),
+// BUKAN font asal file sumbernya. Formatting lain (bold/italic/warna/dll)
+// tetap dipertahankan, cuma font-family-nya yang dibuang.
+const stripPastedFontFamily = (html: string): string =>
+  html
+    .replace(/font-family\s*:[^;"']*;?/gi, "")
+    .replace(/<font\b([^>]*)\sface="[^"]*"([^>]*)>/gi, "<font$1$2>")
+    .replace(/\bface="[^"]*"/gi, "");
+
+// Pelacak elemen struktural (tabel/sel/gambar) yang barusan diklik di dalam
+// InlineRich manapun — dibaca DocToolbar utk tombol edit-tabel & hapus
+// terpadu. Sengaja module-level (bukan React state) supaya tidak memicu
+// render ulang tiap klik; toolbar cuma butuh nilai TERKINI saat tombolnya
+// ditekan, bukan reaktif.
+let activeStructural: { table: HTMLTableElement | null; cell: HTMLTableCellElement | null; img: HTMLElement | null } = { table: null, cell: null, img: null };
+
+// Toolbar tunggal ala img2 (undo/redo, B/I/U/S, align x4, list x2, quote) —
+// TIDAK terikat ke satu contentEditable tertentu. execCommand bekerja atas
+// SELEKSI DOM aktif, jadi satu toolbar ini otomatis "ngikutin" contentEditable
+// manapun yang barusan difokus, asal tombolnya sendiri tidak pernah mencuri
+// fokus (onMouseDown preventDefault, sama pola dgn Btn di RichTextEditor).
+function DocToolbar() {
+  const exec = (cmd: string, arg?: string) => {
+    try { document.execCommand("styleWithCSS", false, "true"); } catch { /* noop */ }
+    document.execCommand(cmd, false, arg);
+  };
+  const Btn = ({ onClick, title, children }: { onClick: () => void; title: string; children: any }) => (
+    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
+      className="min-w-[28px] h-[28px] px-1.5 text-xs font-bold bg-slate-950 border border-slate-800 rounded hover:bg-slate-800 text-slate-200 cursor-pointer flex items-center justify-center">
+      {children}
+    </button>
+  );
+  const addTableRow = () => {
+    const t = activeStructural.table;
+    if (!t) return;
+    const lastRow = t.rows[t.rows.length - 1];
+    const colCount = lastRow ? lastRow.cells.length : 1;
+    const row = t.insertRow(-1);
+    for (let i = 0; i < colCount; i++) {
+      const cell = row.insertCell(-1);
+      cell.setAttribute("style", "border:1px solid #64748b;padding:6px 8px;");
+      cell.innerHTML = "&nbsp;";
+    }
+  };
+  const addTableCol = () => {
+    const t = activeStructural.table;
+    if (!t) return;
+    for (const row of Array.from(t.rows)) {
+      const isHeaderRow = row.querySelectorAll("th").length > 0;
+      const cell = row.insertCell(-1) as HTMLTableCellElement;
+      if (isHeaderRow && row.cells[0]?.tagName === "TH") {
+        const th = document.createElement("th");
+        th.setAttribute("style", "border:1px solid #64748b;background:#86efac;padding:6px 8px;");
+        th.innerHTML = "Kolom Baru";
+        row.replaceChild(th, cell);
+      } else {
+        cell.setAttribute("style", "border:1px solid #64748b;padding:6px 8px;");
+        cell.innerHTML = "&nbsp;";
+      }
+    }
+  };
+  const removeTableRow = () => {
+    const cell = activeStructural.cell;
+    const t = activeStructural.table;
+    if (!t || !cell) return;
+    const row = cell.closest("tr");
+    if (row && t.rows.length > 1) row.remove();
+  };
+  const removeTableCol = () => {
+    const cell = activeStructural.cell;
+    const t = activeStructural.table;
+    if (!t || !cell) return;
+    const idx = Array.from(cell.parentElement?.children || []).indexOf(cell);
+    if (idx < 0) return;
+    for (const row of Array.from(t.rows)) {
+      if (row.cells.length > 1 && row.cells[idx]) row.deleteCell(idx);
+    }
+  };
+  const colorTableHeader = () => {
+    const t = activeStructural.table;
+    if (!t) return;
+    const color = window.prompt("Warna header tabel (nama warna atau kode hex):", "#86efac");
+    if (!color) return;
+    t.querySelectorAll("th").forEach((th) => { (th as HTMLElement).style.background = color; });
+  };
+  const deleteSelectedElement = () => {
+    if (activeStructural.table) { activeStructural.table.remove(); activeStructural.table = null; activeStructural.cell = null; return; }
+    if (activeStructural.img) { activeStructural.img.remove(); activeStructural.img = null; return; }
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-1 p-2 border border-slate-800 rounded-xl bg-slate-900/60 mb-3">
+      <Btn onClick={() => exec("undo")} title="Undo"><RotateCcw className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("redo")} title="Redo"><RotateCw className="w-3.5 h-3.5" /></Btn>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("formatBlock", e.target.value); e.target.selectedIndex = 0; }}
+        title="Gaya teks" className="h-[28px] px-1 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer">
+        <option value="">Teks Normal</option>
+        <option value="h3">Judul</option>
+        <option value="blockquote">Kutipan</option>
+      </select>
+      <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("fontName", e.target.value); e.target.selectedIndex = 0; }}
+        title="Jenis huruf" className="h-[28px] px-1 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer">
+        <option value="">Font</option>
+        {RICH_FONT_OPTIONS.map((f) => (
+          <option key={f} value={f} style={{ fontFamily: /\s/.test(f) ? `'${f}'` : f }}>{f}</option>
+        ))}
+      </select>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      <Btn onClick={() => exec("bold")} title="Tebal"><b>B</b></Btn>
+      <Btn onClick={() => exec("italic")} title="Miring"><i>I</i></Btn>
+      <Btn onClick={() => exec("underline")} title="Garis bawah"><u>U</u></Btn>
+      <Btn onClick={() => exec("strikeThrough")} title="Coret"><Strikethrough className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("removeFormat")} title="Bersihkan format"><Eraser className="w-3.5 h-3.5" /></Btn>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      <Btn onClick={() => exec("justifyLeft")} title="Rata kiri"><AlignLeft className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("justifyCenter")} title="Rata tengah"><AlignCenter className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("justifyRight")} title="Rata kanan"><AlignRight className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("justifyFull")} title="Rata kiri-kanan"><AlignJustify className="w-3.5 h-3.5" /></Btn>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      <Btn onClick={() => exec("insertUnorderedList")} title="Daftar butir"><List className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("insertOrderedList")} title="Daftar nomor"><ListOrdered className="w-3.5 h-3.5" /></Btn>
+      <Btn onClick={() => exec("formatBlock", "blockquote")} title="Kutipan"><Quote className="w-3.5 h-3.5" /></Btn>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      <Btn onClick={() => { const url = window.prompt("Masukkan URL tautan:"); if (url) exec("createLink", url); }} title="Sisipkan tautan"><Link2 className="w-3.5 h-3.5" /></Btn>
+      <label
+        onMouseDown={(e) => e.preventDefault()}
+        title="Sisipkan gambar (klik gambarnya lagi setelah disisipkan utk resize/geser)"
+        className="min-w-[28px] h-[28px] px-1.5 text-xs bg-slate-950 border border-slate-800 rounded hover:bg-slate-800 text-slate-200 cursor-pointer flex items-center justify-center"
+      >
+        <ImageIcon className="w-3.5 h-3.5" />
+        <input
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (!f) return;
+            const reader = new FileReader();
+            // Dibungkus <span contenteditable="false" style="resize:
+            // horizontal;..."> — SENGAJA cuma horizontal (bukan "both"),
+            // karena img di dalamnya width:100% + height:AUTO (proporsional
+            // ngikutin lebar, bukan dipaksa 100% tinggi wrapper) — itu yg
+            // bikin versi sebelumnya gepeng saat wrapper di-resize bebas 2
+            // arah. Drag gagang di kanan = lebar berubah, tinggi ikut
+            // otomatis, rasio selalu terjaga. Wrapper contenteditable=false
+            // jadi satu unit atomik yg bisa digeser-pindah (drag) dlm teks.
+            reader.onload = () =>
+              exec(
+                "insertHTML",
+                `<span contenteditable="false" data-img-wrap="1" style="display:inline-block;resize:horizontal;overflow:hidden;max-width:100%;width:280px;line-height:0;vertical-align:middle;"><img src="${String(reader.result || "")}" style="width:100%;height:auto;display:block;" /></span>&nbsp;`,
+              );
+            reader.readAsDataURL(f);
+            e.target.value = "";
+          }}
+        />
+      </label>
+      <Btn
+        onClick={() =>
+          exec(
+            "insertHTML",
+            '<table style="width:100%;border-collapse:collapse;margin:8px 0;"><tbody>' +
+              '<tr><th style="border:1px solid #64748b;background:#86efac;padding:6px 8px;">Kolom 1</th><th style="border:1px solid #64748b;background:#86efac;padding:6px 8px;">Kolom 2</th><th style="border:1px solid #64748b;background:#86efac;padding:6px 8px;">Kolom 3</th></tr>' +
+              '<tr><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td></tr>' +
+              '<tr><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td></tr>' +
+              "</tbody></table>",
+          )
+        }
+        title="Sisipkan tabel (3 kolom)"
+      >
+        <Table2 className="w-3.5 h-3.5" />
+      </Btn>
+      <Btn onClick={() => exec("insertHorizontalRule")} title="Garis pemisah"><MinusIcon className="w-3.5 h-3.5" /></Btn>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      <select
+        onMouseDown={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          const tok = e.target.value;
+          if (tok) exec("insertText", tok);
+          e.target.selectedIndex = 0;
+        }}
+        title="Sisipkan token konfigurasi data (Pihak Pertama, tanggal, PT, dll) — otomatis terisi dari data kontrak"
+        className="h-[28px] px-1.5 text-[11px] bg-indigo-500/10 border border-indigo-500/30 rounded text-indigo-400 font-semibold cursor-pointer"
+      >
+        <option value="">+ Sisipkan…</option>
+        {DOC_INSERT_TOKENS.map((t) => (
+          <option key={t.token} value={t.token}>{t.label}</option>
+        ))}
+      </select>
+      <span className="w-px h-4 bg-slate-800 mx-0.5" />
+      {/* Klik dulu di DALAM tabel yg mau diedit (baris/sel manapun), baru
+          pencet tombol2 ini — sasarannya tabel yg terakhir diklik
+          (activeStructural, di-update onClick di InlineRich). */}
+      <Btn onClick={addTableRow} title="Tambah baris (klik di dalam tabel dulu)">
+        <span className="text-[10px]">+Baris</span>
+      </Btn>
+      <Btn onClick={addTableCol} title="Tambah kolom (klik di dalam tabel dulu)">
+        <span className="text-[10px]">+Kolom</span>
+      </Btn>
+      <Btn onClick={removeTableRow} title="Hapus baris ini (klik sel di baris yg mau dihapus dulu)">
+        <span className="text-[10px] text-rose-400">-Baris</span>
+      </Btn>
+      <Btn onClick={removeTableCol} title="Hapus kolom ini (klik sel di kolom yg mau dihapus dulu)">
+        <span className="text-[10px] text-rose-400">-Kolom</span>
+      </Btn>
+      <Btn onClick={colorTableHeader} title="Warna header tabel (klik di dalam tabel dulu)">
+        <span className="text-[10px]">🎨</span>
+      </Btn>
+      <Btn onClick={deleteSelectedElement} title="Hapus tabel/gambar terakhir diklik">
+        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+      </Btn>
+    </div>
+  );
+}
+
+// contentEditable polos TANPA toolbar sendiri (dikontrol oleh DocToolbar di
+// atas preview) — dipakai utk mode edit inline di dalam preview (naskah
+// pembuka, pasal, lampiran dst). Simpan HANYA saat blur (bukan tiap keystroke)
+// supaya tidak spam PUT ke server. onClick melacak tabel/sel/gambar yg
+// diklik ke activeStructural, dibaca tombol edit-tabel & hapus di DocToolbar.
+function InlineRich({ html, onSave, className, placeholder }: { html: string; onSave: (html: string) => void; className?: string; placeholder?: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (ref.current && ref.current.innerHTML !== (html || "")) ref.current.innerHTML = html || ""; }, [html]);
+  return (
+    <div
+      ref={ref}
+      contentEditable
+      suppressContentEditableWarning
+      data-placeholder={placeholder}
+      onBlur={() => { if (ref.current) onSave(sanitizeRich(ref.current.innerHTML)); }}
+      onPaste={(e) => {
+        // Paste dari Word/aplikasi lain bawa font-family sendiri (mis.
+        // Calibri) menempel di tiap <span style="...">. Dibuang di sini
+        // supaya teks yang ditempel IKUT font default dokumen (Times New
+        // Roman / pilihan dropdown Font), bukan font asal sumbernya —
+        // formatting lain (bold/italic/list/dll) tetap dipertahankan.
+        e.preventDefault();
+        const html = e.clipboardData.getData("text/html");
+        const text = e.clipboardData.getData("text/plain");
+        const cleaned = html ? sanitizeRich(stripPastedFontFamily(html)) : "";
+        try { document.execCommand("styleWithCSS", false, "true"); } catch { /* noop */ }
+        document.execCommand("insertHTML", false, cleaned || text.replace(/\n/g, "<br>"));
+      }}
+      onClick={(e) => {
+        const target = e.target as HTMLElement;
+        const img = target.closest("img") as HTMLImageElement | null;
+        // Kalau gambar dibungkus span resizable (lihat tombol sisip gambar
+        // di DocToolbar), yang perlu dihapus/dilacak itu WRAPPER-nya (satu
+        // unit utuh), bukan cuma <img> di dalamnya.
+        const imgUnit = img ? ((img.closest('span[data-img-wrap="1"]') as HTMLElement) || img) : null;
+        activeStructural = {
+          table: (target.closest("table") as HTMLTableElement) || null,
+          cell: (target.closest("td, th") as HTMLTableCellElement) || null,
+          img: (imgUnit as any) || null,
+        };
+        // Kontrol mengambang ala Canva (lihat ImageSelectionOverlay) — muncul
+        // nempel di gambar yang baru diklik, ilang kalau klik bagian lain.
+        window.dispatchEvent(new CustomEvent("docimg:select", { detail: imgUnit }));
+      }}
+      className={className || "focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1 empty:before:content-[attr(data-placeholder)] empty:before:text-slate-600"}
+    />
+  );
+}
+
+// Kontrol gambar mengambang ala Canva/Google Docs — nempel PERSIS di gambar
+// yang barusan diklik (bukan di toolbar atas yg jauh), muncul gagang resize
+// di pojok kanan-bawah + strip tombol align/hapus tepat di atasnya. Dipasang
+// SEKALI di root App (fixed position, lepas dari alur dokumen) dan
+// mendengarkan event "docimg:select" yang di-dispatch InlineRich tiap ada
+// klik pada gambar (atau null kalau klik di luar gambar, utk menyembunyikan).
+function ImageSelectionOverlay() {
+  const [el, setEl] = useState<HTMLElement | null>(null);
+  const [, bump] = useState(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onSelect = (e: Event) => setEl(((e as CustomEvent).detail as HTMLElement) || null);
+    window.addEventListener("docimg:select", onSelect as EventListener);
+    return () => window.removeEventListener("docimg:select", onSelect as EventListener);
+  }, []);
+  useEffect(() => {
+    if (!el) return;
+    const reposition = () => bump((t) => t + 1);
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    // Klik di luar overlay & di luar gambar yg sedang aktif → sembunyikan.
+    // Dicek capture-phase SEBELUM handler onClick InlineRich sempat
+    // dispatch ulang, supaya klik ke elemen lain (bukan gambar lain) juga
+    // ikut menutup overlay, bukan cuma saat InlineRich yg nge-dispatch null.
+    const onDocClick = (ev: MouseEvent) => {
+      const t = ev.target as Node;
+      if (boxRef.current?.contains(t)) return;
+      if (el.contains(t) || el === t) return;
+      setEl(null);
+    };
+    document.addEventListener("mousedown", onDocClick, true);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+      document.removeEventListener("mousedown", onDocClick, true);
+    };
+  }, [el]);
+  if (!el || !document.contains(el)) return null;
+  const rect = el.getBoundingClientRect();
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = rect.width;
+    const onMove = (ev: PointerEvent) => {
+      const next = Math.max(40, Math.round(startWidth + (ev.clientX - startX)));
+      el.style.width = next + "px";
+      bump((t) => t + 1);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  const align = (mode: "left" | "center" | "right") => {
+    if (mode === "left") { el.style.float = "left"; el.style.display = "inline-block"; el.style.margin = "4px 12px 4px 0"; }
+    if (mode === "center") { el.style.float = "none"; el.style.display = "block"; el.style.margin = "8px auto"; }
+    if (mode === "right") { el.style.float = "right"; el.style.display = "inline-block"; el.style.margin = "4px 0 4px 12px"; }
+    bump((t) => t + 1);
+  };
+  const resizeBy = (factor: number) => {
+    const next = Math.max(40, Math.round(rect.width * factor));
+    el.style.width = next + "px";
+    bump((t) => t + 1);
+  };
+  const OverlayBtn = ({ onClick, title, children }: { onClick: () => void; title: string; children: any }) => (
+    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
+      className="w-7 h-7 flex items-center justify-center rounded hover:bg-slate-800 text-slate-200 cursor-pointer">
+      {children}
+    </button>
+  );
+  return (
+    <div ref={boxRef}>
+      {/* Strip kontrol mengambang, nempel tepat di atas gambar. */}
+      <div
+        style={{ position: "fixed", top: Math.max(4, rect.top - 40), left: rect.left, zIndex: 9999 }}
+        className="flex items-center gap-0.5 bg-slate-900 border border-indigo-500 rounded-lg shadow-2xl px-1 py-0.5"
+      >
+        <OverlayBtn onClick={() => align("left")} title="Rata kiri"><AlignLeft className="w-3.5 h-3.5" /></OverlayBtn>
+        <OverlayBtn onClick={() => align("center")} title="Rata tengah"><AlignCenter className="w-3.5 h-3.5" /></OverlayBtn>
+        <OverlayBtn onClick={() => align("right")} title="Rata kanan"><AlignRight className="w-3.5 h-3.5" /></OverlayBtn>
+        <span className="w-px h-4 bg-slate-700 mx-0.5" />
+        <OverlayBtn onClick={() => resizeBy(0.85)} title="Perkecil"><span className="text-sm leading-none">−</span></OverlayBtn>
+        <OverlayBtn onClick={() => resizeBy(1.15)} title="Perbesar"><span className="text-sm leading-none">+</span></OverlayBtn>
+        <span className="w-px h-4 bg-slate-700 mx-0.5" />
+        <OverlayBtn onClick={() => { el.remove(); setEl(null); }} title="Hapus gambar"><Trash2 className="w-3.5 h-3.5 text-rose-400" /></OverlayBtn>
+      </div>
+      {/* Garis seleksi (bingkai biru) + gagang resize pojok kanan-bawah —
+          drag gagang ini utk resize langsung di tempat, rasio gambar
+          terjaga otomatis (lihat height:auto di img saat disisipkan). */}
+      <div style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width, height: rect.height, border: "2px solid #6366f1", pointerEvents: "none", zIndex: 9998, boxSizing: "border-box" }} />
+      <div
+        onPointerDown={startResize}
+        style={{ position: "fixed", top: rect.top + rect.height - 6, left: rect.left + rect.width - 6, width: 12, height: 12, background: "#6366f1", borderRadius: 9999, cursor: "nwse-resize", zIndex: 9999, border: "2px solid white" }}
       />
     </div>
   );
@@ -1898,6 +2302,21 @@ export default function App() {
 
   // PDF Export State
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  // Lihat file input "Berkas Dokumen/Template Kontrak" di wizard mode Upload
+  // — true selagi /api/master-contracts/extract-text lagi baca & memecah
+  // teks berkas jadi pasal-pasal.
+  const [isParsingUploadedFile, setIsParsingUploadedFile] = useState(false);
+  // Mode Edit vs Mode Preview/Output pada panel dokumen live — bukan disimpan
+  // ke server (murni sakelar tampilan lokal). Edit = token mentah {{Token}}
+  // + semua bagian (naskah/pasal/lampiran) jadi contentEditable via DocToolbar
+  // tunggal di atas preview. Preview = tampilan default lama (token sudah
+  // disubstitusi, read-only) — TIDAK ada perubahan perilaku di mode ini.
+  const [docEditMode, setDocEditMode] = useState(false);
+  // Hasil pengukuran DOM "pasal mana yg satu halaman dgn TTD/meterai" — lihat
+  // generateContractPdf. null = belum diukur (atau bukan lagi proses export),
+  // dipakai clauseListBlock/signatureRow di preview utk memutuskan pasal mana
+  // yg diulang per rangkap fisik (BUKAN semua pasal dari awal lagi).
+  const [rangkapCutIndex, setRangkapCutIndex] = useState<number | null>(null);
   const [isTranslating, setIsTranslating] = useState(false);
 
   // Sidebar "AI Tools" collapsible group
@@ -2220,7 +2639,7 @@ export default function App() {
     const t = masterData.documentTypography;
     const fam = t.fontFamily === "sans" ? "'Inter', ui-sans-serif, system-ui, sans-serif"
       : t.fontFamily === "mono" ? "ui-monospace, 'Courier New', monospace"
-      : "Georgia, 'Times New Roman', serif";
+      : "'Times New Roman', Times, serif";
     return { fontFamily: fam, fontSize: `${t.fontSizePt}pt`, lineHeight: t.lineHeight, textAlign: t.align };
   };
   const reminderOptions: number[] = appSettings.reminderDefaults || [7, 14, 30, 60, 90];
@@ -2666,6 +3085,9 @@ export default function App() {
     // Override narasi pembuka khusus kontrak ini (opsional) — lihat comment
     // Contract.customOpeningParagraph di types.ts.
     customOpeningParagraph: "",
+    // Hasil auto-parse "kalimat penutup" dari file upload (opsional) — lihat
+    // handler onChange input file mode Upload & closingStatement di types.ts.
+    closingStatement: "",
     startDate: "",
     endDate: "",
     contractValue: 0,
@@ -4130,18 +4552,24 @@ export default function App() {
 
     const payload = {
       ...newContractForm,
-      clauses: newContractForm.creationMode === "smart" ? newContractForm.clauses : [],
+      // Mode upload SEKARANG bisa punya clauses hasil auto-parse (lihat
+      // extract-text & onChange input file) — kirim apa adanya, bukan
+      // dikosongkan paksa lagi seperti dulu (waktu upload = viewer statis).
+      clauses: newContractForm.clauses,
       parties: newContractForm.parties,
       masterPdfUrl: fileUrl,
       // Mode unggah PDF: nomor bebas dari user (kosong = server auto-generate).
       // Mode smart: server selalu auto-generate (manualNumber tak dikirim).
       manualNumber: newContractForm.creationMode === "upload" ? (newContractForm.contractNumber.trim() || undefined) : undefined,
-      // Mode unggah PDF = dokumen yang sudah ditandatangani secara fisik (lihat
-      // teks Tahap 1) — lahir langsung Aktif, sama seperti jalur "Daftarkan
-      // Dokumen Upload" di menu Arsip, supaya tidak perlu diajukan/disetujui
-      // ulang secara internal untuk pasal yang sudah disepakati & ditandatangani
-      // pihak luar. Mode smart tetap lahir Draft seperti biasa (server default).
-      status: newContractForm.creationMode === "upload" ? "Aktif" : undefined,
+      // Mode unggah PDF = pakai TEMPLATE/DOKUMEN MILIK USER SENDIRI sbg isi
+      // kontrak (bukan generate dari template sistem) — BUKAN berarti sudah
+      // 100% final ber-TTD basah, jadi TIDAK boleh langsung lahir Aktif
+      // (dulu disamakan dgn jalur "Daftarkan Dokumen Upload" di menu Arsip —
+      // itu keliru, karena tempat itu memang khusus dokumen yang SUDAH FIX
+      // selesai, sedangkan form kontrak ini upload templatenya bisa saja
+      // masih draft/belum ditandatangani semua pihak). Lahir Draft seperti
+      // mode "smart", status Aktif baru berubah lewat proses aktivasi biasa.
+      status: undefined,
       variables: sharingFeeSummary ? { ...resolvedVariables, SharingFeeSummary: sharingFeeSummary } : resolvedVariables,
     };
 
@@ -4586,6 +5014,7 @@ export default function App() {
     const prevPadding = el.style.padding;
     const prevBorder = el.style.border;
     try {
+      setRangkapCutIndex(null);
       setIsExportingPdf(true);
       // Let React re-render (hides draft-only edit buttons) before capture.
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -4642,6 +5071,85 @@ export default function App() {
         lastHeight = currentHeight;
       }
       await new Promise((resolve) => setTimeout(resolve, 120));
+
+      // Rangkap Fisik (>1 pihak + meterai nyala): tentukan pasal mana yg
+      // SATU HALAMAN dgn blok TTD — HANYA pasal itu yg akan diulang per
+      // rangkap tambahan (idx>0), bukan semua pasal dari Pasal 1 lagi.
+      // Diukur dari layout SATU salinan alami di atas (rangkapCutIndex masih
+      // null saat ini, jadi clauseListBlock() di atas belum menduplikasi apa
+      // pun — persis kondisi yg perlu diukur). Lihat komentar rangkapCutIndex
+      // & clauseListBlock/signatureRow di JSX preview.
+      if (selectedContract.showMeteraiPlaceholder && (selectedContract.parties?.length || 2) > 1) {
+        const elTop = el.getBoundingClientRect().top;
+        const sigAnchor = el.querySelector('[data-signature-anchor="1"]') as HTMLElement | null;
+        const clauseEls = Array.from(el.querySelectorAll("[data-clause-index]")) as HTMLElement[];
+        let cutIdx = 0; // fallback aman: ulang semua pasal (perilaku lama) kalau pengukuran gagal
+        if (sigAnchor && clauseEls.length > 0) {
+          const pxPerMm = el.getBoundingClientRect().width / 210; // el dipaksa width 210mm di atas
+          const pageContentHeightMm = 297 - m.top - m.bottom;
+          const pageHeightPxCss = pageContentHeightMm * pxPerMm;
+          const sigTopPx = sigAnchor.getBoundingClientRect().top - elTop;
+          // PENTING: batas antar halaman NYATA tidak persis kelipatan tetap
+          // pageHeightPxCss — algoritma potong asli (lihat while-loop capture
+          // di bawah, forceBreakPointsPx/safeBreakPointsPx) MENGGESER potongan
+          // ke batas pasal terdekat (isLastSlice/minCutY 40%), supaya tidak
+          // pernah motong di tengah kalimat. Kalau di sini dipakai kelipatan
+          // tetap yg polos, batas halamannya bisa MELESET dari yg sungguhan
+          // kepakai saat render PDF — persis bug yg dilaporkan (Pasal 6
+          // ketinggalan di halaman "sebelum" padahal nyatanya senasib sama
+          // TTD). Makanya di sini REPLIKASI PERSIS logic bestBreak/minCutY yg
+          // sama, dalam satuan px CSS (bukan px kanvas — scale-nya sama2
+          // dipakai di pembilang & penyebut jadi hasilnya proporsional sama).
+          const breakBoundaryElsMeasure = [
+            ...Array.from(el.children),
+            ...Array.from(el.querySelectorAll(".group\\/clause")),
+          ] as HTMLElement[];
+          const safeBreakPointsPxCss = breakBoundaryElsMeasure.map(
+            (c) => c.getBoundingClientRect().bottom - elTop,
+          );
+          const totalHeightPxCss = el.scrollHeight;
+          let renderedPx = 0;
+          let pageStartPx = 0;
+          while (renderedPx < totalHeightPxCss) {
+            let sliceHeight = Math.min(pageHeightPxCss, totalHeightPxCss - renderedPx);
+            const isLastSlice = renderedPx + sliceHeight >= totalHeightPxCss;
+            if (!isLastSlice) {
+              const idealCutY = renderedPx + sliceHeight;
+              const minCutY = renderedPx + pageHeightPxCss * 0.4;
+              let bestBreak = -1;
+              for (const bp of safeBreakPointsPxCss) {
+                if (bp <= idealCutY && bp > minCutY && bp > bestBreak) bestBreak = bp;
+              }
+              if (bestBreak > 0) sliceHeight = bestBreak - renderedPx;
+            }
+            if (sigTopPx >= renderedPx - 1 && sigTopPx < renderedPx + sliceHeight) {
+              pageStartPx = renderedPx;
+              break;
+            }
+            renderedPx += sliceHeight;
+          }
+          cutIdx = selectedContract.clauses.length;
+          for (const ce of clauseEls) {
+            const top = ce.getBoundingClientRect().top - elTop;
+            if (top >= pageStartPx - 1) { cutIdx = Number(ce.getAttribute("data-clause-index")); break; }
+          }
+        }
+        setRangkapCutIndex(cutIdx);
+        // Tunggu re-render dgn duplikasi baru (clauseListBlock(cutIdx,…) per
+        // rangkap), lalu stabilkan ulang tingginya — sama seperti loop reflow
+        // di atas, karena tinggi dokumen sekarang bertambah (ada pasal +
+        // closing + TTD ekstra per rangkap tambahan).
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        void el.offsetHeight;
+        let lastHeight2 = -1;
+        for (let i = 0; i < 12; i++) {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const currentHeight = el.scrollHeight;
+          if (currentHeight === lastHeight2) break;
+          lastHeight2 = currentHeight;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
 
       // html2canvas mengklon dokumen ke "jendela virtual" offscreen untuk
       // capture-nya. Kalau cuma windowHeight yang di-override (seperti
@@ -4936,6 +5444,7 @@ export default function App() {
       el.style.padding = prevPadding;
       el.style.border = prevBorder;
       setIsExportingPdf(false);
+      setRangkapCutIndex(null);
     }
   };
 
@@ -5143,6 +5652,45 @@ export default function App() {
     const updated = { ...selectedContract, showMeteraiPlaceholder: next };
     setSelectedContract(updated);
     await handleUpdateContractDraft(`${next ? "Tampilkan" : "Sembunyikan"} placeholder meterai`, updated);
+  };
+
+  // Simpan seluruh daftar Lampiran (foto+tabel) sekaligus — dipanggil dari
+  // tiap aksi kecil di editor (tambah section, ubah judul, upload foto,
+  // ubah kolom/baris tabel dst). Sama pola optimistic-update-lalu-PUT dgn
+  // handleToggle* di atas, cuma menerima array lengkap karena editornya
+  // punya banyak sub-field bersarang (per section: foto + tabel dinamis).
+  const handleUpdateAttachmentSections = async (next: ContractAttachmentSection[]) => {
+    if (!selectedContract) return;
+    const updated = { ...selectedContract, attachmentSections: next };
+    setSelectedContract(updated);
+    await handleUpdateContractDraft("Perbarui Halaman Lampiran (foto/tabel)", updated);
+  };
+
+  // "Tambah Halaman Baru" — bebas total (bodyHtml kosong), isi apa saja
+  // (teks/gambar/tabel) disisipkan lewat DocToolbar yang sama dipakai naskah
+  // & pasal, bukan lagi field kaku 1-foto-1-tabel.
+  const handleAddAttachmentSection = () => {
+    if (!selectedContract) return;
+    const current = selectedContract.attachmentSections || [];
+    const nextLetter = String.fromCharCode(65 + current.length); // A, B, C, ...
+    const section: ContractAttachmentSection = {
+      id: `att-${Date.now()}`,
+      title: `LAMPIRAN ${nextLetter}`,
+      bodyHtml: "",
+    };
+    handleUpdateAttachmentSections([...current, section]);
+  };
+
+  const handleRemoveAttachmentSection = (id: string) => {
+    if (!selectedContract) return;
+    handleUpdateAttachmentSections((selectedContract.attachmentSections || []).filter((s) => s.id !== id));
+  };
+
+  const handlePatchAttachmentSection = (id: string, patch: Partial<ContractAttachmentSection>) => {
+    if (!selectedContract) return;
+    handleUpdateAttachmentSections(
+      (selectedContract.attachmentSections || []).map((s) => (s.id === id ? { ...s, ...patch } : s)),
+    );
   };
 
   // Upload logo Pihak Kedua — cuma unggah berkas & taruh hasilnya di STAGING
@@ -8635,6 +9183,9 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
+      {/* Kontrol gambar mengambang ala Canva — global, lepas dari alur
+          dokumen manapun (lihat komentar di definisi komponennya). */}
+      <ImageSelectionOverlay />
       {/* Toast Alert — z-[100], DI ATAS semua modal (z-50): modal disusun
           belakangan di urutan DOM, jadi kalau z-index-nya SAMA (50=50), modal
           menang dan toast tertutup di belakangnya — user tidak tahu simpan
@@ -15083,7 +15634,7 @@ export default function App() {
                 {/* Left: preview dokumen digital SAJA. Editor Pasal Kontrak
                     Ini dipindah jadi kolom kanan (di bawah) atas permintaan
                     user, supaya preview & editor sebelahan. */}
-                <div className="xl:col-span-7 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl flex flex-col justify-between">
+                <div className="xl:col-span-12 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl flex flex-col justify-between">
                   <div>
                     {/* Setelah aktivasi via "Unggah Bukti TTD & Aktifkan", dokumen
                         yang MENGIKAT SECARA HUKUM adalah berkas yang diunggah itu
@@ -15151,11 +15702,20 @@ export default function App() {
                         )}
                       </h3>
                       <div className="flex items-center gap-3">
-                        {/* "Buka Berkas" butuh berkas SUNGGUHAN — cek dua sumber
-                            (master upload ATAU hasil export/share), bukan cuma
-                            masterPdfUrl seperti sebelumnya. /api/contracts/:id/
-                            view-pdf di server sudah fallback ke exportedPdfUrl
-                            duluan (lihat komentar dekat handleExportSharePdf). */}
+                        {!isExportingPdf && isContractEditable(selectedContract) && (
+                          <button
+                            type="button"
+                            onClick={() => setDocEditMode((v) => !v)}
+                            title="Mode Edit: ubah naskah/pasal/lampiran langsung di preview, token tampil mentah ({{Token}}). Mode Preview: tampilan hasil akhir (token sudah terisi)."
+                            className={`px-2.5 py-1 text-[11px] font-bold rounded-lg border transition flex items-center gap-1.5 cursor-pointer ${
+                              docEditMode
+                                ? "bg-indigo-600 border-indigo-500 text-white"
+                                : "bg-slate-900 border-slate-800 text-slate-300 hover:border-indigo-500/50"
+                            }`}
+                          >
+                            <Edit3 className="w-3.5 h-3.5" /> {docEditMode ? "Mode Edit (aktif)" : "Mode Edit"}
+                          </button>
+                        )}
                         {(selectedContract.masterPdfUrl || selectedContract.exportedPdfUrl) && (
                           isContractDownloadable(selectedContract) ? (
                             <a
@@ -15199,6 +15759,7 @@ export default function App() {
                       </div>
                     </div>
 
+                    {docEditMode && <DocToolbar />}
                     {/* Standard Indonesian Style Document Formatting */}
                     <div
                       ref={previewRef}
@@ -15408,6 +15969,58 @@ export default function App() {
                       {(() => {
                         const { template: preambleTemplate, tokens: preambleTokens } = getPreambleTemplateAndTokens();
                         const docLang = selectedContract.documentLanguage || "id";
+                        // Mode Edit: contentEditable langsung di preview, token
+                        // TIDAK disubstitusi (tampil mentah {{Token}}) — dikontrol
+                        // DocToolbar di atas. Ganti idEditor/enEditor lama yang
+                        // dulu ada di panel kanan terpisah (lihat komentar
+                        // "Kembalikan ke bawaan" — perilaku override/revert SAMA,
+                        // cuma pindah tempat jadi inline).
+                        if (docEditMode) {
+                          const idOverride = selectedContract.customOpeningParagraph || "";
+                          const idHasOverride = !!idOverride.trim();
+                          const idRaw = idHasOverride ? idOverride : preambleTemplate;
+                          const idBlock = (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <p className="text-[10px] font-bold text-amber-400 uppercase">Narasi Pembuka (ID)</p>
+                                {idHasOverride && (
+                                  <button type="button" onClick={() => setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })}
+                                    className="text-[10px] text-rose-400 hover:underline cursor-pointer">Kembalikan ke bawaan</button>
+                                )}
+                              </div>
+                              <InlineRich
+                                html={looksLikeHtml(idRaw) ? idRaw : mdToHtmlForEditor(idRaw)}
+                                onSave={(html) => setSelectedContract({ ...selectedContract, customOpeningParagraph: html })}
+                              />
+                            </div>
+                          );
+                          const enHasCustomEdit = !!selectedContract.preambleEnOriginal && selectedContract.preambleEn !== selectedContract.preambleEnOriginal;
+                          const enBlock = selectedContract.preambleEn ? (
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between">
+                                <p className="text-[10px] font-bold text-sky-400 uppercase">Opening Narrative (EN)</p>
+                                {enHasCustomEdit && (
+                                  <button type="button" onClick={() => setSelectedContract({ ...selectedContract, preambleEn: selectedContract.preambleEnOriginal })}
+                                    className="text-[10px] text-rose-400 hover:underline cursor-pointer">Kembalikan ke bawaan</button>
+                                )}
+                              </div>
+                              <InlineRich
+                                html={looksLikeHtml(selectedContract.preambleEn) ? selectedContract.preambleEn : mdToHtmlForEditor(selectedContract.preambleEn)}
+                                onSave={(html) => setSelectedContract({ ...selectedContract, preambleEn: html })}
+                              />
+                            </div>
+                          ) : (
+                            <p className="text-[10px] text-slate-500 italic">Belum diterjemahkan — klik toggle EN/ID+EN di header dulu.</p>
+                          );
+                          if (docLang === "id") return idBlock;
+                          if (docLang === "en") return enBlock;
+                          return (
+                            <div className="flex gap-3">
+                              <div className="flex-1 min-w-0">{idBlock}</div>
+                              <div className="flex-1 min-w-0">{enBlock}</div>
+                            </div>
+                          );
+                        }
                         // preambleEn diisi server saat /translate (lihat composeContractPreambleText
                         // + endpoint /api/contracts/:id/translate) — sebelumnya field ini tidak
                         // pernah dibaca di sini, jadi narasi pembuka & identifikasi pihak selalu
@@ -15549,6 +16162,31 @@ export default function App() {
                         const closingEnDefault = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
                         const closingIdValue = selectedContract.closingStatement || closingIdDefault;
                         const closingEnValue = selectedContract.closingStatementEn || closingEnDefault;
+                        if (docEditMode) {
+                          const idBlock = (
+                            <InlineRich
+                              html={looksLikeHtml(closingIdValue) ? closingIdValue : mdToHtmlForEditor(closingIdValue)}
+                              onSave={(html) => setSelectedContract({ ...selectedContract, closingStatement: html })}
+                              className="focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1 text-[10px] font-bold text-slate-500 uppercase"
+                            />
+                          );
+                          const enBlock = (
+                            <InlineRich
+                              html={looksLikeHtml(closingEnValue) ? closingEnValue : mdToHtmlForEditor(closingEnValue)}
+                              onSave={(html) => setSelectedContract({ ...selectedContract, closingStatementEn: html })}
+                            />
+                          );
+                          if (docLang === "en") return enBlock;
+                          if (docLang === "bilingual") {
+                            return (
+                              <div className="flex gap-3">
+                                <div className="flex-1 min-w-0">{idBlock}</div>
+                                <div className="flex-1 min-w-0">{enBlock}</div>
+                              </div>
+                            );
+                          }
+                          return idBlock;
+                        }
                         if (docLang === "en") return <div>{renderPreambleBlock(closingEnValue, {})}</div>;
                         if (docLang === "bilingual") {
                           return (
@@ -15655,8 +16293,15 @@ export default function App() {
                         // Persis logic render pasal yang lama (tidak diubah sama
                         // sekali) — cuma dibungkus fungsi supaya bisa dipanggil
                         // ulang per-rangkap saat export+meterai nyala di bawah.
-                        const renderClauseList = () => (
+                        const renderClauseList = (sliceStart = 0, sliceEnd = selectedContract.clauses.length) => (
                         selectedContract.clauses.map((clause, index) => {
+                          // Dipakai fitur "Rangkap Fisik" (lihat rangkapCutIndex
+                          // di generateContractPdf): saat mencetak halaman TTD
+                          // per-rangkap TAMBAHAN, cuma pasal yg SATU HALAMAN
+                          // dgn TTD itu yg diulang, BUKAN semua pasal dari
+                          // awal. Nomor "Pasal N" tetap pakai `index` ASLI
+                          // (bukan diurut ulang) walau sebagian di-skip di sini.
+                          if (index < sliceStart || index >= sliceEnd) return null;
                           const cmtsForClause = clauseComments.filter((c) => c.clauseId === (clause.id || String(index)));
                           const unresolvedCount = cmtsForClause.filter((c) => !c.resolved).length;
                           // ---- Mode bahasa dokumen ----
@@ -15675,8 +16320,72 @@ export default function App() {
                             && String(enBody || "").length <= LONG_CLAUSE_CHARS;
                           const numLabelId = selectedContractAddendumInfo ? null : `Pasal ${index + 1}`;
                           const numLabelEn = selectedContractAddendumInfo ? null : `Article ${index + 1}`;
+                          const updateClauseInline = (patch: any) => {
+                            const updated = selectedContract.clauses.map((x, xi) => (xi === index ? { ...x, ...patch } : x));
+                            setSelectedContract({ ...selectedContract, clauses: updated });
+                          };
+                          if (docEditMode && isContractEditable(selectedContract)) {
+                            const idBlock = (
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  value={clause.title}
+                                  onChange={(e) => updateClauseInline({ title: e.target.value })}
+                                  placeholder="Judul pasal"
+                                  className="w-full bg-transparent font-bold text-slate-100 focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1"
+                                />
+                                <InlineRich
+                                  html={looksLikeHtml(clause.content) ? clause.content : mdToHtmlForEditor(clause.content)}
+                                  onSave={(html) => updateClauseInline({ content: html })}
+                                  className="text-slate-300 leading-relaxed focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1"
+                                />
+                              </div>
+                            );
+                            const enBlock = (
+                              <div className="space-y-1">
+                                <input
+                                  type="text"
+                                  value={clause.titleEn || ""}
+                                  onChange={(e) => updateClauseInline({ titleEn: e.target.value })}
+                                  placeholder="Article title"
+                                  className="w-full bg-transparent font-bold text-slate-100 focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1"
+                                />
+                                <InlineRich
+                                  html={looksLikeHtml(clause.contentEn || "") ? (clause.contentEn || "") : mdToHtmlForEditor(clause.contentEn || "")}
+                                  onSave={(html) => updateClauseInline({ contentEn: html })}
+                                  className="text-slate-300 leading-relaxed focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1"
+                                  placeholder="Belum diterjemahkan — klik toggle EN/ID+EN di header dulu."
+                                />
+                              </div>
+                            );
+                            return (
+                              <div key={clause.id || index} className="space-y-1 group/clause border border-transparent hover:border-slate-800 rounded-lg p-1.5 -m-1.5">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    {docLang === "bilingual" ? (
+                                      <div className="flex gap-3">
+                                        <div className="flex-1 min-w-0">{idBlock}</div>
+                                        <div className="flex-1 min-w-0">{enBlock}</div>
+                                      </div>
+                                    ) : docLang === "en" ? enBlock : idBlock}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updated = selectedContract.clauses.filter((_, xi) => xi !== index).map((x, xi) => ({ ...x, order: xi + 1 }));
+                                      setSelectedContract({ ...selectedContract, clauses: updated });
+                                    }}
+                                    title="Hapus pasal ini"
+                                    className="text-rose-400 hover:bg-rose-500/10 p-1 rounded shrink-0 cursor-pointer opacity-0 group-hover/clause:opacity-100"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          }
                           return (
-                          <div key={clause.id || index} className="space-y-1 group/clause">
+                          <div key={clause.id || index} data-clause-index={index} className="space-y-1 group/clause">
                             <div className="flex items-center justify-between min-h-[1.375rem]">
                               <div className="flex-1">
                                 {docLang === "bilingual" && hasEn
@@ -15793,9 +16502,42 @@ export default function App() {
                         })
                         );
 
-                        const clauseListBlock = () => (
+                        const clauseListBlock = (sliceStart?: number, sliceEnd?: number) => (
                           <div className={`${isExportingPdf ? "space-y-3 py-2" : "space-y-4 py-4"} text-xs`}>
-                            {renderClauseList()}
+                            {renderClauseList(sliceStart, sliceEnd)}
+                            {docEditMode && isContractEditable(selectedContract) && (sliceStart === undefined) && (
+                              <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800 font-sans">
+                                <select
+                                  onChange={(e) => {
+                                    const lib = clauses.find((c) => c.id === e.target.value);
+                                    if (!lib) return;
+                                    setSelectedContract({
+                                      ...selectedContract,
+                                      clauses: [...selectedContract.clauses, { id: "draft-cls-" + Date.now(), title: lib.title, content: lib.content, order: selectedContract.clauses.length + 1 }],
+                                    });
+                                    e.target.selectedIndex = 0;
+                                  }}
+                                  className="flex-1 min-w-[200px] px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none cursor-pointer"
+                                >
+                                  <option value="">+ Tambah Pasal dari Library Klausul...</option>
+                                  {clauses.map((c) => (
+                                    <option key={c.id} value={c.id}>{c.title} ({c.category})</option>
+                                  ))}
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setSelectedContract({
+                                      ...selectedContract,
+                                      clauses: [...selectedContract.clauses, { id: "draft-cls-" + Date.now(), title: "Pasal Baru", content: "", order: selectedContract.clauses.length + 1 }],
+                                    })
+                                  }
+                                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1"
+                                >
+                                  <Plus className="w-3.5 h-3.5" /> Pasal Kosong
+                                </button>
+                              </div>
+                            )}
                           </div>
                         );
 
@@ -15829,6 +16571,113 @@ export default function App() {
                         </div>
                       )
                         );
+
+
+                        const attachmentSectionsBlock = () => (
+                      /* Halaman Lampiran BEBAS (freeform) — tiap "page" cuma
+                          judul + bodyHtml bebas, isi apa saja (teks/gambar/
+                          tabel) disisipkan lewat DocToolbar (tombol gambar/
+                          tabel) di atas preview, BUKAN field kaku 1-foto-1-
+                          tabel seperti sebelumnya. Dicetak SETELAH blok tanda
+                          tangan/meterai, tiap halaman dipaksa mulai halaman
+                          PDF baru sendiri (data-pdf-force-break). Field lama
+                          (photoDataUrl/tableColumns dst.) TETAP dirender kalau
+                          bodyHtml kosong — supaya lampiran lama (dibuat sebelum
+                          redesign ini) tidak hilang, cuma sudah tidak ada UI
+                          edit khusus utknya lagi (edit via bodyHtml ke depannya). */
+                      ((selectedContract.attachmentSections && selectedContract.attachmentSections.length > 0) || (docEditMode && isContractEditable(selectedContract))) && (
+                        <div className="space-y-4">
+                          {(selectedContract.attachmentSections || []).map((section) => {
+                            const editing = docEditMode && isContractEditable(selectedContract);
+                            const hasLegacyFields = !!(section.photoDataUrl || (section.tableColumns && section.tableColumns.length > 0));
+                            return (
+                              <div key={section.id} data-pdf-force-break={editing ? undefined : "1"} className={`pt-4 space-y-3 font-sans text-xs ${editing ? "border border-dashed border-slate-800 rounded-xl p-3" : ""}`}>
+                                <div className="text-center relative">
+                                  {editing ? (
+                                    <>
+                                      <input
+                                        type="text"
+                                        value={section.title}
+                                        onChange={(e) => handlePatchAttachmentSection(section.id, { title: e.target.value })}
+                                        placeholder="Judul halaman, mis. LAMPIRAN A"
+                                        className="w-full text-center bg-transparent font-bold text-slate-100 text-sm tracking-wide uppercase focus:outline-none focus:bg-indigo-500/5 rounded"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRemoveAttachmentSection(section.id)}
+                                        title="Hapus halaman ini"
+                                        className="absolute right-0 top-0 text-rose-400 hover:bg-rose-500/10 p-1 rounded cursor-pointer"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </>
+                                  ) : (
+                                    section.title && <h4 className="font-bold text-slate-100 text-sm tracking-wide uppercase">{section.title}</h4>
+                                  )}
+                                </div>
+                                {editing ? (
+                                  <InlineRich
+                                    html={section.bodyHtml || ""}
+                                    onSave={(html) => handlePatchAttachmentSection(section.id, { bodyHtml: html })}
+                                    placeholder="Tulis, tempel, atau sisipkan gambar/tabel lewat toolbar di atas…"
+                                    className="min-h-[80px] text-slate-300 leading-relaxed focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1 [&_table]:text-slate-800 [&_img]:rounded [&_img]:border [&_img]:border-slate-700"
+                                  />
+                                ) : (
+                                  section.bodyHtml && (
+                                    <div
+                                      className="text-slate-300 leading-relaxed [&_table]:text-slate-800 [&_img]:rounded [&_img]:border [&_img]:border-slate-700"
+                                      dangerouslySetInnerHTML={{ __html: sanitizeRich(section.bodyHtml) }}
+                                    />
+                                  )
+                                )}
+                                {/* Fallback lampiran lama (pre-redesign) — hanya tampil kalau
+                                    bodyHtml belum diisi sama sekali. */}
+                                {!section.bodyHtml && hasLegacyFields && (
+                                  <div className="space-y-2">
+                                    {section.subtitle && <p className="text-center text-slate-300">{section.subtitle}</p>}
+                                    {section.photoDataUrl && (
+                                      <div className="flex justify-center">
+                                        <img src={section.photoDataUrl} alt={section.photoCaption || section.title} className="max-w-full max-h-[360px] object-contain border border-slate-700 rounded" />
+                                      </div>
+                                    )}
+                                    {section.tableColumns && section.tableColumns.length > 0 && (
+                                      <table className="w-full border-collapse text-[11px] border border-slate-600">
+                                        <thead>
+                                          <tr>
+                                            {section.tableColumns.map((col, ci) => (
+                                              <th key={ci} className="border border-slate-600 bg-emerald-300 text-slate-50 font-bold py-1.5 px-2 text-center">{col}</th>
+                                            ))}
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {(section.tableRows || []).map((row, ri) => (
+                                            <tr key={ri}>
+                                              {(section.tableColumns || []).map((_c, ci) => (
+                                                <td key={ci} className="border border-slate-600 py-1 px-2 text-slate-200 text-center">{row[ci] || ""}</td>
+                                              ))}
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                          {docEditMode && isContractEditable(selectedContract) && (
+                            <button
+                              type="button"
+                              onClick={handleAddAttachmentSection}
+                              className="w-full py-2 bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 text-xs font-bold rounded-xl border border-dashed border-emerald-500/30 transition flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <Plus className="w-4 h-4" /> Tambah Halaman Baru
+                            </button>
+                          )}
+                        </div>
+                      )
+                        );
+
 
                         const closingParagraphBlock = () => (
                       /* Closing paragraph — hanya untuk Addendum (kontrak biasa
@@ -15865,7 +16714,7 @@ export default function App() {
                         // pihak yang kolomnya dapat kotak meterai. -1 = tidak ada
                         // yang dapat (meterai mati).
                         const signatureRow = (meteraiPartyIdx: number) => (
-                          <div className={`grid grid-cols-1 md:grid-cols-${parties.length || 2} gap-6 pt-6 text-xs`}>
+                          <div data-signature-anchor="1" className={`grid grid-cols-1 md:grid-cols-${parties.length || 2} gap-6 pt-6 text-xs`}>
                             {parties.map((party: any, idx: number) => (
                               <div key={idx} className="text-center">
                                 <p className="font-semibold text-slate-400 uppercase">
@@ -15886,28 +16735,45 @@ export default function App() {
                           </div>
                         );
 
-                        // Duplikasi pasal + lampiran + penutup + blok TTD SEBARIS
-                        // per RANGKAP, masing² dipaksa mulai halaman PDF baru
-                        // (data-pdf-force-break, lihat forceBreakPointsPx di
-                        // generateContractPdf) — HANYA saat proses export PDF
-                        // sungguhan DAN placeholder Meterai dinyalakan. TTD TETAP
-                        // sebaris semua pihak di tiap rangkap (bukan satu pihak
-                        // per halaman) — yang gantian per rangkap cuma POSISI
-                        // kotak meterainya, sesuai konsep "Rangkap 1: meterai di
-                        // Pihak Pertama, Rangkap 2: meterai di Pihak Kedua" yang
-                        // sudah ada di fitur Rangkap Fisik. Di layar (mode edit
-                        // biasa, isExportingPdf false) TETAP satu salinan seperti
-                        // semula — supaya anotasi/komentar per pasal (Sorot &
-                        // Komentari dkk) tidak dobel.
+                        // Duplikasi per RANGKAP — dulu SELURUH pasal diulang dari
+                        // awal tiap rangkap (salah, bikin rangkap 2 dst nyetak
+                        // ulang Pasal 1 dst yg sebetulnya sudah tercetak sekali
+                        // di halaman sebelumnya). SEKARANG: cuma pasal yg SATU
+                        // HALAMAN dgn blok TTD (mulai dari rangkapCutIndex, hasil
+                        // pengukuran DOM di generateContractPdf — lihat komentar
+                        // di sana) yang diulang per rangkap; pasal SEBELUM itu
+                        // dicetak SEKALI SAJA sbg bagian umum (clauseListBlock(0,
+                        // rangkapCutIndex)) sebelum loop rangkap dimulai. Tiap
+                        // rangkap TAMBAHAN (idx>0) dipaksa mulai halaman PDF baru
+                        // (data-pdf-force-break); rangkap PERTAMA menyambung
+                        // alami tanpa paksaan (posisinya memang sudah pas di
+                        // halaman yg sama dgn bagian umum di atas).
                         if (isExportingPdf && selectedContract.showMeteraiPlaceholder) {
+                          // rangkapCutIndex null = belum diukur (measurement pass
+                          // generateContractPdf) → fallback SATU salinan alami dulu
+                          // (persis seperti tanpa-rangkap), supaya ada layout NYATA
+                          // buat diukur posisi TTD-nya sebelum duplikasi diputuskan.
+                          if (rangkapCutIndex === null) {
+                            return (
+                              <>
+                                {clauseListBlock()}
+                                {lampiranBlock()}
+                                {closingParagraphBlock()}
+                                {signatureRow(0)}
+                                {attachmentSectionsBlock()}
+                              </>
+                            );
+                          }
                           return (
                             <>
+                              {clauseListBlock(0, rangkapCutIndex)}
                               {parties.map((_party: any, rangkapIdx: number) => (
                                 <div key={rangkapIdx} data-pdf-force-break={rangkapIdx > 0 ? "1" : undefined}>
-                                  {clauseListBlock()}
+                                  {clauseListBlock(rangkapCutIndex, selectedContract.clauses.length)}
                                   {lampiranBlock()}
                                   {closingParagraphBlock()}
                                   {signatureRow(rangkapIdx)}
+                                  {attachmentSectionsBlock()}
                                 </div>
                               ))}
                             </>
@@ -15917,12 +16783,16 @@ export default function App() {
                         // Tampilan normal (di layar, ATAU export tanpa meterai): satu
                         // salinan pasal + lampiran + penutup, lalu blok TTD sebaris
                         // tanpa meterai di kolom manapun — persis seperti semula.
+                        // attachmentSectionsBlock() (halaman Lampiran foto+tabel)
+                        // dicetak PALING TERAKHIR, setelah blok TTD/meterai, sesuai
+                        // urutan dokumen fisik: isi -> penutup -> TTD -> lampiran.
                         return (
                           <>
                             {clauseListBlock()}
                             {lampiranBlock()}
                             {closingParagraphBlock()}
                             {signatureRow(-1)}
+                            {attachmentSectionsBlock()}
                           </>
                         );
                       })()}
@@ -15938,358 +16808,6 @@ export default function App() {
                       )}
                     </div>
                   </div>
-                </div>
-
-                {/* Right: Editor Pasal Kontrak Ini — dipindah ke sini dari
-                    posisi lama (dulu di bawah preview, satu kolom dengan
-                    preview). Isi/logic blok ini TIDAK diubah sama sekali,
-                    cuma dipindah jadi kolom sendiri di sebelah preview. */}
-                <div className="xl:col-span-5 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl">
-                  {isContractEditable(selectedContract) ? (
-                    <div className="text-xs">
-                      <p className="font-bold text-slate-400 mb-2">
-                        Editor Pasal Kontrak Ini (edit / hapus / tambah baris — simpan via "Simpan Draft Baru"):
-                      </p>
-                      {/* max-h + overflow-y-auto disamakan dengan panel Preview
-                          di sebelah kiri (lihat max-h-[600px] di clauseListBlock)
-                          supaya kolom kanan tidak memanjang tak terbatas kalau
-                          pasalnya banyak — dua kolom tetap sama-sama muat di
-                          layar, tinggal discroll masing-masing secara terpisah. */}
-                      <div className="space-y-3 max-h-[600px] overflow-y-auto pr-1">
-                        {/* Narasi Pembuka — override HANYA utk kontrak ini
-                            (prioritas tertinggi di atas Template.openingParagraph
-                            & narasi kategori). Data pihak/tanggal/judul TIDAK
-                            diedit di sini — itu lewat "Edit Data Pihak & Kontrak"
-                            di header, supaya grammar kalimat pembuka tetap benar
-                            apa pun yang diisi. Konten yang diedit IKUT bahasa
-                            dokumen aktif (toggle ID/EN/ID+EN di header preview)
-                            — bilingual menampilkan ID & EN berdampingan sekaligus,
-                            sama seperti gaya tampilan preview di atasnya. */}
-                        {(() => {
-                          const docLang = selectedContract.documentLanguage || "id";
-
-                          const idEditor = (
-                            <div className="space-y-2">
-                              <p className="font-bold text-amber-400 text-xs">Narasi Pembuka (Indonesia)</p>
-                              {(() => {
-                                // Dulu: kalau belum ada override tersimpan, tampil
-                                // tombol "Muat teks aktif untuk diedit" — user harus
-                                // klik dulu sebelum bisa lihat/edit apa pun, padahal
-                                // sisi EN & preview read-only sama-sama langsung
-                                // menampilkan teks aktif tanpa tombol perantara.
-                                // Sekarang: editor SELALU tampil berisi teks yang
-                                // sedang aktif (override kalau ada, kalau tidak ya
-                                // template bawaan — persis logika yang sama dipakai
-                                // preview read-only via getPreambleTemplateAndTokens).
-                                // customOpeningParagraph BARU tercatat begitu user
-                                // benar-benar mengetik (onChange), jadi sekadar
-                                // membuka form ini TIDAK diam-diam membuat override —
-                                // perilaku itu tidak berubah, cuma langkah klik
-                                // "muat" yang dihapus.
-                                const val = selectedContract.customOpeningParagraph || "";
-                                const hasOverride = !!val.trim();
-                                const { template } = getPreambleTemplateAndTokens();
-                                const displayValue = hasOverride ? val : template;
-                                return (
-                                  <>
-                                    <RichTextEditor
-                                      valueHtml={looksLikeHtml(displayValue) ? displayValue : mdToHtmlForEditor(displayValue)}
-                                      onChange={(html) =>
-                                        setSelectedContract({ ...selectedContract, customOpeningParagraph: html })
-                                      }
-                                      tokens={PREAMBLE_TOKENS}
-                                      minHeight={100}
-                                    />
-                                    <div className="flex items-center justify-between gap-2">
-                                      <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
-                                      {hasOverride && (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            setSelectedContract({ ...selectedContract, customOpeningParagraph: undefined })
-                                          }
-                                          className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
-                                        >
-                                          Kembalikan ke bawaan
-                                        </button>
-                                      )}
-                                    </div>
-                                  </>
-                                );
-                              })()}
-                            </div>
-                          );
-
-                          // preambleEn diisi AI saat toggle EN/ID+EN pertama kali
-                          // diklik — dulu teks mentah markdown (**tebal**), diedit
-                          // via textarea polos. Sekarang disamakan dengan sisi
-                          // Indonesia: RichTextEditor + PREAMBLE_TOKENS yang sama
-                          // (toolbar format teks & chip "Sisipkan" identik), plus
-                          // tombol "Kembalikan ke bawaan" yang balik ke
-                          // preambleEnOriginal (hasil AI translate asli, tersimpan
-                          // terpisah — lihat types.ts). SENGAJA tidak memanggil
-                          // ulang /translate: endpoint itu menerjemahkan SELURUH
-                          // dokumen sekaligus dan akan ikut menimpa editan manual
-                          // di pasal lain, bukan cuma narasi pembuka ini. Value
-                          // lama yang masih markdown otomatis dikonversi ke HTML
-                          // sekali lewat mdToHtmlForEditor (persis pola cl.contentEn
-                          // di enFields pasal di bawah) — sesudah diedit sekali,
-                          // tersimpan sebagai HTML seterusnya.
-                          const enHasCustomEdit = !!selectedContract.preambleEnOriginal
-                            && selectedContract.preambleEn !== selectedContract.preambleEnOriginal;
-                          const enEditor = (
-                            <div className="space-y-2">
-                              <p className="font-bold text-sky-400 text-xs">Opening Narrative (English)</p>
-                              {selectedContract.preambleEn ? (
-                                <>
-                                  <RichTextEditor
-                                    valueHtml={looksLikeHtml(selectedContract.preambleEn) ? selectedContract.preambleEn : mdToHtmlForEditor(selectedContract.preambleEn)}
-                                    onChange={(html) => setSelectedContract({ ...selectedContract, preambleEn: html })}
-                                    tokens={PREAMBLE_TOKENS}
-                                    minHeight={100}
-                                  />
-                                  <div className="flex items-center justify-between gap-2">
-                                    <p className="text-[10px] text-slate-500">Format teks &amp; chip "Sisipkan" ikut tercetak di PDF.</p>
-                                    {enHasCustomEdit && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setSelectedContract({ ...selectedContract, preambleEn: selectedContract.preambleEnOriginal })
-                                        }
-                                        title="Kembali ke hasil terjemahan AI asli, buang editan manual di narasi pembuka ini"
-                                        className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
-                                      >
-                                        Kembalikan ke bawaan
-                                      </button>
-                                    )}
-                                  </div>
-                                </>
-                              ) : (
-                                <p className="text-[10px] text-slate-500 italic">
-                                  Belum ada versi Inggris — klik toggle EN atau ID+EN di header preview dulu supaya diterjemahkan otomatis, baru bisa dikoreksi di sini.
-                                </p>
-                              )}
-                            </div>
-                          );
-
-                          // Kalimat transisi baku (lihat komentar di render
-                          // preview di atas) — dulu tidak bisa diedit sama
-                          // sekali. Pola sama seperti idEditor/enEditor di
-                          // atas: SELALU tampil berisi teks aktif (override
-                          // atau bawaan), tidak perlu tombol "muat" dulu.
-                          // Beda dari enEditor: tidak ada AI-translate di
-                          // baliknya (kalimat ini memang statis/baku), jadi
-                          // "Kembalikan ke bawaan" cukup mengosongkan field,
-                          // sama seperti pola customOpeningParagraph.
-                          const closingIdDefault = "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
-                          const closingEnDefault = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
-                          const closingIdOverride = selectedContract.closingStatement || "";
-                          const closingIdEffective = closingIdOverride.trim() ? closingIdOverride : closingIdDefault;
-                          const closingIdEditor = (
-                            <div className="space-y-2">
-                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kalimat Penutup</p>
-                              <RichTextEditor
-                                valueHtml={looksLikeHtml(closingIdEffective) ? closingIdEffective : mdToHtmlForEditor(closingIdEffective)}
-                                onChange={(html) => setSelectedContract({ ...selectedContract, closingStatement: html })}
-                                tokens={[]}
-                                minHeight={60}
-                              />
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="text-[10px] text-slate-500">Kalimat transisi sebelum daftar pasal.</p>
-                                {!!closingIdOverride.trim() && (
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedContract({ ...selectedContract, closingStatement: undefined })}
-                                    className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
-                                  >
-                                    Kembalikan ke bawaan
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          );
-                          const closingEnOverride = selectedContract.closingStatementEn || "";
-                          const closingEnEffective = closingEnOverride.trim() ? closingEnOverride : closingEnDefault;
-                          const closingEnEditor = (
-                            <div className="space-y-2">
-                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kalimat Penutup</p>
-                              <RichTextEditor
-                                valueHtml={looksLikeHtml(closingEnEffective) ? closingEnEffective : mdToHtmlForEditor(closingEnEffective)}
-                                onChange={(html) => setSelectedContract({ ...selectedContract, closingStatementEn: html })}
-                                tokens={[]}
-                                minHeight={60}
-                              />
-                              <div className="flex items-center justify-between gap-2">
-                                <p className="text-[10px] text-slate-500">Kalimat transisi versi Inggris.</p>
-                                {!!closingEnOverride.trim() && (
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedContract({ ...selectedContract, closingStatementEn: undefined })}
-                                    className="text-[10px] px-2 py-1 text-rose-400 hover:bg-rose-500/10 rounded-lg cursor-pointer shrink-0"
-                                  >
-                                    Kembalikan ke bawaan
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          );
-
-                          return (
-                            <div className="p-2.5 bg-slate-900 border border-amber-500/20 rounded-lg space-y-2">
-                              <p className="text-[10px] text-slate-500">
-                                Judul dokumen, tanggal &amp; identitas Pihak Pertama/Kedua diatur lewat tombol "Edit Data Pihak &amp; Kontrak" di atas — ini cuma kalimat pembukanya.
-                              </p>
-                              {docLang === "id" && idEditor}
-                              {docLang === "en" && enEditor}
-                              {docLang === "bilingual" && (
-                                <div className="flex gap-3">
-                                  <div className="flex-1 min-w-0">{idEditor}</div>
-                                  <div className="flex-1 min-w-0">{enEditor}</div>
-                                </div>
-                              )}
-                              <div className="pt-1.5 space-y-1.5">
-                                {docLang === "id" && closingIdEditor}
-                                {docLang === "en" && closingEnEditor}
-                                {docLang === "bilingual" && (
-                                  <div className="flex gap-3">
-                                    <div className="flex-1 min-w-0">{closingIdEditor}</div>
-                                    <div className="flex-1 min-w-0">{closingEnEditor}</div>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })()}
-                        {selectedContract.clauses.map((cl, i) => {
-                          const docLang = selectedContract.documentLanguage || "id";
-                          const updateClause = (patch: any) => {
-                            const updatedClauses = selectedContract.clauses.map((x, xi) =>
-                              xi === i ? { ...x, ...patch } : x,
-                            );
-                            setSelectedContract({ ...selectedContract, clauses: updatedClauses });
-                          };
-                          // Editor pasal per-kontrak — WYSIWYG (format teks + token).
-                          // Pipeline render sudah sadar-HTML. idFields/enFields dipisah
-                          // supaya bisa ditampilkan tunggal (ID/EN) ATAU berdampingan
-                          // (bilingual), tanpa duplikasi kode.
-                          const idFields = (
-                            <div className="space-y-1.5">
-                              <input
-                                type="text"
-                                value={cl.title}
-                                onChange={(e) => updateClause({ title: e.target.value })}
-                                className="w-full bg-slate-950 border border-slate-850 px-2 py-1 rounded text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                                placeholder="Judul pasal"
-                              />
-                              <RichTextEditor
-                                valueHtml={looksLikeHtml(cl.content) ? cl.content : mdToHtmlForEditor(cl.content)}
-                                onChange={(html) => updateClause({ content: html })}
-                                tokens={CLAUSE_TOKENS}
-                                minHeight={80}
-                              />
-                            </div>
-                          );
-                          const enFields = (
-                            <div className="space-y-1.5">
-                              {(cl.titleEn || cl.contentEn) ? (
-                                <>
-                                  <input
-                                    type="text"
-                                    value={cl.titleEn || ""}
-                                    onChange={(e) => updateClause({ titleEn: e.target.value })}
-                                    className="w-full bg-slate-950 border border-slate-850 px-2 py-1 rounded text-xs text-slate-200 focus:outline-none focus:border-sky-500"
-                                    placeholder="Article title"
-                                  />
-                                  <RichTextEditor
-                                    valueHtml={looksLikeHtml(cl.contentEn || "") ? (cl.contentEn || "") : mdToHtmlForEditor(cl.contentEn || "")}
-                                    onChange={(html) => updateClause({ contentEn: html })}
-                                    tokens={CLAUSE_TOKENS}
-                                    minHeight={80}
-                                  />
-                                </>
-                              ) : (
-                                <p className="text-[10px] text-slate-500 italic">
-                                  Belum diterjemahkan — klik toggle EN/ID+EN di header preview dulu.
-                                </p>
-                              )}
-                            </div>
-                          );
-                          return (
-                            <div
-                              key={cl.id}
-                              className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex flex-col gap-1.5"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-bold text-indigo-400 shrink-0">
-                                  Pasal {i + 1}:
-                                </span>
-                                <button
-                                  onClick={() => {
-                                    const updatedClauses = selectedContract.clauses
-                                      .filter((_, xi) => xi !== i)
-                                      .map((x, xi) => ({ ...x, order: xi + 1 }));
-                                    setSelectedContract({ ...selectedContract, clauses: updatedClauses });
-                                  }}
-                                  title="Hapus pasal ini"
-                                  className="text-rose-400 hover:bg-rose-500/10 p-1.5 rounded-lg cursor-pointer shrink-0"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                              {docLang === "id" && idFields}
-                              {docLang === "en" && enFields}
-                              {docLang === "bilingual" && (
-                                <div className="flex gap-3">
-                                  <div className="flex-1 min-w-0">{idFields}</div>
-                                  <div className="flex-1 min-w-0">{enFields}</div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                        <div className="flex flex-wrap items-center gap-2 pt-1">
-                          <select
-                            value=""
-                            onChange={(e) => {
-                              const lib = clauses.find((c) => c.id === e.target.value);
-                              if (!lib) return;
-                              setSelectedContract({
-                                ...selectedContract,
-                                clauses: [
-                                  ...selectedContract.clauses,
-                                  { id: "draft-cls-" + Date.now(), title: lib.title, content: lib.content, order: selectedContract.clauses.length + 1 },
-                                ],
-                              });
-                            }}
-                            className="flex-1 min-w-[200px] px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-300 focus:outline-none cursor-pointer"
-                          >
-                            <option value="">+ Tambah Pasal dari Library Klausul...</option>
-                            {clauses.map((c) => (
-                              <option key={c.id} value={c.id}>{c.title} ({c.category})</option>
-                            ))}
-                          </select>
-                          <button
-                            onClick={() =>
-                              setSelectedContract({
-                                ...selectedContract,
-                                clauses: [
-                                  ...selectedContract.clauses,
-                                  { id: "draft-cls-" + Date.now(), title: "Pasal Baru", content: "", order: selectedContract.clauses.length + 1 },
-                                ],
-                              })
-                            }
-                            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1"
-                          >
-                            <Plus className="w-3.5 h-3.5" /> Pasal Kosong
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-[11px] text-slate-500">
-                      Kontrak berstatus {contractStatusLabel(selectedContract.status)} — isi pasal terkunci. Gunakan "Perpanjang / Extend" untuk membuat draft baru bila perlu perubahan.
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -18654,11 +19172,28 @@ export default function App() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   if (creationStep === 2) {
-                    if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
-                    if (!newContractForm.party2Name.trim()) { showToast("Nama Pihak Kedua wajib diisi", "warning"); return; }
-                    if (!newContractForm.startDate) { showToast("Tanggal Mulai Berlaku wajib diisi", "warning"); return; }
-                    if (!newContractForm.endDate) { showToast("Tanggal Selesai Berlaku wajib diisi", "warning"); return; }
-                    if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) { showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return; }
+                    // Mode Upload: SEMUA field di Tahap 2 ini (Pihak Kedua,
+                    // tanggal, dst) sudah ADA di file yang diunggah user —
+                    // memaksa isi ulang manual di sini persis yang dikeluhkan
+                    // ("kan semua datanya udah ada di file yg aku upload").
+                    // Cuma Judul yang tetap wajib (dipakai di banyak tempat
+                    // lain — daftar kontrak, notifikasi, dst), dan itu pun
+                    // di-default dari nama filenya kalau kosong (lihat
+                    // onChange input file). Field lain boleh kosong dulu,
+                    // diisi belakangan lewat "Edit Data Pihak & Kontrak" di
+                    // halaman kontrak — TIDAK memblokir pembuatan kontrak.
+                    if (newContractForm.creationMode !== "upload") {
+                      if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
+                      if (!newContractForm.party2Name.trim()) { showToast("Nama Pihak Kedua wajib diisi", "warning"); return; }
+                      if (!newContractForm.startDate) { showToast("Tanggal Mulai Berlaku wajib diisi", "warning"); return; }
+                      if (!newContractForm.endDate) { showToast("Tanggal Selesai Berlaku wajib diisi", "warning"); return; }
+                      if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) { showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return; }
+                    } else {
+                      if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
+                      if (newContractForm.startDate && newContractForm.endDate && !isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) {
+                        showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return;
+                      }
+                    }
                   }
                   if (creationStep < 3) {
                     setCreationStep(creationStep + 1);
@@ -18700,7 +19235,7 @@ export default function App() {
                       <p className="text-[11px] text-slate-500">
                         {newContractForm.creationMode === "smart"
                           ? "Pasal & klausul akan otomatis tersusun dari template yang dipilih, dan bisa Anda ubah pada tahap berikutnya."
-                          : "Untuk kontrak yang sudah ditandatangani secara fisik (hardcopy discan) atau dokumen softcopy jadi. Cukup unggah filenya dan isi tanggal berlaku, kontrak akan tetap masuk daftar monitoring & reminder."}
+                          : "Pakai dokumen/template kerjasama Anda sendiri (bukan template sistem) sebagai isi kontrak ini. Kontrak tetap lahir berstatus Draft — status baru berubah Aktif lewat proses yang sama seperti kontrak lain (approval/aktivasi), BUKAN otomatis saat unggah, karena file ini belum tentu sudah ditandatangani basah oleh semua pihak. Untuk dokumen yang memang sudah 100% final & ber-TTD basah, unggah lewat menu Arsip Dokumen."}
                       </p>
                     </div>
 
@@ -18858,17 +19393,66 @@ export default function App() {
                     {newContractForm.creationMode === "upload" && (
                       <div className="space-y-1.5">
                         <label className="block text-sm font-semibold text-slate-300">
-                          Berkas Dokumen Kontrak (Wajib)
+                          Berkas Dokumen/Template Kontrak (Wajib)
                         </label>
                         <input
                           type="file"
-                          accept=".pdf,.jpg,.jpeg,.png"
-                          onChange={(e) =>
-                            setNewContractForm({
-                              ...newContractForm,
-                              masterPdfFile: e.target.files?.[0] || null,
-                            })
-                          }
+                          accept=".pdf,.docx,.jpg,.jpeg,.png"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0] || null;
+                            setNewContractForm((prev) => ({
+                              ...prev,
+                              masterPdfFile: file,
+                              clauses: [],
+                              // Auto-isi Judul dari nama file kalau masih kosong —
+                              // mode upload gak wajib isi ulang manual (lihat
+                              // validasi Tahap 2), tinggal diganti kalau mau.
+                              title: prev.title.trim() ? prev.title : (file ? file.name.replace(/\.[^.]+$/, "") : prev.title),
+                            }));
+                            if (!file) return;
+                            // PDF teks-asli / .docx: coba tarik teksnya & pecah jadi
+                            // pasal-pasal SEKARANG JUGA (sebelum submit), supaya
+                            // usernya bisa langsung lihat & edit hasilnya di tahap
+                            // berikutnya — persis kayak mode "Buat dari Template".
+                            // .jpg/.png (scan/foto) SENGAJA dilewati di sini (tanpa
+                            // OCR, endpoint akan selalu bilang tidak didukung utk itu).
+                            const isTextExtractable = /\.(pdf|docx)$/i.test(file.name);
+                            if (!isTextExtractable) return;
+                            setIsParsingUploadedFile(true);
+                            try {
+                              const fd = new FormData();
+                              fd.append("file", file);
+                              const r = await fetch("/api/master-contracts/extract-text", { method: "POST", body: fd });
+                              const data = await r.json();
+                              if (data.supported && Array.isArray(data.clauses) && data.clauses.length > 0) {
+                                setNewContractForm((prev) => ({
+                                  ...prev,
+                                  masterPdfFile: file,
+                                  // "Full isi file", bukan cuma pasal: preamble
+                                  // (narasi sebelum PASAL 1 — tanggal, deskripsi
+                                  // Pihak, dst) & closing (kalimat penutup sebelum
+                                  // blok TTD) ikut diambil & ditaruh ke field yg
+                                  // SUDAH dipakai preview/editor (Narasi Pembuka &
+                                  // Kalimat Penutup) — bukan field baru terpisah.
+                                  customOpeningParagraph: data.preamble || prev.customOpeningParagraph,
+                                  closingStatement: data.closing || prev.closingStatement,
+                                  clauses: data.clauses.map((c: any, i: number) => ({
+                                    id: `up-cls-${Date.now()}-${i}`,
+                                    title: c.title,
+                                    content: c.content,
+                                    order: i + 1,
+                                  })),
+                                }));
+                                showToast(`${data.clauses.length} pasal + narasi pembuka berhasil terbaca dari berkas — silakan periksa & edit di langkah berikutnya.`, "success");
+                              } else {
+                                showToast(data.reason || "Tidak bisa membaca teks dari berkas ini secara otomatis.", "warning");
+                              }
+                            } catch {
+                              showToast("Gagal membaca isi berkas — kontrak tetap bisa dibuat, pasal diisi manual di langkah berikutnya.", "warning");
+                            } finally {
+                              setIsParsingUploadedFile(false);
+                            }
+                          }}
                           className="w-full text-sm text-slate-300 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 bg-slate-900 border border-slate-800 rounded-xl cursor-pointer"
                         />
                         {newContractForm.masterPdfFile && (
@@ -18877,8 +19461,18 @@ export default function App() {
                             {newContractForm.masterPdfFile.name} siap diunggah
                           </p>
                         )}
+                        {isParsingUploadedFile && (
+                          <p className="text-[11px] text-indigo-400 flex items-center gap-1">
+                            <RefreshCw className="w-3 h-3 animate-spin" /> Membaca isi berkas &amp; memecahnya jadi pasal-pasal…
+                          </p>
+                        )}
+                        {!isParsingUploadedFile && newContractForm.clauses.length > 0 && (
+                          <p className="text-[11px] text-emerald-400">
+                            ✓ {newContractForm.clauses.length} pasal terdeteksi dari berkas ini — akan langsung bisa diedit (tambah pasal/lampiran/token) di editor, sama seperti mode Template.
+                          </p>
+                        )}
                         <p className="text-[11px] text-slate-500">
-                          Hasil scan hardcopy (PDF/foto) atau dokumen softcopy tetap diterima. Isi tanggal mulai & selesai pada tahap berikutnya agar kontrak ini otomatis masuk daftar reminder jatuh tempo.
+                          PDF teks-asli atau .docx: isi pasalnya otomatis dibaca &amp; jadi bisa diedit penuh. Hasil scan/foto (JPG/PNG) atau .doc lama: tidak bisa dibaca otomatis (tanpa OCR) — berkasnya tetap tersimpan &amp; bisa dilihat, tapi pasal diisi manual. Isi tanggal mulai &amp; selesai pada tahap berikutnya agar kontrak ini otomatis masuk daftar reminder jatuh tempo.
                         </p>
                       </div>
                     )}
@@ -19052,6 +19646,11 @@ export default function App() {
 
                 {creationStep === 2 && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {newContractForm.creationMode === "upload" && (
+                      <div className="md:col-span-2 p-3 bg-emerald-500/5 border border-emerald-500/25 rounded-xl text-[11px] text-emerald-300">
+                        Mode Upload: field di bawah ini <b>opsional</b> (kosongkan & lanjut kalau mau) — bisa diisi/diubah belakangan lewat "Edit Data Pihak &amp; Kontrak" di halaman kontrak. Cuma Judul yang tetap wajib.
+                      </div>
+                    )}
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
                         Judul Kontrak <span className="text-rose-400">*</span>
@@ -19073,7 +19672,7 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Nama Pihak Kedua <span className="text-rose-400">*</span>
+                        Nama Pihak Kedua {newContractForm.creationMode !== "upload" && <span className="text-rose-400">*</span>}
                       </label>
                       <input
                         type="text"
@@ -19167,11 +19766,11 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Tanggal Mulai Berlaku <span className="text-rose-400">*</span>
+                        Tanggal Mulai Berlaku {newContractForm.creationMode !== "upload" && <span className="text-rose-400">*</span>}
                       </label>
                       <input
                         type="date"
-                        required
+                        required={newContractForm.creationMode !== "upload"}
                         value={newContractForm.startDate}
                         onChange={(e) =>
                           setNewContractForm({
@@ -19185,11 +19784,11 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Tanggal Selesai Berlaku <span className="text-rose-400">*</span>
+                        Tanggal Selesai Berlaku {newContractForm.creationMode !== "upload" && <span className="text-rose-400">*</span>}
                       </label>
                       <input
                         type="date"
-                        required
+                        required={newContractForm.creationMode !== "upload"}
                         min={newContractForm.startDate || undefined}
                         value={newContractForm.endDate}
                         onChange={(e) =>
@@ -19540,7 +20139,7 @@ export default function App() {
                         { label: "Masa Berlaku", value: f.startDate && f.endDate ? `${f.startDate} s/d ${f.endDate} · ${durationLabel}` : "— belum lengkap —", warn: !f.startDate || !f.endDate },
                         { label: "Nilai Kontrak", value: f.contractValue > 0 ? `${f.currency} ${formatCurrencyDisplay(f.contractValue)}` : "—" },
                         { label: "Jumlah Pasal", value: `${f.clauses.length} pasal`, warn: f.creationMode === "smart" && f.clauses.length === 0 },
-                        ...(f.creationMode === "upload" ? [{ label: "Status Awal", value: "Aktif — langsung masuk monitoring & reminder (dokumen dianggap sudah ditandatangani)" }] : []),
+                        ...(f.creationMode === "upload" ? [{ label: "Status Awal", value: "Draft — dokumen unggahan Anda dipakai sbg isi kontrak, tetap perlu diaktifkan lewat proses biasa (BUKAN otomatis Aktif)" }] : []),
                       ];
                       return (
                         <div className="p-5 bg-indigo-500/5 border border-indigo-500/20 rounded-xl space-y-3">

@@ -174,6 +174,30 @@ export interface ContractCopy {
   updatedAt?: string;
 }
 
+// Satu halaman "LAMPIRAN X" bergaya foto+tabel (mis. Lampiran A pada contoh
+// Addendum sewa: foto gedung + tabel Daftar Fasilitas berkolom No/Nama/Qty).
+// Beda dari amendmentAttachments (tabel rincian polos tanpa foto, dicetak
+// sebelum penutup) — ini dicetak sbg halaman TERPISAH setelah blok tanda
+// tangan/meterai, boleh berisi foto saja, tabel saja, atau keduanya.
+export interface ContractAttachmentSection {
+  id: string;
+  title: string; // mis. "LAMPIRAN A" — dicetak besar & center di puncak halaman
+  subtitle?: string; // mis. "Konstruksi dan Inventaris Gedung oleh PEMBERI SEWA"
+  // Isi bebas (rich HTML) — bisa berisi campuran teks/gambar/tabel apa saja,
+  // disisipkan lewat DocToolbar (tombol gambar/tabel) yang sama dipakai utk
+  // naskah & pasal. Menggantikan pendekatan field kaku (1 foto + 1 tabel)
+  // di bawah ini, yang dipertahankan cuma utk kompatibilitas mundur data lama.
+  bodyHtml?: string;
+  /** @deprecated pakai bodyHtml. Field lama (foto+tabel kaku) — kalau ada &
+   * bodyHtml kosong, tetap dirender apa adanya supaya lampiran lama tidak hilang. */
+  photoLabel?: string;
+  photoDataUrl?: string;
+  photoCaption?: string;
+  tableLabel?: string;
+  tableColumns?: string[];
+  tableRows?: string[][];
+}
+
 export interface Contract {
   id: string;
   tenantId: string;
@@ -261,6 +285,13 @@ export interface Contract {
   // Lampiran rincian opsional pada Addendum (mis. tabel perhitungan biaya).
   // Kosong/tidak ada = section lampiran tidak dicetak sama sekali di preview.
   amendmentAttachments?: { label: string; satuan?: string; jumlah?: string; keterangan?: string }[];
+  // Halaman Lampiran bergaya foto+tabel, dicetak SETELAH blok tanda tangan/
+  // meterai (lihat attachmentSectionsBlock di src/App.tsx) — beda posisi dan
+  // beda bentuk dari amendmentAttachments di atas. Tersedia utk SEMUA jenis
+  // kontrak (bukan cuma Addendum): Perjanjian awal pun sering perlu lampiran
+  // rincian aset/fasilitas bergaya ini. Kosong/tidak ada = tidak ada halaman
+  // lampiran tambahan sama sekali, tidak mengubah dokumen lama manapun.
+  attachmentSections?: ContractAttachmentSection[];
   subFolderId?: string; // id SubFolder (sub/sub-sub folder) tempat kontrak ini diarsipkan, di bawah `category`
   copies?: ContractCopy[]; // rangkap fisik kontrak (1 atau 2) + posisi meterai per rangkap
   // Sharing fee opsional — kosong/tidak ada = kontrak ini tidak punya skema

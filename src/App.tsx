@@ -3301,7 +3301,6 @@ export default function App() {
   // Lihat file input "Berkas Dokumen/Template Kontrak" di wizard mode Upload
   // — true selagi /api/master-contracts/extract-text lagi baca & memecah
   // teks berkas jadi pasal-pasal.
-  const [isParsingUploadedFile, setIsParsingUploadedFile] = useState(false);
   // Mode Edit vs Mode Preview/Output pada panel dokumen live — bukan disimpan
   // ke server (murni sakelar tampilan lokal). Edit = token mentah {{Token}}
   // + semua bagian (naskah/pasal/lampiran) jadi contentEditable via DocToolbar
@@ -5054,6 +5053,7 @@ export default function App() {
   // mengintip (consume:false) angka itu utk ditampilkan sbg hint, tidak mengisi
   // field, supaya integrasinya kelihatan tanpa mengganggu alur bebas-ketik.
   const [uploadNumberPreview, setUploadNumberPreview] = useState("");
+  const [isParsingUploadedFile, setIsParsingUploadedFile] = useState(false);
   useEffect(() => {
     if (!isCreating || newContractForm.creationMode !== "upload" || !newContractForm.category) {
       setUploadNumberPreview("");
@@ -5501,13 +5501,24 @@ export default function App() {
   // Handle Create Contract
   const handleCreateContract = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newContractForm.title || !newContractForm.party2Name || !newContractForm.startDate || !newContractForm.endDate) {
-      showToast("Harap isi semua field utama kontrak", "warning");
-      return;
-    }
-    if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) {
-      showToast("Tanggal selesai harus setelah tanggal mulai", "warning");
-      return;
+    if (newContractForm.creationMode === "upload") {
+      // Mode Upload: form disederhanakan jadi Nomor Kontrak, Kategori, dan
+      // Upload Dokumen saja (lihat Tahap 1) — isi kontrak sudah ada di
+      // berkasnya, jadi Judul/Pihak Kedua/Tanggal TIDAK ditanya lagi di sini.
+      // Judul sudah di-default dari nama file (lihat onChange input file).
+      if (!newContractForm.title.trim()) {
+        showToast("Judul Kontrak wajib diisi", "warning");
+        return;
+      }
+    } else {
+      if (!newContractForm.title || !newContractForm.party2Name || !newContractForm.startDate || !newContractForm.endDate) {
+        showToast("Harap isi semua field utama kontrak", "warning");
+        return;
+      }
+      if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) {
+        showToast("Tanggal selesai harus setelah tanggal mulai", "warning");
+        return;
+      }
     }
     // Variabel template yang belum dikenal dari field wizard lain (lihat
     // getKnownVariableValue) wajib diisi manual di Tahap 3 — dulu ini
@@ -20212,12 +20223,18 @@ export default function App() {
                   {creationLockedParty === "employee" ? "Wizard Kontrak Karyawan" : creationLockedParty === "external" ? "Wizard Kontrak Eksternal" : "Smart Contract Creation Wizard"}
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Langkah {creationStep} dari 3:{" "}
-                  {creationStep === 1
-                    ? "Inisiasi & AI Assistance"
-                    : creationStep === 2
-                      ? "Detail & Informasi Kontrak"
-                      : "Variabel & Finalisasi"}
+                  {newContractForm.creationMode === "upload" ? (
+                    "Langkah 1 dari 1: Unggah Dokumen Kontrak"
+                  ) : (
+                    <>
+                      Langkah {creationStep} dari 3:{" "}
+                      {creationStep === 1
+                        ? "Inisiasi & AI Assistance"
+                        : creationStep === 2
+                          ? "Detail & Informasi Kontrak"
+                          : "Variabel & Finalisasi"}
+                    </>
+                  )}
                 </p>
                 <p className="text-[10.5px] text-slate-500 mt-0.5">
                   {creationLockedParty === "employee"
@@ -20239,29 +20256,22 @@ export default function App() {
                 noValidate
                 onSubmit={(e) => {
                   e.preventDefault();
+                  // Mode Upload: form disederhanakan jadi 1 tahap saja (Nomor
+                  // Kontrak, Kategori, Upload Dokumen) — submit langsung dari
+                  // sini, tidak lagi lanjut ke Tahap 2/3 (Detail & Variabel)
+                  // yang isinya sudah ada di berkas yang diunggah.
+                  if (creationStep === 1 && newContractForm.creationMode === "upload") {
+                    handleCreateContract(e);
+                    return;
+                  }
                   if (creationStep === 2) {
-                    // Mode Upload: SEMUA field di Tahap 2 ini (Pihak Kedua,
-                    // tanggal, dst) sudah ADA di file yang diunggah user —
-                    // memaksa isi ulang manual di sini persis yang dikeluhkan
-                    // ("kan semua datanya udah ada di file yg aku upload").
-                    // Cuma Judul yang tetap wajib (dipakai di banyak tempat
-                    // lain — daftar kontrak, notifikasi, dst), dan itu pun
-                    // di-default dari nama filenya kalau kosong (lihat
-                    // onChange input file). Field lain boleh kosong dulu,
-                    // diisi belakangan lewat "Edit Data Pihak & Kontrak" di
-                    // halaman kontrak — TIDAK memblokir pembuatan kontrak.
-                    if (newContractForm.creationMode !== "upload") {
-                      if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
-                      if (!newContractForm.party2Name.trim()) { showToast("Nama Pihak Kedua wajib diisi", "warning"); return; }
-                      if (!newContractForm.startDate) { showToast("Tanggal Mulai Berlaku wajib diisi", "warning"); return; }
-                      if (!newContractForm.endDate) { showToast("Tanggal Selesai Berlaku wajib diisi", "warning"); return; }
-                      if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) { showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return; }
-                    } else {
-                      if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
-                      if (newContractForm.startDate && newContractForm.endDate && !isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) {
-                        showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return;
-                      }
-                    }
+                    // Hanya mode "smart" yang sampai ke Tahap 2 (mode "upload"
+                    // sudah submit langsung dari Tahap 1 — lihat blok di atas).
+                    if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
+                    if (!newContractForm.party2Name.trim()) { showToast("Nama Pihak Kedua wajib diisi", "warning"); return; }
+                    if (!newContractForm.startDate) { showToast("Tanggal Mulai Berlaku wajib diisi", "warning"); return; }
+                    if (!newContractForm.endDate) { showToast("Tanggal Selesai Berlaku wajib diisi", "warning"); return; }
+                    if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) { showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return; }
                   }
                   if (creationStep < 3) {
                     setCreationStep(creationStep + 1);
@@ -20340,6 +20350,7 @@ export default function App() {
                       </select>
                     </div>
 
+                    {newContractForm.creationMode === "smart" && (
                     <div className="space-y-1.5">
                       <label className="block text-sm font-semibold text-slate-300">
                         Jenis Dokumen
@@ -20368,10 +20379,11 @@ export default function App() {
                         Menentukan format nomor & (jika dikonfigurasi) template default — bisa diatur di Konfigurasi &gt; Master Data.
                       </p>
                     </div>
+                    )}
 
                     <div className="space-y-1.5">
                       <label className="block text-sm font-semibold text-slate-300 flex items-center gap-1.5">
-                        Nomor Dokumen{newContractForm.creationMode === "upload" ? " (dari vendor/penerbit)" : ""}
+                        {newContractForm.creationMode === "upload" ? "Nomor Kontrak (dari vendor/penerbit)" : "Nomor Dokumen"}
                         <HelpCircle className="w-3.5 h-3.5 text-slate-500 font-normal" title={newContractForm.creationMode === "upload" ? "Dokumen ini hasil unggah PDF — nomor DIISI BEBAS sesuai dokumen aslinya/vendor. Kosongkan bila ingin nomor otomatis sistem." : "Nomor final, sudah dialokasikan begitu Kategori & Jenis Dokumen dipilih — terkunci, supaya urut & tak pernah dobel."} />
                       </label>
                       {newContractForm.creationMode === "upload" ? (
@@ -20401,7 +20413,7 @@ export default function App() {
                       )}
                     </div>
 
-                    {(() => {
+                    {newContractForm.creationMode === "smart" && (() => {
                       const rootFolders = subFolders.filter(
                         (f) => f.category === newContractForm.category && f.parentId === null,
                       );
@@ -20461,6 +20473,25 @@ export default function App() {
                     {newContractForm.creationMode === "upload" && (
                       <div className="space-y-1.5">
                         <label className="block text-sm font-semibold text-slate-300">
+                          Judul Kontrak <span className="text-rose-400">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={newContractForm.title}
+                          onChange={(e) => setNewContractForm({ ...newContractForm, title: e.target.value })}
+                          placeholder="e.g. Perjanjian Kerja Sama Jasa - CV Solusi Bersama Abadi"
+                          className="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                        />
+                        <p className="text-[11px] text-slate-500">
+                          Terisi otomatis dari nama berkas saat diunggah — bisa diganti kapan saja sebelum submit.
+                        </p>
+                      </div>
+                    )}
+
+                    {newContractForm.creationMode === "upload" && (
+                      <div className="space-y-1.5">
+                        <label className="block text-sm font-semibold text-slate-300">
                           Berkas Dokumen/Template Kontrak (Wajib)
                         </label>
                         <input
@@ -20472,18 +20503,20 @@ export default function App() {
                               ...prev,
                               masterPdfFile: file,
                               clauses: [],
-                              // Auto-isi Judul dari nama file kalau masih kosong —
-                              // mode upload gak wajib isi ulang manual (lihat
-                              // validasi Tahap 2), tinggal diganti kalau mau.
+                              // Judul otomatis dari nama file kalau masih kosong —
+                              // tetap bisa diganti manual di field Judul Kontrak
+                              // di atas.
                               title: prev.title.trim() ? prev.title : (file ? file.name.replace(/\.[^.]+$/, "") : prev.title),
                             }));
                             if (!file) return;
-                            // PDF teks-asli / .docx: coba tarik teksnya & pecah jadi
+                            // PDF teks-asli / .docx: tarik teksnya & pecah jadi
                             // pasal-pasal SEKARANG JUGA (sebelum submit), supaya
-                            // usernya bisa langsung lihat & edit hasilnya di tahap
-                            // berikutnya — persis kayak mode "Buat dari Template".
-                            // .jpg/.png (scan/foto) SENGAJA dilewati di sini (tanpa
-                            // OCR, endpoint akan selalu bilang tidak didukung utk itu).
+                            // preview & editornya langsung tampil dengan LAYOUT
+                            // & MODE EDIT YANG SAMA seperti mode "Buat dari
+                            // Template" — bukan sekadar menampilkan file PDF-nya
+                            // mentah-mentah. .jpg/.png (scan/foto) dilewati di
+                            // sini (tanpa OCR, endpoint akan selalu bilang tidak
+                            // didukung utk itu) — pasal diisi manual belakangan.
                             const isTextExtractable = /\.(pdf|docx)$/i.test(file.name);
                             if (!isTextExtractable) return;
                             setIsParsingUploadedFile(true);
@@ -20496,12 +20529,6 @@ export default function App() {
                                 setNewContractForm((prev) => ({
                                   ...prev,
                                   masterPdfFile: file,
-                                  // "Full isi file", bukan cuma pasal: preamble
-                                  // (narasi sebelum PASAL 1 — tanggal, deskripsi
-                                  // Pihak, dst) & closing (kalimat penutup sebelum
-                                  // blok TTD) ikut diambil & ditaruh ke field yg
-                                  // SUDAH dipakai preview/editor (Narasi Pembuka &
-                                  // Kalimat Penutup) — bukan field baru terpisah.
                                   customOpeningParagraph: data.preamble || prev.customOpeningParagraph,
                                   closingStatement: data.closing || prev.closingStatement,
                                   clauses: data.clauses.map((c: any, i: number) => ({
@@ -20511,12 +20538,12 @@ export default function App() {
                                     order: i + 1,
                                   })),
                                 }));
-                                showToast(`${data.clauses.length} pasal + narasi pembuka berhasil terbaca dari berkas — silakan periksa & edit di langkah berikutnya.`, "success");
+                                showToast(`${data.clauses.length} pasal berhasil terbaca dari berkas — akan tampil & bisa diedit di preview, persis seperti kontrak dari Template.`, "success");
                               } else {
-                                showToast(data.reason || "Tidak bisa membaca teks dari berkas ini secara otomatis.", "warning");
+                                showToast(data.reason || "Tidak bisa membaca teks dari berkas ini secara otomatis — pasal bisa diisi manual lewat Mode Edit setelah kontrak dibuat.", "warning");
                               }
                             } catch {
-                              showToast("Gagal membaca isi berkas — kontrak tetap bisa dibuat, pasal diisi manual di langkah berikutnya.", "warning");
+                              showToast("Gagal membaca isi berkas — kontrak tetap bisa dibuat, pasal diisi manual lewat Mode Edit.", "warning");
                             } finally {
                               setIsParsingUploadedFile(false);
                             }
@@ -20536,11 +20563,11 @@ export default function App() {
                         )}
                         {!isParsingUploadedFile && newContractForm.clauses.length > 0 && (
                           <p className="text-[11px] text-emerald-400">
-                            ✓ {newContractForm.clauses.length} pasal terdeteksi dari berkas ini — akan langsung bisa diedit (tambah pasal/lampiran/token) di editor, sama seperti mode Template.
+                            ✓ {newContractForm.clauses.length} pasal terdeteksi dari berkas ini — akan langsung bisa diedit di preview (Mode Edit), sama seperti mode Template.
                           </p>
                         )}
                         <p className="text-[11px] text-slate-500">
-                          PDF teks-asli atau .docx: isi pasalnya otomatis dibaca &amp; jadi bisa diedit penuh. Hasil scan/foto (JPG/PNG) atau .doc lama: tidak bisa dibaca otomatis (tanpa OCR) — berkasnya tetap tersimpan &amp; bisa dilihat, tapi pasal diisi manual. Isi tanggal mulai &amp; selesai pada tahap berikutnya agar kontrak ini otomatis masuk daftar reminder jatuh tempo.
+                          PDF teks-asli atau .docx: isi pasalnya otomatis dibaca &amp; ditampilkan sebagai dokumen yang bisa diedit penuh (bukan sekadar pratinjau file PDF). Hasil scan/foto (JPG/PNG) atau .doc lama: tidak bisa dibaca otomatis — berkasnya tetap tersimpan, tapi pasal diisi manual lewat Mode Edit.
                         </p>
                       </div>
                     )}
@@ -20610,7 +20637,7 @@ export default function App() {
                         boleh muncul bersamaan untuk kategori yang sama. Vendor DAN
                         Customer sama-sama menarik dari master data vendor yang sama
                         (satu master, dua kategori pemakaian). */}
-                    {(newContractForm.category === "Employment" || newContractForm.category === "Vendor" || newContractForm.category === "Customer") && (
+                    {newContractForm.creationMode === "smart" && (newContractForm.category === "Employment" || newContractForm.category === "Vendor" || newContractForm.category === "Customer") && (
                       <div className="p-4 bg-slate-900 rounded-xl space-y-3">
                         <span className="block text-xs font-bold text-slate-400 uppercase tracking-wide">
                           Integrasi Modul {newContractForm.category === "Employment" ? "HR" : "GA / Master Vendor"} (Opsional)
@@ -20683,6 +20710,7 @@ export default function App() {
                       </div>
                     )}
 
+                    {newContractForm.creationMode === "smart" && (
                     <div className="space-y-1.5 pt-2">
                       <label className="block text-sm font-semibold text-slate-300">
                         Pilih Master Template ({newContractForm.category})
@@ -20709,6 +20737,7 @@ export default function App() {
                         </p>
                       )}
                     </div>
+                    )}
                   </div>
                 )}
 
@@ -21471,10 +21500,12 @@ export default function App() {
                     type="submit"
                     className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition shadow-lg flex items-center gap-2"
                   >
-                    {creationStep < 3
-                      ? "Lanjut ke Tahap " + (creationStep + 1)
-                      : "Finalisasi & Buat Kontrak"}
-                    {creationStep < 3 && <Sparkles className="w-4 h-4" />}
+                    {newContractForm.creationMode === "upload"
+                      ? "Buat Kontrak"
+                      : creationStep < 3
+                        ? "Lanjut ke Tahap " + (creationStep + 1)
+                        : "Finalisasi & Buat Kontrak"}
+                    {newContractForm.creationMode !== "upload" && creationStep < 3 && <Sparkles className="w-4 h-4" />}
                   </button>
                 </div>
               </form>

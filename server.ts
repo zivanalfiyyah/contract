@@ -2316,6 +2316,7 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
     isAutoRenew: !!req.body.isAutoRenew,
     variables: req.body.variables || {},
     clauses: req.body.clauses || [],
+    creationMode: req.body.creationMode === "upload" ? "upload" : "smart",
     masterPdfUrl: req.body.masterPdfUrl || null,
     docType: req.body.docType || undefined,
     notes: req.body.notes || undefined,

@@ -17046,6 +17046,19 @@ export default function App() {
                           benar apa pun yang diisi) — muncul otomatis sbg baris tambahan
                           hanya kalau field-nya terisi ("ditambahkan sesuai kebutuhan"). */}
                       {(() => {
+                        // Mode Upload: isi file (TERMASUK narasi pembuka aslinya)
+                        // sudah nyatu utuh di pasal pertama (lihat
+                        // extractedTextToSingleClause di server.ts) — jadi blok
+                        // "Narasi Pembuka" bawaan sistem di bawah ini (yang kalau
+                        // kosong jatuh ke DEFAULT_PREAMBLE_TEMPLATE ber-{{Token}})
+                        // DISEMBUNYIKAN di sini, supaya tidak dobel & tidak
+                        // nongolin placeholder token yang tidak relevan buat
+                        // dokumen upload. Kalau user SENGAJA isi
+                        // customOpeningParagraph manual (override eksplisit),
+                        // tetap ditampilkan seperti biasa — itu pilihan sadar dia.
+                        if (selectedContract.creationMode === "upload" && !selectedContract.customOpeningParagraph?.trim()) {
+                          return null;
+                        }
                         const { template: preambleTemplate, tokens: preambleTokens } = getPreambleTemplateAndTokens();
                         const docLang = selectedContract.documentLanguage || "id";
                         // Mode Edit: contentEditable langsung di preview, token
@@ -20509,14 +20522,18 @@ export default function App() {
                               title: prev.title.trim() ? prev.title : (file ? file.name.replace(/\.[^.]+$/, "") : prev.title),
                             }));
                             if (!file) return;
-                            // PDF teks-asli / .docx: tarik teksnya & pecah jadi
-                            // pasal-pasal SEKARANG JUGA (sebelum submit), supaya
-                            // preview & editornya langsung tampil dengan LAYOUT
+                            // PDF teks-asli / .docx: tarik teksnya SEKARANG JUGA
+                            // (sebelum submit) & taruh UTUH sebagai satu blok
+                            // yang bisa diedit — TIDAK dipecah jadi pasal-pasal
+                            // per PASAL/nomor, karena format dokumen upload
+                            // user bisa macam-macam & auto-split gampang salah
+                            // tebak (lihat komentar di extractedTextToSingleClause
+                            // server.ts). Preview & editornya tetap pakai LAYOUT
                             // & MODE EDIT YANG SAMA seperti mode "Buat dari
-                            // Template" — bukan sekadar menampilkan file PDF-nya
+                            // Template" — cuma bukan cuma nampilin file PDF-nya
                             // mentah-mentah. .jpg/.png (scan/foto) dilewati di
                             // sini (tanpa OCR, endpoint akan selalu bilang tidak
-                            // didukung utk itu) — pasal diisi manual belakangan.
+                            // didukung utk itu) — isi diisi manual belakangan.
                             const isTextExtractable = /\.(pdf|docx)$/i.test(file.name);
                             if (!isTextExtractable) return;
                             setIsParsingUploadedFile(true);
@@ -20538,7 +20555,7 @@ export default function App() {
                                     order: i + 1,
                                   })),
                                 }));
-                                showToast(`${data.clauses.length} pasal berhasil terbaca dari berkas — akan tampil & bisa diedit di preview, persis seperti kontrak dari Template.`, "success");
+                                showToast("Isi berkas berhasil ditarik utuh — tampil & bisa diedit bebas di preview, tanpa dipecah-pecah.", "success");
                               } else {
                                 showToast(data.reason || "Tidak bisa membaca teks dari berkas ini secara otomatis — pasal bisa diisi manual lewat Mode Edit setelah kontrak dibuat.", "warning");
                               }

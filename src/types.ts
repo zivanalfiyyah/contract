@@ -204,6 +204,14 @@ export interface Contract {
   templateId: string;
   contractNumber: string;
   title: string;
+  // Status gabungan Pekerjaan Legal <-> Monitoring Kontrak (Draft, Review
+  // Internal/Eksternal, Revisi/Negosiasi, Finalisasi, Proses TTD, Aktif, dst)
+  // — dihitung server-side dari `status` + externalReviewToken/externalApprovals
+  // (lihat computeUnifiedLegalStatus di server.ts), TIDAK menggantikan
+  // `status` asli. Dipakai murni utk tampilan badge tabel Monitoring Kontrak,
+  // dan angka yang sama juga dipakai linkedContract di API Pekerjaan Legal —
+  // supaya keduanya dijamin identik.
+  unifiedStatus?: string;
   category: string;
   party1Name: string; // Legacy
   party2Name: string; // Legacy
@@ -723,3 +731,101 @@ export interface FlowStep {
   pic?: string;
 }
 
+
+// ===== PEKERJAAN LEGAL (Dashboard Legal & Pekerjaan Legal) =====
+// Satu entitas dengan status siklus-hidup penuh, BUKAN tiga tabel terpisah
+// (Pekerjaan Masuk / Pekerjaan Legal Utama / Ditolak seperti di brief) —
+// tiga "tabel" itu di UI cukup difilter dari status yang sama, supaya tidak
+// perlu migrasi data antar tabel setiap kali status berubah (approve/reject/
+// lanjut tahap), dan riwayat (timeline) tetap menempel di satu record yang
+// sama sepanjang hidupnya.
+export type LegalJobStatus =
+  | "menunggu_persetujuan" // baru masuk dari form eksternal, belum direview
+  | "draft"
+  | "review_internal"
+  | "review_eksternal"
+  | "revisi_negosiasi"
+  | "finalisasi"
+  | "penomoran"
+  | "ttd"
+  | "distribusi"
+  | "arsip"
+  | "selesai"
+  | "ditolak";
+
+export const LEGAL_JOB_WORKFLOW_STATUSES: LegalJobStatus[] = [
+  "draft", "review_internal", "review_eksternal", "revisi_negosiasi",
+  "finalisasi", "penomoran", "ttd", "distribusi", "arsip", "selesai",
+];
+
+export type LegalJobPriority = "Tinggi" | "Sedang" | "Rendah";
+
+export interface LegalJobDocument {
+  id: string;
+  name: string;
+  url: string;
+  key?: string;
+  mimeType?: string;
+  size?: number;
+  uploadedAt: string;
+  uploadedBy: string; // nama staff, atau "Eksternal (form)" utk lampiran submission
+}
+
+export interface LegalJobNote {
+  id: string;
+  text: string;
+  authorName: string;
+  createdAt: string;
+}
+
+export interface LegalJobTimelineEntry {
+  id: string;
+  label: string;   // "Request Masuk", "Disetujui — Prioritas Tinggi", "Status → Review Internal", dst
+  detail?: string;
+  actor?: string;   // nama staff pelaku, atau "Eksternal" untuk submit form
+  at: string;
+}
+
+export interface LegalJob {
+  id: string;
+  tenantId: string;
+  title: string;             // Judul Pekerjaan
+  partnerName: string;       // Partner / Pihak
+  docType: string;           // Jenis Dokumen
+  picName: string;           // PIC Pemberi Pekerjaan
+  deadline: string;           // YYYY-MM-DD
+  description?: string;       // Keterangan
+  documents: LegalJobDocument[];
+  status: LegalJobStatus;
+  priority?: LegalJobPriority; // diisi Staff Legal saat approve — TIDAK diisi eksternal
+  source: "eksternal" | "internal";
+  submitterName?: string;      // nama pengisi form eksternal (opsional)
+  submitterEmail?: string;     // email pengisi, untuk notifikasi penolakan (opsional)
+  rejectionReason?: string;
+  rejectedByName?: string;
+  rejectedAt?: string;
+  approvedByName?: string;
+  approvedAt?: string;
+  // Kontrak Eksternal yang menaungi pekerjaan ini — begitu diisi, status
+  // Pekerjaan Legal TIDAK LAGI dipilih manual (lihat LEGAL_JOB_WORKFLOW_STATUSES
+  // di App.tsx): tampilannya WAJIB mengikuti status Contract ini apa adanya,
+  // dihitung ulang tiap kali dibaca (lihat withLinkedContract di server.ts) —
+  // supaya status di tabel Pekerjaan Legal & Monitoring Kontrak selalu satu
+  // sumber kebenaran yang sama, tidak pernah bisa berbeda/basi.
+  linkedContractId?: string;
+  notes: LegalJobNote[];
+  timeline: LegalJobTimelineEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Link formulir eksternal — satu per tenant, bisa di-generate ulang (token
+// lama langsung tidak berlaku begitu diganti, sama seperti pola
+// externalReviewToken pada Contract).
+export interface LegalFormLink {
+  tenantId: string;
+  token: string;
+  active: boolean;
+  createdAt: string;
+  regeneratedAt?: string;
+}

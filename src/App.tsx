@@ -91,6 +91,14 @@ import {
   Link2,
   Table2,
   Minus as MinusIcon,
+  QrCode,
+  X,
+  Filter,
+  Inbox,
+  FileX,
+  ThumbsUp,
+  ThumbsDown,
+  StickyNote,
 } from "lucide-react";
 import {
   Clause,
@@ -111,6 +119,7 @@ import {
   ContractApprovalStep,
   UserRole,
   ContractAttachmentSection,
+  LegalJob,
 } from "./types";
 
 // Mirrors dcs/pdf-compose.ts's layoutFlowGraph 1:1 (same algorithm, TS
@@ -1192,6 +1201,193 @@ function ExternalReviewPage({ token }: { token: string }) {
   );
 }
 
+// PUBLIK (tanpa akun) — Formulir Eksternal "Tambah Pekerjaan Legal". Dibuka
+// via link/QR yang dibagikan Staff Legal (?legalFormToken=...), diisi pihak
+// luar (partner/marketing/divisi lain). Submission masuk sbg status
+// "menunggu_persetujuan" — TIDAK langsung ke alur kerja utama (lihat
+// /api/legal-form/:token/submit di server.ts). Sama pola dgn ExternalReviewPage:
+// di-scope oleh token, tanpa login, rate-limited di server.
+function LegalExternalFormPage({ token }: { token: string }) {
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [meta, setMeta] = useState<{ tenantName: string; docTypeOptions: string[]; partnerSuggestions: string[]; picSuggestions: string[] } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const { notice, notify, dismissNotice } = useGuestNotice();
+
+  const [form, setForm] = useState({
+    title: "", partnerName: "", docType: "", picName: "", deadline: "",
+    description: "", submitterName: "", submitterEmail: "",
+  });
+  const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/legal-form/${token}`);
+        const j = await res.json();
+        if (!res.ok) { setErr(j.error || "Link tidak valid."); }
+        else { setMeta(j); setErr(""); }
+      } catch { setErr("Gagal memuat formulir. Periksa koneksi."); }
+      finally { setLoading(false); }
+    })();
+  }, [token]);
+
+  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+    setForm((f) => ({ ...f, [k]: e.target.value }));
+
+  const onPickFile = (f: File | null) => {
+    if (!f) { setFile(null); return; }
+    const okType = ["application/pdf", "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "image/jpeg", "image/png"].includes(f.type);
+    if (!okType) { notify("Format berkas tidak didukung. Gunakan PDF, DOC, DOCX, XLS, XLSX, JPG, atau PNG."); return; }
+    if (f.size > 10 * 1024 * 1024) { notify("Ukuran berkas maksimal 10MB."); return; }
+    setFile(f);
+  };
+
+  const submit = async () => {
+    if (!form.title.trim()) return notify("Judul Pekerjaan wajib diisi.");
+    if (!form.partnerName.trim()) return notify("Partner/Pihak wajib diisi.");
+    if (!form.docType.trim()) return notify("Jenis Dokumen wajib dipilih.");
+    if (!form.picName.trim()) return notify("PIC Pemberi Pekerjaan wajib diisi.");
+    if (!form.deadline) return notify("Deadline wajib diisi.");
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      Object.entries(form).forEach(([k, v]) => fd.append(k, String(v)));
+      if (file) fd.append("file", file);
+      const res = await fetch(`/api/legal-form/${token}/submit`, { method: "POST", body: fd });
+      const j = await res.json();
+      if (!res.ok) notify(j.error || "Gagal mengirim formulir.");
+      else setDone(true);
+    } catch { notify("Gagal mengirim formulir. Periksa koneksi."); }
+    finally { setBusy(false); }
+  };
+
+  if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-300 text-sm">Memuat formulir…</div>;
+  if (err) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
+      <div className="max-w-md text-center space-y-2">
+        <p className="text-4xl">🔒</p>
+        <h1 className="text-lg font-bold text-slate-100">Link Formulir Tidak Berlaku</h1>
+        <p className="text-sm text-slate-400">{err}</p>
+      </div>
+    </div>
+  );
+  if (done) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
+      <div className="max-w-md text-center space-y-3 bg-slate-950/50 border border-slate-800 rounded-2xl p-8">
+        <p className="text-5xl">✅</p>
+        <h1 className="text-lg font-bold text-slate-100">Terkirim!</h1>
+        <p className="text-sm text-slate-400 leading-relaxed">Terima kasih, permintaan Anda sudah kami terima dan akan diproses oleh tim Legal.</p>
+        <button
+          onClick={() => { setDone(false); setForm({ title: "", partnerName: "", docType: "", picName: "", deadline: "", description: "", submitterName: "", submitterEmail: "" }); setFile(null); }}
+          className="mt-2 text-xs font-semibold text-indigo-400 hover:text-indigo-300 cursor-pointer"
+        >
+          Kirim permintaan lain
+        </button>
+      </div>
+    </div>
+  );
+
+  const inputCls = "w-full px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500 placeholder:text-slate-600";
+  const labelCls = "text-[12.5px] font-semibold text-slate-300";
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 font-sans">
+      <GuestNotice notice={notice} onDismiss={dismissNotice} />
+      <div className="max-w-2xl mx-auto p-4 sm:p-8 space-y-5">
+        <header className="bg-slate-950/60 border border-slate-800 rounded-2xl p-6 text-center space-y-1.5">
+          <p className="text-[11px] uppercase tracking-wide text-indigo-400 font-bold">Formulir Eksternal</p>
+          <h1 className="text-xl font-bold">Tambah Pekerjaan Legal</h1>
+          <p className="text-xs text-slate-400">{meta?.tenantName} · Diisi oleh partner/pihak eksternal</p>
+        </header>
+
+        <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 sm:p-7 space-y-5">
+          <div className="space-y-1.5">
+            <label className={labelCls}>Judul Pekerjaan <span className="text-rose-500">*</span></label>
+            <input value={form.title} onChange={set("title")} placeholder='Contoh: "PKS ASMaT ZTrans"' className={inputCls} />
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className={labelCls}>Partner / Pihak <span className="text-rose-500">*</span></label>
+              <input value={form.partnerName} onChange={set("partnerName")} placeholder="Nama partner/mitra" list="partner-suggestions" className={inputCls} />
+              <datalist id="partner-suggestions">{meta?.partnerSuggestions.map((p) => <option key={p} value={p} />)}</datalist>
+            </div>
+            <div className="space-y-1.5">
+              <label className={labelCls}>Jenis Dokumen <span className="text-rose-500">*</span></label>
+              <select value={form.docType} onChange={set("docType")} className={inputCls}>
+                <option value="">Pilih jenis</option>
+                {meta?.docTypeOptions.map((d) => <option key={d} value={d}>{d}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className={labelCls}>PIC Pemberi Pekerjaan <span className="text-rose-500">*</span></label>
+              <input value={form.picName} onChange={set("picName")} placeholder="Marketing, AE, Business Dev, dll" list="pic-suggestions" className={inputCls} />
+              <datalist id="pic-suggestions">{meta?.picSuggestions.map((p) => <option key={p} value={p} />)}</datalist>
+            </div>
+            <div className="space-y-1.5">
+              <label className={labelCls}>Deadline <span className="text-rose-500">*</span></label>
+              <input type="date" value={form.deadline} onChange={set("deadline")} className={inputCls} />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className={labelCls}>Keterangan <span className="text-slate-500 font-normal">(opsional)</span></label>
+            <textarea value={form.description} onChange={set("description")} rows={3} placeholder="Deskripsi tambahan pekerjaan" className={inputCls} />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className={labelCls}>Upload Dokumen <span className="text-slate-500 font-normal">(opsional)</span></label>
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => { e.preventDefault(); onPickFile(e.dataTransfer.files?.[0] || null); }}
+              className="border-2 border-dashed border-slate-800 hover:border-indigo-500/50 rounded-xl p-5 text-center cursor-pointer transition"
+            >
+              <input ref={fileInputRef} type="file" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
+                onChange={(e) => onPickFile(e.target.files?.[0] || null)} />
+              {file ? (
+                <p className="text-xs text-emerald-400 font-semibold">📎 {file.name} <button onClick={(e) => { e.stopPropagation(); setFile(null); }} className="ml-2 text-slate-500 hover:text-rose-400 cursor-pointer">Hapus</button></p>
+              ) : (
+                <>
+                  <p className="text-xs text-slate-400">Drag &amp; drop file di sini atau klik untuk memilih file</p>
+                  <p className="text-[10px] text-slate-600 mt-1">Format: PDF, DOC, DOCX, XLS, JPG, PNG (Maks. 10MB)</p>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-slate-800 grid sm:grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <label className={labelCls}>Nama Anda <span className="text-slate-500 font-normal">(opsional)</span></label>
+              <input value={form.submitterName} onChange={set("submitterName")} placeholder="Untuk memudahkan komunikasi" className={inputCls} />
+            </div>
+            <div className="space-y-1.5">
+              <label className={labelCls}>Email Anda <span className="text-slate-500 font-normal">(opsional)</span></label>
+              <input type="email" value={form.submitterEmail} onChange={set("submitterEmail")} placeholder="Info status akan dikirim ke sini" className={inputCls} />
+            </div>
+          </div>
+
+          <button onClick={submit} disabled={busy}
+            className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl cursor-pointer transition">
+            {busy ? "Mengirim…" : "Kirim Permintaan"}
+          </button>
+        </div>
+        <p className="text-center text-[10px] text-slate-600 py-4">Formulir aman berbasis token. Permintaan Anda akan direview oleh Tim Legal sebelum diproses.</p>
+      </div>
+    </div>
+  );
+}
+
 // Sorot kutipan komentar di dalam teks bagian dokumen (quote-based, mirip
 // pola yang sama dipakai halaman review eksternal Kontrak) — khusus dipakai
 // DcsExternalReviewPage karena anchor DCS (field/sectionIndex/quote) beda
@@ -2019,6 +2215,804 @@ function ImageSelectionOverlay() {
   );
 }
 
+// Label & urutan status kerja Pekerjaan Legal — dipakai kartu ringkasan,
+// filter tabel, dan tombol "lanjut tahap" di detail. Cocok dengan
+// LEGAL_JOB_WORKFLOW_STATUSES di src/types.ts (tanpa menunggu_persetujuan/ditolak,
+// yang masing-masing punya tabel/kartu sendiri).
+const LEGAL_STATUS_LABEL: Record<string, string> = {
+  menunggu_persetujuan: "Menunggu Persetujuan",
+  draft: "Draft",
+  review_internal: "Review Internal",
+  review_eksternal: "Review Eksternal",
+  revisi_negosiasi: "Revisi/Negosiasi",
+  finalisasi: "Finalisasi",
+  penomoran: "Penomoran",
+  ttd: "Proses TTD",
+  distribusi: "Distribusi",
+  arsip: "Arsip",
+  selesai: "Selesai",
+  ditolak: "Ditolak",
+};
+const LEGAL_WORKFLOW_ORDER = ["draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "penomoran", "ttd", "distribusi", "arsip", "selesai"];
+const LEGAL_PRIORITY_STYLE: Record<string, string> = {
+  Tinggi: "bg-rose-500/15 text-rose-400 border-rose-500/25",
+  Sedang: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  Rendah: "bg-slate-500/15 text-slate-400 border-slate-500/25",
+};
+// Label & warna badge status KONTRAK — duplikat sengaja dari
+// contractStatusLabel/contractStatusBadgeClass di dalam komponen App (yang
+// terikat closure App, tidak bisa dipakai komponen top-level seperti
+// PekerjaanLegalPage). Dipakai untuk menampilkan status Pekerjaan Legal yang
+// SUDAH TERTAUT ke Kontrak — supaya labelnya identik dengan yang tampil di
+// Monitoring Kontrak, bukan cuma "mirip".
+const CONTRACT_STATUS_LABEL_ID: Record<string, string> = {
+  Draft: "Draft", OnReview: "Sedang Ditinjau", FullyApproved: "Disetujui Penuh",
+  Aktif: "Aktif", TidakAktif: "Tidak Aktif", Archived: "Diarsipkan", Terminated: "Diakhiri",
+  ReviewInternalEksternal: "Review Internal/Eksternal", RevisiNegosiasi: "Revisi/Negosiasi",
+  Finalisasi: "Finalisasi", ProsesTTD: "Proses TTD",
+};
+const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
+  Aktif: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
+  TidakAktif: "bg-orange-500/15 text-orange-400 border-orange-500/25",
+  Draft: "bg-amber-500/15 text-amber-400 border-amber-500/25",
+  OnReview: "bg-indigo-500/15 text-indigo-400 border-indigo-500/25",
+  FullyApproved: "bg-teal-500/15 text-teal-400 border-teal-500/25",
+  Archived: "bg-purple-500/15 text-purple-400 border-purple-500/25",
+  Terminated: "bg-rose-500/15 text-rose-400 border-rose-500/25",
+  ReviewInternalEksternal: "bg-sky-500/15 text-sky-400 border-sky-500/25",
+  RevisiNegosiasi: "bg-fuchsia-500/15 text-fuchsia-400 border-fuchsia-500/25",
+  Finalisasi: "bg-indigo-500/15 text-indigo-400 border-indigo-500/25",
+  ProsesTTD: "bg-teal-500/15 text-teal-400 border-teal-500/25",
+};
+// Bentuk LegalJob yang dikembalikan API (lihat withLinkedContract di
+// server.ts) — nempel field `linkedContract` di atas LegalJob biasa, dihitung
+// ulang dari Contract tiap request, BUKAN disalin sekali (jadi selalu akurat).
+type LegalJobWithLink = LegalJob & {
+  linkedContract?: { id: string; title: string; contractNumber: string; status: string } | null;
+};
+function fmtDateID(s?: string): string {
+  if (!s) return "—";
+  try { return new Date(s).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }); } catch { return s; }
+}
+function fmtDateTimeID(s?: string): string {
+  if (!s) return "—";
+  try { return new Date(s).toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; }
+}
+
+// Halaman "Pekerjaan Legal" — tombol Tambah Pekerjaan Legal membuka modal
+// Bagikan Link Formulir (bukan form internal lagi); pekerjaan yang masuk
+// dari form eksternal direview lewat tabel "Pekerjaan Masuk" sebelum masuk
+// ke tabel utama. Lihat Spek-Dashboard-Pekerjaan-Legal.docx bagian 4.
+function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any; onOpenContract: (contractId: string) => void }) {
+  const [jobs, setJobs] = useState<LegalJobWithLink[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState<{ text: string; kind: "error" | "success" } | null>(null);
+  const notify = (text: string, kind: "error" | "success" = "error") => {
+    setToast({ text, kind });
+    window.setTimeout(() => setToast(null), 5000);
+  };
+
+  const [shareOpen, setShareOpen] = useState(false);
+  const [approveJob, setApproveJob] = useState<LegalJob | null>(null);
+  const [rejectJob, setRejectJob] = useState<LegalJob | null>(null);
+  const [detailJob, setDetailJob] = useState<LegalJobWithLink | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>("semua");
+
+  const fetchJobs = async () => {
+    try {
+      const res = await fetch("/api/legal-jobs");
+      if (res.ok) setJobs(await res.json());
+    } catch { /* diam-diam gagal, tabel tetap tampil kosong/lama */ }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { fetchJobs(); }, []);
+
+  const incoming = jobs.filter((j) => j.status === "menunggu_persetujuan").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const rejected = jobs.filter((j) => j.status === "ditolak").sort((a, b) => (b.rejectedAt || "").localeCompare(a.rejectedAt || ""));
+  const mainJobs = jobs.filter((j) => j.status !== "menunggu_persetujuan" && j.status !== "ditolak")
+    .filter((j) => statusFilter === "semua" || j.status === statusFilter)
+    .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+
+  const cardStatuses = ["menunggu_persetujuan", "draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "ttd", "selesai"];
+  const countOf = (s: string) => jobs.filter((j) => j.status === s).length;
+
+  const refreshAfter = async (fn: () => Promise<Response>, successMsg: string, onDone?: () => void) => {
+    try {
+      const res = await fn();
+      const j = await res.json();
+      if (!res.ok) { notify(j.error || "Terjadi kesalahan."); return; }
+      notify(successMsg, "success");
+      await fetchJobs();
+      onDone?.();
+    } catch { notify("Gagal terhubung ke server."); }
+  };
+
+  return (
+    <div className="space-y-6">
+      {toast && (
+        <div className={`fixed top-5 right-5 z-[100] animate-fadeIn shadow-2xl flex items-center gap-2.5 pl-3.5 pr-4 py-3 rounded-lg border bg-white max-w-sm ${toast.kind === "error" ? "border-rose-400" : "border-emerald-400"}`}>
+          {toast.kind === "error" ? <AlertTriangle className="text-rose-500 w-4 h-4 shrink-0" /> : <CheckCircle className="text-emerald-500 w-4 h-4 shrink-0" />}
+          <p className="text-[13px] font-semibold leading-snug text-slate-800">{toast.text}</p>
+        </div>
+      )}
+
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <h2 className="text-xl font-semibold text-slate-100 tracking-tight">Pekerjaan Legal</h2>
+          <p className="text-[13px] text-slate-500 max-w-xl">Kelola seluruh pekerjaan Legal dari awal hingga selesai.</p>
+        </div>
+        <button onClick={() => setShareOpen(true)} className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[13px] font-semibold transition cursor-pointer shrink-0">
+          <Plus className="w-4 h-4" /> Tambah Pekerjaan Legal
+        </button>
+      </div>
+
+      {/* Kartu ringkasan status — klik untuk filter tabel utama di bawah. */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        {cardStatuses.map((s) => (
+          <button key={s} onClick={() => setStatusFilter(s === statusFilter ? "semua" : s)}
+            className={`text-left p-3 rounded-xl border transition cursor-pointer ${statusFilter === s ? "bg-indigo-600/20 border-indigo-500/40" : "bg-slate-900/60 border-slate-800 hover:border-slate-700"}`}>
+            <p className="text-lg font-bold text-slate-100">{countOf(s)}</p>
+            <p className="text-[10.5px] text-slate-500 leading-tight mt-0.5">{LEGAL_STATUS_LABEL[s]}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* ===== Tabel "Pekerjaan Masuk" (Belum Diproses) ===== */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+        <div className="p-4 flex items-center gap-2 border-b border-slate-800">
+          <Inbox className="w-4 h-4 text-amber-400" />
+          <h3 className="text-sm font-semibold text-slate-100">Pekerjaan Masuk <span className="text-slate-500 font-normal">(Belum Diproses)</span></h3>
+          <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25 font-semibold">{incoming.length} menunggu</span>
+        </div>
+        {loading ? (
+          <p className="p-6 text-center text-xs text-slate-500">Memuat…</p>
+        ) : incoming.length === 0 ? (
+          <p className="p-6 text-center text-xs text-slate-500">Belum ada pekerjaan masuk dari formulir eksternal.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-800">
+                  <th className="p-3 font-semibold">Judul Pekerjaan</th>
+                  <th className="p-3 font-semibold">Partner/Pihak</th>
+                  <th className="p-3 font-semibold">Jenis</th>
+                  <th className="p-3 font-semibold">PIC Pemberi</th>
+                  <th className="p-3 font-semibold">Deadline</th>
+                  <th className="p-3 font-semibold">Dokumen</th>
+                  <th className="p-3 font-semibold">Tanggal Masuk</th>
+                  <th className="p-3 font-semibold text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                {incoming.map((j) => (
+                  <tr key={j.id} className="border-b border-slate-800/60 hover:bg-slate-800/20">
+                    <td className="p-3 font-medium text-slate-200">{j.title}</td>
+                    <td className="p-3 text-slate-400">{j.partnerName}</td>
+                    <td className="p-3 text-slate-400">{j.docType}</td>
+                    <td className="p-3 text-slate-400">{j.picName}</td>
+                    <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
+                    <td className="p-3">
+                      {j.documents.length > 0 ? (
+                        <a href={j.documents[0].url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline text-[11.5px]">Lihat berkas</a>
+                      ) : <span className="text-slate-600">—</span>}
+                    </td>
+                    <td className="p-3 text-slate-500">{fmtDateTimeID(j.createdAt)}</td>
+                    <td className="p-3">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button onClick={() => setApproveJob(j)} title="Setujui" className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 cursor-pointer"><ThumbsUp className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => setRejectJob(j)} title="Tidak Disetujui" className="p-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 cursor-pointer"><ThumbsDown className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ===== Tabel "Pekerjaan Legal" Utama ===== */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+        <div className="p-4 flex flex-wrap items-center gap-2 border-b border-slate-800">
+          <Layers className="w-4 h-4 text-indigo-400" />
+          <h3 className="text-sm font-semibold text-slate-100">Pekerjaan Legal</h3>
+          <div className="ml-auto flex items-center gap-2">
+            <Filter className="w-3.5 h-3.5 text-slate-500" />
+            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-slate-950 border border-slate-800 rounded-lg text-[12px] px-2 py-1.5 text-slate-300 focus:outline-none focus:border-indigo-500">
+              <option value="semua">Semua Status</option>
+              {LEGAL_WORKFLOW_ORDER.map((s) => <option key={s} value={s}>{LEGAL_STATUS_LABEL[s]}</option>)}
+            </select>
+          </div>
+        </div>
+        {mainJobs.length === 0 ? (
+          <p className="p-6 text-center text-xs text-slate-500">Belum ada pekerjaan pada status ini.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-800">
+                  <th className="p-3 font-semibold">Judul Pekerjaan</th>
+                  <th className="p-3 font-semibold">Jenis</th>
+                  <th className="p-3 font-semibold">Partner</th>
+                  <th className="p-3 font-semibold">PIC Pemberi</th>
+                  <th className="p-3 font-semibold">Status</th>
+                  <th className="p-3 font-semibold">Deadline</th>
+                  <th className="p-3 font-semibold">Prioritas</th>
+                  <th className="p-3 font-semibold text-right">Aksi</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mainJobs.map((j) => (
+                  <tr key={j.id} className="border-b border-slate-800/60 hover:bg-slate-800/20">
+                    <td className="p-3 font-medium text-slate-200">{j.title}</td>
+                    <td className="p-3 text-slate-400">{j.docType}</td>
+                    <td className="p-3 text-slate-400">{j.partnerName}</td>
+                    <td className="p-3 text-slate-400">{j.picName}</td>
+                    <td className="p-3">
+                      {j.linkedContract ? (
+                        <div className="flex flex-col gap-0.5 w-fit">
+                          <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[j.linkedContract.status] || "bg-slate-500/15 text-slate-400 border-slate-500/25"}`}>
+                            {CONTRACT_STATUS_LABEL_ID[j.linkedContract.status] || j.linkedContract.status}
+                          </span>
+                          <button onClick={() => onOpenContract(j.linkedContract!.id)} className="text-[9.5px] text-indigo-400 hover:underline text-left cursor-pointer">mengikuti Kontrak →</button>
+                        </div>
+                      ) : (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 font-semibold whitespace-nowrap">{LEGAL_STATUS_LABEL[j.status]}</span>
+                      )}
+                    </td>
+                    <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
+                    <td className="p-3">{j.priority && <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${LEGAL_PRIORITY_STYLE[j.priority]}`}>{j.priority}</span>}</td>
+                    <td className="p-3 text-right">
+                      <button onClick={() => setDetailJob(j)} className="text-indigo-400 hover:underline text-[12px] font-semibold cursor-pointer">Lihat Detail</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ===== Tabel "Ditolak / Arsip Penolakan" ===== */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+        <div className="p-4 flex items-center gap-2 border-b border-slate-800">
+          <FileX className="w-4 h-4 text-rose-400" />
+          <h3 className="text-sm font-semibold text-slate-100">Ditolak <span className="text-slate-500 font-normal">/ Arsip Penolakan</span></h3>
+          <span className="ml-auto text-[11px] px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/25 font-semibold">{rejected.length}</span>
+        </div>
+        {rejected.length === 0 ? (
+          <p className="p-6 text-center text-xs text-slate-500">Belum ada pekerjaan yang ditolak.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[12.5px]">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-800">
+                  <th className="p-3 font-semibold">Judul Pekerjaan</th>
+                  <th className="p-3 font-semibold">Partner</th>
+                  <th className="p-3 font-semibold">Alasan Penolakan</th>
+                  <th className="p-3 font-semibold">Ditolak oleh</th>
+                  <th className="p-3 font-semibold">Tanggal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rejected.map((j) => (
+                  <tr key={j.id} className="border-b border-slate-800/60 hover:bg-slate-800/20">
+                    <td className="p-3 font-medium text-slate-200">{j.title}</td>
+                    <td className="p-3 text-slate-400">{j.partnerName}</td>
+                    <td className="p-3 text-slate-400 max-w-xs truncate" title={j.rejectionReason}>{j.rejectionReason}</td>
+                    <td className="p-3 text-slate-400">{j.rejectedByName}</td>
+                    <td className="p-3 text-slate-500">{fmtDateTimeID(j.rejectedAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {shareOpen && <ShareFormLinkModal onClose={() => setShareOpen(false)} notify={notify} />}
+      {approveJob && (
+        <ApprovePriorityModal
+          job={approveJob}
+          onClose={() => setApproveJob(null)}
+          onConfirm={(priority) => refreshAfter(
+            () => fetch(`/api/legal-jobs/${approveJob.id}/approve`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority }) }),
+            "Pekerjaan disetujui dan masuk ke alur kerja utama.",
+            () => setApproveJob(null),
+          )}
+        />
+      )}
+      {rejectJob && (
+        <RejectReasonModal
+          job={rejectJob}
+          onClose={() => setRejectJob(null)}
+          onConfirm={(reason) => refreshAfter(
+            () => fetch(`/api/legal-jobs/${rejectJob.id}/reject`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) }),
+            "Pekerjaan ditolak dan dipindahkan ke arsip penolakan.",
+            () => setRejectJob(null),
+          )}
+        />
+      )}
+      {detailJob && (
+        <LegalJobDetailDrawer
+          job={jobs.find((j) => j.id === detailJob.id) || detailJob}
+          currentUser={currentUser}
+          onClose={() => setDetailJob(null)}
+          onChanged={fetchJobs}
+          notify={notify}
+          onOpenContract={onOpenContract}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal "Bagikan Link Formulir" — pengganti tombol "Tambah Pekerjaan Legal"
+// yang dulu membuka form internal. Ambil/buat link tenant saat dibuka,
+// tampilkan Copy/QR/Generate Ulang (lihat /api/legal-form-link* di server.ts).
+function ShareFormLinkModal({ onClose, notify }: { onClose: () => void; notify: (t: string, k?: "error" | "success") => void }) {
+  const [data, setData] = useState<{ token: string; url: string; qrDataUrl: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [confirmRegen, setConfirmRegen] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/legal-form-link");
+      if (res.ok) setData(await res.json());
+      else notify("Gagal memuat link formulir.");
+    } catch { notify("Gagal terhubung ke server."); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  const copyLink = async () => {
+    if (!data) return;
+    try { await navigator.clipboard.writeText(data.url); setCopied(true); window.setTimeout(() => setCopied(false), 2000); }
+    catch { notify("Gagal menyalin link."); }
+  };
+
+  const regenerate = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/legal-form-link/regenerate", { method: "POST" });
+      const j = await res.json();
+      if (!res.ok) notify(j.error || "Gagal membuat link baru.");
+      else { setData(j); notify("Link baru diterbitkan — link lama sudah tidak berlaku.", "success"); }
+    } catch { notify("Gagal terhubung ke server."); }
+    finally { setBusy(false); setConfirmRegen(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        <div className="p-5 border-b border-slate-800 flex items-center justify-between">
+          <h3 className="font-bold text-slate-100 text-sm">Bagikan Link Formulir</h3>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200 cursor-pointer"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-[12.5px] text-slate-400 leading-relaxed">Bagikan link ini ke pihak eksternal (marketing, partner, divisi lain) untuk mengajukan Pekerjaan Legal. Prioritas ditentukan oleh Staff Legal saat approve, bukan oleh pengisi.</p>
+          {loading ? (
+            <p className="text-xs text-slate-500 text-center py-4">Memuat…</p>
+          ) : data ? (
+            <>
+              <div className="flex items-center gap-2">
+                <input readOnly value={data.url} className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-[11.5px] text-slate-300 font-mono truncate" />
+                <button onClick={copyLink} className="shrink-0 flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg cursor-pointer">
+                  <Copy className="w-3.5 h-3.5" /> {copied ? "Tersalin!" : "Copy"}
+                </button>
+              </div>
+              <div className="flex flex-col items-center gap-2 py-3 border-y border-slate-800">
+                <img src={data.qrDataUrl} alt="QR Code formulir" className="w-40 h-40 rounded-lg bg-white p-2" />
+                <p className="text-[10.5px] text-slate-500 flex items-center gap-1"><QrCode className="w-3 h-3" /> Scan untuk membuka formulir</p>
+              </div>
+              {!confirmRegen ? (
+                <button onClick={() => setConfirmRegen(true)} className="w-full text-center text-[12px] font-semibold text-rose-400 hover:text-rose-300 cursor-pointer">Generate Ulang Link</button>
+              ) : (
+                <div className="bg-rose-500/10 border border-rose-500/25 rounded-xl p-3 space-y-2">
+                  <p className="text-[11.5px] text-rose-300">Link lama akan langsung tidak berlaku. Lanjutkan?</p>
+                  <div className="flex gap-2">
+                    <button onClick={regenerate} disabled={busy} className="flex-1 py-1.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg cursor-pointer">{busy ? "Memproses…" : "Ya, Generate Ulang"}</button>
+                    <button onClick={() => setConfirmRegen(false)} className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg cursor-pointer">Batal</button>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-rose-400 text-center py-4">Gagal memuat link.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ApprovePriorityModal({ job, onClose, onConfirm }: { job: LegalJob; onClose: () => void; onConfirm: (priority: string) => void }) {
+  const [priority, setPriority] = useState<string>("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+        <div className="p-5 space-y-3">
+          <h3 className="font-bold text-slate-100 text-sm">Setujui &amp; Pilih Prioritas</h3>
+          <p className="text-[12px] text-slate-400">"{job.title}" — {job.partnerName}</p>
+          <div className="grid grid-cols-3 gap-2 pt-1">
+            {["Tinggi", "Sedang", "Rendah"].map((p) => (
+              <button key={p} onClick={() => setPriority(p)}
+                className={`py-2 rounded-xl text-xs font-bold border cursor-pointer transition ${priority === p ? LEGAL_PRIORITY_STYLE[p] + " ring-1 ring-inset" : "bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700"}`}>
+                {p}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="p-4 border-t border-slate-800 flex justify-end gap-2.5">
+          <button onClick={onClose} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl cursor-pointer">Batal</button>
+          <button onClick={() => priority && onConfirm(priority)} disabled={!priority} className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl cursor-pointer">Simpan</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RejectReasonModal({ job, onClose, onConfirm }: { job: LegalJob; onClose: () => void; onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState("");
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+        <div className="p-5 space-y-3">
+          <h3 className="font-bold text-slate-100 text-sm">Alasan Penolakan</h3>
+          <p className="text-[12px] text-slate-400">"{job.title}" — {job.partnerName}</p>
+          <textarea autoFocus value={reason} onChange={(e) => setReason(e.target.value)} rows={4} placeholder="Wajib diisi — alasan ini akan tersimpan di arsip penolakan."
+            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-rose-500" />
+        </div>
+        <div className="p-4 border-t border-slate-800 flex justify-end gap-2.5">
+          <button onClick={onClose} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl cursor-pointer">Batal</button>
+          <button onClick={() => reason.trim() && onConfirm(reason.trim())} disabled={!reason.trim()} className="px-5 py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl cursor-pointer">Tidak Disetujui</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Detail per pekerjaan — Info umum, tombol lanjut tahap workflow, dan tab
+// Dokumen/Timeline/Catatan (lihat sketsa: tidak double dgn Dokumen/Timeline
+// milik kontrak lain, ini khusus pekerjaan ybs).
+function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, onOpenContract }: {
+  job: LegalJobWithLink; currentUser: any; onClose: () => void; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void;
+  onOpenContract: (contractId: string) => void;
+}) {
+  const [tab, setTab] = useState<"dokumen" | "timeline" | "catatan">("timeline");
+  const [noteText, setNoteText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const addNote = async () => {
+    if (!noteText.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/legal-jobs/${job.id}/notes`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: noteText.trim() }) });
+      if (!res.ok) notify("Gagal menambahkan catatan.");
+      else { setNoteText(""); onChanged(); }
+    } catch { notify("Gagal terhubung ke server."); }
+    finally { setBusy(false); }
+  };
+
+  const uploadDoc = async (file: File) => {
+    setBusy(true);
+    try {
+      const fd = new FormData(); fd.append("file", file);
+      const res = await fetch(`/api/legal-jobs/${job.id}/documents`, { method: "POST", body: fd });
+      if (!res.ok) { const j = await res.json(); notify(j.error || "Gagal mengunggah dokumen."); }
+      else { notify("Dokumen diunggah.", "success"); onChanged(); }
+    } catch { notify("Gagal terhubung ke server."); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm animate-fadeIn">
+      <div className="bg-slate-900 border-l border-slate-800 w-full max-w-lg h-full overflow-y-auto shadow-2xl">
+        <div className="p-5 border-b border-slate-800 flex items-start justify-between sticky top-0 bg-slate-900 z-10">
+          <div>
+            <p className="text-[10.5px] uppercase tracking-wide text-slate-500 font-bold">Detail Pekerjaan Legal</p>
+            <h3 className="font-bold text-slate-100 text-base mt-0.5">{job.title}</h3>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-200 cursor-pointer"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-5 space-y-5">
+          {/* Info umum */}
+          <div className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-[12.5px]">
+            <InfoField label="Jenis" value={job.docType} />
+            <InfoField label="Partner" value={job.partnerName} />
+            <InfoField label="PIC Pemberi" value={job.picName} />
+            <InfoField label="Deadline" value={fmtDateID(job.deadline)} />
+            <InfoField label="Status" value={job.linkedContract
+              ? <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${CONTRACT_STATUS_BADGE_CLASS[job.linkedContract.status] || ""}`}>{CONTRACT_STATUS_LABEL_ID[job.linkedContract.status] || job.linkedContract.status}</span>
+              : <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 font-semibold">{LEGAL_STATUS_LABEL[job.status]}</span>} />
+            <InfoField label="Prioritas" value={job.priority ? <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${LEGAL_PRIORITY_STYLE[job.priority]}`}>{job.priority}</span> : "—"} />
+            <InfoField label="Sumber" value={job.source === "eksternal" ? "Formulir Eksternal" : "Input Internal"} />
+            <InfoField label="Tgl. Request" value={fmtDateID(job.createdAt)} />
+          </div>
+          {job.description && (
+            <div>
+              <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Keterangan</p>
+              <p className="text-[12.5px] text-slate-300 leading-relaxed">{job.description}</p>
+            </div>
+          )}
+
+          {/* Status di sini SELALU tampilan saja (read-only) — tidak ada
+              lagi tombol "lanjut ke tahap" manual. Kalau sudah tertaut ke
+              Kontrak, status ikut Contract.status otomatis (lihat
+              withLinkedContract di server.ts); kalau belum, statusnya cuma
+              menunggu ditautkan lewat form Buat Kontrak Eksternal. */}
+          {job.linkedContract ? (
+            <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/25 rounded-xl space-y-2.5">
+              <p className="text-[11.5px] text-indigo-300 leading-relaxed">Status pekerjaan ini <b>otomatis mengikuti</b> status Kontrak yang terhubung — tidak bisa diubah manual dari sini.</p>
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[12px] font-semibold text-slate-100 truncate">{job.linkedContract.title}</p>
+                  <p className="text-[10.5px] text-slate-500">{job.linkedContract.contractNumber}</p>
+                </div>
+                <span className={`shrink-0 text-[11px] px-2 py-0.5 rounded-full border font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[job.linkedContract.status] || ""}`}>
+                  {CONTRACT_STATUS_LABEL_ID[job.linkedContract.status] || job.linkedContract.status}
+                </span>
+              </div>
+              <button onClick={() => onOpenContract(job.linkedContract!.id)}
+                className="w-full flex items-center justify-center gap-2 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-[12.5px] font-bold rounded-xl cursor-pointer">
+                <ArrowRight className="w-3.5 h-3.5" /> Buka Kontrak
+              </button>
+            </div>
+          ) : (
+            <div className="p-3.5 bg-slate-950/60 border border-slate-800 rounded-xl">
+              <p className="text-[11.5px] text-slate-500 leading-relaxed">Status di atas belum berjalan otomatis — akan mengikuti status Kontrak begitu pekerjaan ini ditautkan lewat form <b className="text-slate-300">Buat Kontrak Eksternal</b> (dropdown "Pilih Judul Pekerjaan Legal").</p>
+            </div>
+          )}
+
+          {/* Tabs */}
+          <div className="flex border-b border-slate-800 gap-1">
+            {[
+              { id: "dokumen", label: `Dokumen (${job.documents.length})`, Icon: FolderOpen },
+              { id: "timeline", label: `Timeline (${job.timeline.length})`, Icon: History },
+              { id: "catatan", label: `Catatan (${job.notes.length})`, Icon: StickyNote },
+            ].map((t) => (
+              <button key={t.id} onClick={() => setTab(t.id as any)}
+                className={`flex items-center gap-1.5 px-3 py-2 text-[12px] font-semibold border-b-2 -mb-px cursor-pointer transition ${tab === t.id ? "border-indigo-500 text-indigo-400" : "border-transparent text-slate-500 hover:text-slate-300"}`}>
+                <t.Icon className="w-3.5 h-3.5" /> {t.label}
+              </button>
+            ))}
+          </div>
+
+          {tab === "dokumen" && (
+            <div className="space-y-2">
+              {job.documents.length === 0 && <p className="text-xs text-slate-500 text-center py-4">Belum ada dokumen.</p>}
+              {job.documents.map((d) => (
+                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-2.5 p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl hover:border-slate-700">
+                  <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12px] text-slate-200 truncate">{d.name}</p>
+                    <p className="text-[10.5px] text-slate-500">{d.uploadedBy} · {fmtDateTimeID(d.uploadedAt)}</p>
+                  </div>
+                  <Download className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                </a>
+              ))}
+              <button onClick={() => fileInputRef.current?.click()} disabled={busy}
+                className="w-full flex items-center justify-center gap-2 py-2 border-2 border-dashed border-slate-800 hover:border-indigo-500/50 rounded-xl text-[12px] text-slate-400 cursor-pointer">
+                <Upload className="w-3.5 h-3.5" /> Upload Dokumen
+              </button>
+              <input ref={fileInputRef} type="file" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadDoc(f); e.target.value = ""; }} />
+            </div>
+          )}
+
+          {tab === "timeline" && (
+            <div className="space-y-3">
+              {job.timeline.slice().reverse().map((t) => (
+                <div key={t.id} className="flex gap-3">
+                  <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 mt-1.5 shrink-0" />
+                  <div className="min-w-0 flex-1 pb-1">
+                    <p className="text-[12px] text-slate-200">{t.label}</p>
+                    {t.detail && <p className="text-[11px] text-slate-500 mt-0.5">{t.detail}</p>}
+                    <p className="text-[10.5px] text-slate-600 mt-0.5">{t.actor ? `${t.actor} · ` : ""}{fmtDateTimeID(t.at)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {tab === "catatan" && (
+            <div className="space-y-3">
+              {job.notes.length === 0 && <p className="text-xs text-slate-500 text-center py-4">Belum ada catatan.</p>}
+              {job.notes.slice().reverse().map((n) => (
+                <div key={n.id} className="p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl">
+                  <p className="text-[12px] text-slate-300 whitespace-pre-wrap">{n.text}</p>
+                  <p className="text-[10.5px] text-slate-500 mt-1">{n.authorName} · {fmtDateTimeID(n.createdAt)}</p>
+                </div>
+              ))}
+              <div className="flex gap-2">
+                <textarea value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={2} placeholder="Tulis catatan…"
+                  className="flex-1 px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500" />
+                <button onClick={addNote} disabled={busy || !noteText.trim()} className="px-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white rounded-lg cursor-pointer"><Send className="w-3.5 h-3.5" /></button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+function InfoField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-[10.5px] font-semibold text-slate-500 uppercase tracking-wide">{label}</p>
+      <div className="text-slate-200 mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+// Halaman "Dashboard Legal" — ringkasan real-time semua data Pekerjaan Legal
+// + Monitoring Kontrak (pakai data kontrak yang sudah ada), berdasar
+// /api/legal-dashboard di server.ts. Kartu "Surat-Menyurat" ditandai belum
+// tersedia apa adanya — modul itu belum ada di sistem ini, di luar cakupan
+// 2 halaman yang diminta, sehingga TIDAK ditampilkan sbg angka nol palsu.
+function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser: any; onOpenPekerjaanLegal: () => void }) {
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/legal-dashboard");
+        if (res.ok) setData(await res.json());
+      } catch { /* diam-diam gagal, tampilkan state kosong */ }
+      finally { setLoading(false); }
+    })();
+  }, []);
+
+  if (loading) return <p className="text-xs text-slate-500 text-center py-10">Memuat dashboard…</p>;
+  if (!data) return <p className="text-xs text-rose-400 text-center py-10">Gagal memuat data dashboard.</p>;
+
+  const cardStatuses = ["menunggu_persetujuan", "draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "ttd", "selesai"];
+  const maxChart = Math.max(1, ...data.chartByStatus.map((c: any) => c.count));
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-1">
+          <h2 className="text-xl font-semibold text-slate-100 tracking-tight">Dashboard Legal</h2>
+          <p className="text-[13px] text-slate-500 max-w-xl">Ringkasan kondisi semua pekerjaan legal — data real-time, klik kartu untuk melihat daftarnya.</p>
+        </div>
+      </div>
+
+      {/* Ringkasan Pekerjaan Legal */}
+      <div>
+        <h3 className="text-[12px] font-bold text-slate-500 uppercase tracking-wide mb-2">Ringkasan Pekerjaan Legal</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          {cardStatuses.map((s) => (
+            <button key={s} onClick={onOpenPekerjaanLegal}
+              className="text-left p-3 rounded-xl border bg-slate-900/60 border-slate-800 hover:border-indigo-500/40 transition cursor-pointer">
+              <p className="text-lg font-bold text-slate-100">{data.statusCounts[s] || 0}</p>
+              <p className="text-[10.5px] text-slate-500 leading-tight mt-0.5">{LEGAL_STATUS_LABEL[s]}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Surat-Menyurat */}
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2 mb-3"><Send className="w-4 h-4 text-slate-500" /> Surat-Menyurat</h3>
+          {data.suratMenyurat.available === false ? (
+            <p className="text-[12px] text-slate-500 italic py-2">Modul Surat-Menyurat belum tersedia di sistem ini.</p>
+          ) : (
+            <p className="text-[12px] text-slate-500">—</p>
+          )}
+        </div>
+
+        {/* Monitoring Kontrak */}
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2 mb-3"><FileCheck className="w-4 h-4 text-emerald-400" /> Monitoring Kontrak</h3>
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div><p className="text-lg font-bold text-emerald-400">{data.monitoringKontrak.aktif}</p><p className="text-[10px] text-slate-500">Aktif</p></div>
+            <div><p className="text-lg font-bold text-amber-400">{data.monitoringKontrak.akanBerakhir30}</p><p className="text-[10px] text-slate-500">&lt;30 hari</p></div>
+            <div><p className="text-lg font-bold text-amber-400">{data.monitoringKontrak.akanBerakhir60}</p><p className="text-[10px] text-slate-500">30–60 hari</p></div>
+            <div><p className="text-lg font-bold text-amber-400">{data.monitoringKontrak.akanBerakhir90}</p><p className="text-[10px] text-slate-500">60–90 hari</p></div>
+            <div><p className="text-lg font-bold text-rose-400">{data.monitoringKontrak.expired}</p><p className="text-[10px] text-slate-500">Expired</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Yang Perlu Ditindaklanjuti */}
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-slate-800 flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-amber-400" />
+            <h3 className="text-sm font-semibold text-slate-100">Yang Perlu Ditindaklanjuti</h3>
+          </div>
+          {data.needsFollowUp.length === 0 ? (
+            <p className="p-5 text-center text-xs text-slate-500">Tidak ada yang mendesak saat ini.</p>
+          ) : (
+            <div className="divide-y divide-slate-800/60">
+              {data.needsFollowUp.map((j: any) => (
+                <button key={j.id} onClick={onOpenPekerjaanLegal} className="w-full text-left p-3 flex items-center justify-between gap-3 hover:bg-slate-800/20 cursor-pointer">
+                  <div className="min-w-0">
+                    <p className="text-[12.5px] text-slate-200 truncate">{j.title}</p>
+                    <p className="text-[10.5px] text-slate-500">{j.partnerName} · {LEGAL_STATUS_LABEL[j.status]}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    {j.priority && <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-semibold ${LEGAL_PRIORITY_STYLE[j.priority]}`}>{j.priority}</span>}
+                    <p className="text-[10.5px] text-slate-500 mt-0.5">{fmtDateID(j.deadline)}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Aktivitas Terbaru */}
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-slate-800 flex items-center gap-2">
+            <History className="w-4 h-4 text-indigo-400" />
+            <h3 className="text-sm font-semibold text-slate-100">Aktivitas Terbaru</h3>
+          </div>
+          {data.recentActivity.length === 0 ? (
+            <p className="p-5 text-center text-xs text-slate-500">Belum ada aktivitas.</p>
+          ) : (
+            <div className="divide-y divide-slate-800/60 max-h-80 overflow-y-auto">
+              {data.recentActivity.map((a: any, i: number) => (
+                <div key={i} className="p-3">
+                  <p className="text-[12px] text-slate-300"><span className="font-semibold text-slate-100">{a.jobTitle}</span> — {a.label}</p>
+                  <p className="text-[10.5px] text-slate-500 mt-0.5">{a.actor ? `${a.actor} · ` : ""}{fmtDateTimeID(a.at)}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Deadline Minggu Ini */}
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl overflow-hidden">
+          <div className="p-4 border-b border-slate-800 flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-rose-400" />
+            <h3 className="text-sm font-semibold text-slate-100">Deadline Minggu Ini</h3>
+          </div>
+          {data.deadlineThisWeek.length === 0 ? (
+            <p className="p-5 text-center text-xs text-slate-500">Tidak ada deadline dalam 7 hari ke depan.</p>
+          ) : (
+            <table className="w-full text-[12px]">
+              <tbody>
+                {data.deadlineThisWeek.map((j: any) => (
+                  <tr key={j.id} className="border-b border-slate-800/60 last:border-0 hover:bg-slate-800/20 cursor-pointer" onClick={onOpenPekerjaanLegal}>
+                    <td className="p-3 text-slate-500 whitespace-nowrap">{fmtDateID(j.deadline)}</td>
+                    <td className="p-3 text-slate-200">{j.title}</td>
+                    <td className="p-3 text-slate-500">{j.docType}</td>
+                    <td className="p-3"><span className="text-[10.5px] px-1.5 py-0.5 rounded-full bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 font-semibold whitespace-nowrap">{LEGAL_STATUS_LABEL[j.status]}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Grafik Pekerjaan Legal */}
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4">
+          <h3 className="text-sm font-semibold text-slate-100 flex items-center gap-2 mb-4"><PieChart className="w-4 h-4 text-indigo-400" /> Grafik Pekerjaan Legal</h3>
+          <div className="flex items-end gap-2 h-40">
+            {data.chartByStatus.map((c: any) => (
+              <div key={c.status} className="flex flex-col items-center gap-1 flex-1 group">
+                <span className="text-[10px] font-bold text-slate-300">{c.count}</span>
+                <div className={`w-full rounded-t transition-all ${c.count > 0 ? "bg-indigo-500/70" : "bg-slate-800"}`} style={{ height: `${Math.max(4, (c.count / maxChart) * 110)}px` }} />
+                <span className="text-[9px] text-slate-500 text-center leading-tight">{LEGAL_STATUS_LABEL[c.status]}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // ===== THEME (dark/light) =====
   // Persisted in localStorage; falls back to the OS preference on first
@@ -2054,6 +3048,8 @@ export default function App() {
   // kepanjangan. Dipakai UI Konfigurasi > Hak Akses untuk render matriksnya.
   const MENU_ITEMS: { id: string; label: string }[] = [
     { id: "dashboard", label: "Dashboard" },
+    { id: "dashboard-legal", label: "Dashboard Legal" },
+    { id: "pekerjaan-legal", label: "Pekerjaan Legal" },
     { id: "monitoring", label: "Monitoring Kontrak" },
     { id: "kontrak-karyawan", label: "Kontrak Karyawan" },
     { id: "clauses", label: "Library Klausul & Template" },
@@ -3050,6 +4046,10 @@ export default function App() {
 
   // New Contract Form State
   const [isCreating, setIsCreating] = useState(false);
+  // Daftar Pekerjaan Legal yang boleh ditautkan ke kontrak baru (sudah
+  // disetujui, belum tertaut) — dipakai dropdown "Pilih Judul Pekerjaan
+  // Legal" di wizard Buat Kontrak Eksternal.
+  const [legalJobsForLinking, setLegalJobsForLinking] = useState<{ id: string; title: string; partnerName: string; docType: string; status: string }[]>([]);
   const [creationStep, setCreationStep] = useState(1);
   // Sembunyikan detail pihak (jabatan/alamat/no. identitas) secara default —
   // wizard tetap simpel utk kasus umum, buka hanya kalau memang dibutuhkan.
@@ -3108,6 +4108,10 @@ export default function App() {
     // dari master data vendor/customer yang disinkronkan (lihat handleSyncFromVendor).
     sharingFeeItems: [] as ContractSharingFeeItem[],
     vendorId: "" as string,
+    // Menautkan kontrak ini ke Pekerjaan Legal yang sudah disetujui (opsional)
+    // — begitu diisi, status Pekerjaan Legal itu otomatis mengikuti status
+    // kontrak ini (lihat PekerjaanLegalPage & server.ts withLinkedContract).
+    linkedLegalJobId: "" as string,
   });
 
   // Clause Library Form State
@@ -3973,6 +4977,17 @@ export default function App() {
     showToast(data.message || data.error || "Test push dikirim", res.ok ? "success" : "warning");
   };
 
+  // Muat daftar Pekerjaan Legal yang bisa ditautkan setiap kali wizard Buat
+  // Kontrak dibuka — supaya opsinya selalu terbaru (bukan basi dari saat App
+  // pertama dimuat).
+  useEffect(() => {
+    if (!isCreating) return;
+    fetch("/api/legal-jobs/available-for-contract")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setLegalJobsForLinking)
+      .catch(() => setLegalJobsForLinking([]));
+  }, [isCreating]);
+
   const handleChangePassword = async () => {
     if (pwForm.newPassword !== pwForm.confirmPassword) {
       showToast("Konfirmasi kata sandi baru tidak cocok", "warning");
@@ -4624,6 +5639,7 @@ export default function App() {
           subFolderId: "",
           sharingFeeItems: [],
           vendorId: "",
+          linkedLegalJobId: "",
         });
         fetchInitialData();
       } else {
@@ -8925,6 +9941,10 @@ export default function App() {
     if (externalToken) return <ExternalReviewPage token={externalToken} />;
     const dcsExternalToken = new URLSearchParams(window.location.search).get("dcsReviewToken");
     if (dcsExternalToken) return <DcsExternalReviewPage token={dcsExternalToken} />;
+    // Formulir eksternal "Tambah Pekerjaan Legal" — dibagikan Staff Legal via
+    // tombol "Bagikan Link Formulir" di halaman Pekerjaan Legal.
+    const legalFormToken = new URLSearchParams(window.location.search).get("legalFormToken");
+    if (legalFormToken) return <LegalExternalFormPage token={legalFormToken} />;
   }
 
   if (!currentUser) {
@@ -9453,6 +10473,36 @@ export default function App() {
               >
                 <LayoutDashboard className="w-4 h-4" />
                 Dashboard
+              </button>
+              )}
+
+              <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5">
+                Legal
+              </p>
+              {canSee("dashboard-legal") && (
+              <button
+                onClick={() => { setActiveTab("dashboard-legal"); setSelectedContract(null); }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === "dashboard-legal"
+                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
+                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                }`}
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                Dashboard Legal
+              </button>
+              )}
+              {canSee("pekerjaan-legal") && (
+              <button
+                onClick={() => { setActiveTab("pekerjaan-legal"); setSelectedContract(null); }}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  activeTab === "pekerjaan-legal"
+                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
+                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                }`}
+              >
+                <ClipboardList className="w-4 h-4" />
+                Pekerjaan Legal
               </button>
               )}
 
@@ -11356,6 +12406,20 @@ export default function App() {
                 );
               })()}
             </div>
+          )}
+
+          {/* VIEW: DASHBOARD LEGAL */}
+          {activeTab === "dashboard-legal" && (
+            <DashboardLegalPage currentUser={currentUser} onOpenPekerjaanLegal={() => setActiveTab("pekerjaan-legal")} />
+          )}
+
+          {/* VIEW: PEKERJAAN LEGAL */}
+          {activeTab === "pekerjaan-legal" && (
+            <PekerjaanLegalPage currentUser={currentUser} onOpenContract={(contractId) => {
+              const c = contracts.find((x) => x.id === contractId);
+              if (c) { setSelectedContract(c); setActiveTab("monitoring"); }
+              else showToast("Kontrak terhubung tidak ditemukan.", "warning");
+            }} />
           )}
 
           {/* VIEW: DASHBOARD */}
@@ -13866,7 +14930,11 @@ export default function App() {
                                       {inactive ? "Tidak Aktif" : "Aktif"}
                                     </span>
                                   </td>
-                                  <td className="px-4 py-3 text-slate-300">{contractStatusLabel(c.status)}</td>
+                                  <td className="px-4 py-3">
+                                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || ""}`}>
+                                      {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || c.unifiedStatus || contractStatusLabel(c.status)}
+                                    </span>
+                                  </td>
                                   <td className="px-4 py-3">
                                     {c.masterPdfUrl ? (
                                       <a
@@ -19668,6 +20736,22 @@ export default function App() {
                         placeholder="e.g. Perjanjian Kerja Waktu Tertentu HR-Staff"
                         className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
                       />
+                    </div>
+
+                    <div className="space-y-1.5 md:col-span-2">
+                      <label className="block text-xs font-semibold text-slate-300">
+                        Pilih Judul Pekerjaan Legal <span className="text-slate-500 font-normal">(opsional — status Pekerjaan Legal ini akan otomatis mengikuti status kontrak yang dibuat)</span>
+                      </label>
+                      <select
+                        value={newContractForm.linkedLegalJobId}
+                        onChange={(e) => setNewContractForm({ ...newContractForm, linkedLegalJobId: e.target.value })}
+                        className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="">— Tidak ditautkan —</option>
+                        {legalJobsForLinking.map((j) => (
+                          <option key={j.id} value={j.id}>{j.title} — {j.partnerName} ({LEGAL_STATUS_LABEL[j.status] || j.status})</option>
+                        ))}
+                      </select>
                     </div>
 
                     <div className="space-y-1.5">

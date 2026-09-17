@@ -7,7 +7,9 @@ import {
   Clause, Variable, Template, Contract, ContractVersion, ContractStatus,
   ContractApprovalStep, AuditTrail, SystemNotification, EmployeeData, VendorData, User, UserRole,
   ClauseComment, PushSubscription as PushSub, SubFolder, ContractSharingFeeItem, ContractVendorSnapshot,
-  ContractPaymentTerm, ContractObligation, ContractVendorEvaluation, BudgetEntry
+  ContractPaymentTerm, ContractObligation, ContractVendorEvaluation, BudgetEntry,
+  LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
+  LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
 } from "./src/types";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
@@ -186,6 +188,58 @@ function rawSettingsFor(db: any, tid: string): any {
 }
 function setSettingsFor(db: any, tid: string, obj: any) {
   db.settingsByTenant = { ...(db.settingsByTenant || {}), [tid]: obj };
+}
+// ----- Pekerjaan Legal: helper murni (dipakai lintas scope — beberapa route
+// legal ada di dalam startServer(), sedangkan POST /api/contracts ada di
+// scope top-level module ini, jadi helper ini SENGAJA ditaruh top-level
+// supaya kedua sisi bisa memanggilnya). -----
+function legalJobTenantList(db: any, tid: string): LegalJob[] {
+  if (!db.legalJobs) db.legalJobs = [];
+  return (db.legalJobs as LegalJob[]).filter((j) => j.tenantId === tid);
+}
+function findLegalJob(db: any, tid: string, id: string): LegalJob | undefined {
+  if (!db.legalJobs) db.legalJobs = [];
+  return (db.legalJobs as LegalJob[]).find((j) => j.id === id && j.tenantId === tid);
+}
+function pushLegalTimeline(job: LegalJob, entry: Omit<LegalJobTimelineEntry, "id" | "at">, at?: string) {
+  job.timeline.push({ id: "ljt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6), at: at || new Date().toISOString(), ...entry });
+}
+// ----- Alur status gabungan Pekerjaan Legal <-> Monitoring Kontrak -----
+// Satu fungsi murni, dipakai server-side untuk KEDUANYA (linkedContract di
+// legal-jobs API, dan unifiedStatus di /api/contracts), supaya nilainya
+// dijamin identik di kedua tabel — bukan dihitung ulang terpisah di dua
+// tempat yang bisa diam-diam melenceng.
+// Pemicu tiap tahap (lihat Revisi-Alur-Status-Pekerjaan-Legal-Monitoring-Kontrak.docx):
+//   Draft                     -> Contract.status === "Draft", belum generate link review
+//   ReviewInternalEksternal   -> externalReviewToken sudah dibuat, belum ada respons eksternal
+//   RevisiNegosiasi           -> pihak eksternal sudah isi nama+komentar+Setuju/OK (externalApprovals)
+//   Finalisasi                -> Contract.status === "OnReview" (diajukan, approval matrix berjalan)
+//   ProsesTTD                 -> Contract.status === "FullyApproved" (disetujui penuh, TTD blm diunggah)
+//   Aktif / TidakAktif / Archived / Terminated -> tetap sama seperti Contract.status (tidak diubah)
+type UnifiedLegalStatus = "Draft" | "ReviewInternalEksternal" | "RevisiNegosiasi" | "Finalisasi" | "ProsesTTD" | ContractStatus;
+function computeUnifiedLegalStatus(c: Contract): UnifiedLegalStatus {
+  if (c.status === "Draft") {
+    if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
+    if (c.externalReviewToken) return "ReviewInternalEksternal";
+    return "Draft";
+  }
+  if (c.status === "OnReview") return "Finalisasi";
+  if (c.status === "FullyApproved") return "ProsesTTD";
+  return c.status; // Aktif, TidakAktif, Archived, Terminated — lolos apa adanya
+}
+// dibaca (bukan disalin sekali ke LegalJob) — satu-satunya sumber kebenaran
+// status untuk pekerjaan yang sudah bertaut adalah Contract.status itu sendiri.
+// Ini yang membuat status di tabel Pekerjaan Legal & Monitoring Kontrak WAJIB
+// selalu sama: keduanya baca field yang persis sama, tidak pernah disinkronkan
+// manual (yang rawan lupa/telat).
+function legalJobLinkedContractInfo(db: any, job: LegalJob): { id: string; title: string; contractNumber: string; status: UnifiedLegalStatus } | null {
+  if (!job.linkedContractId) return null;
+  const c = (db.contracts as Contract[]).find((x) => x.id === job.linkedContractId);
+  if (!c) return null;
+  return { id: c.id, title: c.title, contractNumber: c.contractNumber, status: computeUnifiedLegalStatus(c) };
+}
+function withLinkedContract(db: any, job: LegalJob) {
+  return { ...job, linkedContract: legalJobLinkedContractInfo(db, job) };
 }
 // Filter koleksi ke tenant tertentu.
 function scoped<T extends { tenantId?: string }>(arr: T[], tid: string): T[] {
@@ -737,6 +791,27 @@ const uploadLampiran = multer({
   fileFilter: (req, file, cb) => {
     if (ALLOWED_LAMPIRAN_MIME.has(file.mimetype)) cb(null, true);
     else cb(new Error("Tipe berkas tidak didukung. Hanya PDF atau Word (.doc/.docx)."));
+  },
+});
+// Lampiran Pekerjaan Legal (form eksternal & upload internal) — sesuai brief:
+// PDF, DOC, DOCX, XLS/XLSX, JPG, PNG, maksimal 10MB. Instance terpisah dari
+// upload/uploadLampiran di atas supaya daftar mime masing-masing fitur tetap
+// sesempit kebutuhannya sendiri.
+const ALLOWED_LEGAL_JOB_MIME = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "image/jpeg",
+  "image/png",
+]);
+const uploadLegalDoc = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_LEGAL_JOB_MIME.has(file.mimetype)) cb(null, true);
+    else cb(new Error("Tipe berkas tidak didukung. Hanya PDF, DOC, DOCX, XLS, XLSX, JPG, atau PNG."));
   },
 });
 function uploadFileKey(originalname: string): string {
@@ -1655,7 +1730,12 @@ function findOwnedContract(db: any, req: AuthedRequest, id: string): Contract | 
 
 app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  res.json(scoped(db.contracts as Contract[], tenantOf(req)));
+  // unifiedStatus TIDAK menggantikan `status` (banyak logic lain di app masih
+  // pakai `status` asli) — cuma field tambahan utk badge tabel Monitoring
+  // Kontrak, dihitung dari fungsi yang SAMA dipakai linkedContract di
+  // legal-jobs, supaya keduanya dijamin identik.
+  const list = scoped(db.contracts as Contract[], tenantOf(req)).map((c) => ({ ...c, unifiedStatus: computeUnifiedLegalStatus(c) }));
+  res.json(list);
 });
 
 app.get("/api/contracts/generate-number", requireAuth, (req: AuthedRequest, res) => {
@@ -2264,6 +2344,25 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
   };
 
   db.contracts.push(newContract);
+
+  // Tautkan ke Pekerjaan Legal (opsional) — dropdown "Pilih Judul Pekerjaan
+  // Legal" di form ini. Begitu tertaut, status Pekerjaan Legal berhenti bisa
+  // diubah manual (lihat guard di PATCH /api/legal-jobs/:id/status) dan
+  // selalu mengikuti Contract.status ini (lihat withLinkedContract di atas).
+  const linkedLegalJobId = typeof req.body.linkedLegalJobId === "string" ? req.body.linkedLegalJobId.trim() : "";
+  if (linkedLegalJobId) {
+    const linkedJob = findLegalJob(db, tid, linkedLegalJobId);
+    if (linkedJob && !linkedJob.linkedContractId && linkedJob.status !== "menunggu_persetujuan" && linkedJob.status !== "ditolak") {
+      linkedJob.linkedContractId = newContract.id;
+      linkedJob.updatedAt = new Date().toISOString();
+      pushLegalTimeline(linkedJob, {
+        label: `Ditautkan ke Kontrak: ${newContract.title} (${newContract.contractNumber})`,
+        actor: req.user!.name,
+        detail: "Status Pekerjaan Legal ini selanjutnya mengikuti status Kontrak secara otomatis.",
+      }, linkedJob.updatedAt);
+    }
+  }
+
   pushAudit(db, req, {
     contractId: newContract.id, contractNumber: newContract.contractNumber,
     action: isUpload ? "Register Document" : "Create Contract",
@@ -5669,6 +5768,325 @@ app.post("/api/dcs-external-review/:token/approve", apiLimiter, async (req, res)
   });
   saveDB(db);
   res.json({ success: true });
+});
+
+// ===== PEKERJAAN LEGAL (Dashboard Legal & Pekerjaan Legal) =====
+// Alur: Staff Legal generate/bagikan link formulir eksternal → pihak luar
+// mengisi tanpa akun → masuk sbg status "menunggu_persetujuan" → Staff Legal
+// Setujui (pilih Prioritas) → "draft" lalu lanjut alur kerja, ATAU Tidak
+// Disetujui (wajib alasan) → "ditolak". Satu entitas LegalJob dgn field
+// `status` mencakup seluruh siklus — lihat catatan desain di src/types.ts.
+// (Helper murni legalJobTenantList/findLegalJob/pushLegalTimeline/
+// withLinkedContract dipindah ke top-level module, dekat catsFor/rawSettingsFor
+// — lihat komentar di sana perihal kenapa.)
+
+
+// ----- Authed: kelola Pekerjaan Legal -----
+
+app.get("/api/legal-jobs", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const list = legalJobTenantList(db, tenantOf(req)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  res.json(list.map((j) => withLinkedContract(db, j)));
+});
+
+// Daftar Pekerjaan Legal yang boleh ditautkan ke Kontrak baru — sudah lolos
+// approval (bukan menunggu_persetujuan/ditolak) dan belum ditautkan ke
+// kontrak lain. Dipakai dropdown "Pilih Judul Pekerjaan Legal" di form buat
+// Kontrak Eksternal.
+app.get("/api/legal-jobs/available-for-contract", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const list = legalJobTenantList(db, tenantOf(req))
+    .filter((j) => j.status !== "menunggu_persetujuan" && j.status !== "ditolak" && !j.linkedContractId)
+    .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""))
+    .map((j) => ({ id: j.id, title: j.title, partnerName: j.partnerName, docType: j.docType, status: j.status }));
+  res.json(list);
+});
+
+app.get("/api/legal-jobs/:id", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  res.json(withLinkedContract(db, job));
+});
+
+// Setujui pekerjaan masuk → tentukan prioritas → pindah ke alur kerja utama (status: draft).
+app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole("admin", "legal", "manager", "staff"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  if (job.status !== "menunggu_persetujuan") return res.status(409).json({ error: "Pekerjaan ini sudah diproses sebelumnya." });
+  const priority = String(req.body?.priority || "") as LegalJobPriority;
+  if (!["Tinggi", "Sedang", "Rendah"].includes(priority)) return res.status(400).json({ error: "Prioritas wajib dipilih (Tinggi/Sedang/Rendah)." });
+  job.status = "draft";
+  job.priority = priority;
+  job.approvedByName = req.user!.name;
+  job.approvedAt = new Date().toISOString();
+  job.updatedAt = job.approvedAt;
+  pushLegalTimeline(job, { label: `Disetujui — Prioritas ${priority}`, actor: req.user!.name, detail: "Masuk ke alur kerja utama (status: Draft)." }, job.approvedAt);
+  pushAudit(db, req, { action: "Approve Pekerjaan Legal", details: `Menyetujui "${job.title}" (${job.partnerName}), prioritas ${priority}.` });
+  saveDB(db);
+  res.json(job);
+});
+
+// Tolak pekerjaan masuk → wajib alasan → arsip penolakan (status: ditolak), TIDAK masuk alur kerja utama.
+app.patch("/api/legal-jobs/:id/reject", requireAuth, requireRole("admin", "legal", "manager", "staff"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  if (job.status !== "menunggu_persetujuan") return res.status(409).json({ error: "Pekerjaan ini sudah diproses sebelumnya." });
+  const reason = String(req.body?.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Keterangan/alasan penolakan wajib diisi." });
+  job.status = "ditolak";
+  job.rejectionReason = reason;
+  job.rejectedByName = req.user!.name;
+  job.rejectedAt = new Date().toISOString();
+  job.updatedAt = job.rejectedAt;
+  pushLegalTimeline(job, { label: "Tidak Disetujui", actor: req.user!.name, detail: reason }, job.rejectedAt);
+  pushAudit(db, req, { action: "Tolak Pekerjaan Legal", details: `Menolak "${job.title}" (${job.partnerName}). Alasan: ${reason}` });
+  saveDB(db);
+  // Notifikasi email opsional ke pengisi form — honest-degradation seperti fitur email lain (no-op kalau SMTP belum dikonfigurasi).
+  if (job.submitterEmail && isEmailConfigured()) {
+    try {
+      await sendEmail({
+        to: job.submitterEmail,
+        subject: `Permintaan Pekerjaan Legal Ditolak — ${job.title}`,
+        html: emailTemplate({
+          title: "Permintaan Pekerjaan Legal Tidak Disetujui",
+          bodyHtml: `<p>Permintaan Anda <b>"${job.title}"</b> (Partner: ${job.partnerName}) tidak disetujui oleh Tim Legal.</p><p><b>Alasan:</b> ${reason}</p>`,
+        }),
+      });
+    } catch (err) { logger.warn({ err }, "Gagal mengirim email penolakan Pekerjaan Legal"); }
+  }
+  res.json(job);
+});
+
+// Endpoint ini SENGAJA dinonaktifkan (bukan dihapus, supaya jelas kenapa kalau
+// ada yang cari) — status Pekerjaan Legal sekarang murni tampilan (read-only),
+// tidak pernah diubah manual lewat tombol "lanjut tahap" lagi. Satu-satunya
+// cara status berubah adalah mengikuti Contract.status setelah ditautkan
+// lewat form Buat Kontrak Eksternal (lihat withLinkedContract & POST
+// /api/contracts). Ini menjamin tabel Pekerjaan Legal & Monitoring Kontrak
+// tidak pernah bisa berbeda karena keduanya baca sumber yang sama.
+app.patch("/api/legal-jobs/:id/status", requireAuth, (req: AuthedRequest, res) => {
+  res.status(410).json({ error: "Status Pekerjaan Legal tidak lagi bisa diubah manual — status mengikuti Kontrak yang ditautkan secara otomatis." });
+});
+
+app.post("/api/legal-jobs/:id/notes", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ error: "Catatan tidak boleh kosong." });
+  const note: LegalJobNote = { id: "ljn-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6), text, authorName: req.user!.name, createdAt: new Date().toISOString() };
+  job.notes.push(note);
+  job.updatedAt = note.createdAt;
+  pushLegalTimeline(job, { label: "Catatan ditambahkan", actor: req.user!.name, detail: text.slice(0, 120) }, note.createdAt);
+  saveDB(db);
+  res.json(job);
+});
+
+app.post("/api/legal-jobs/:id/documents", requireAuth, uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  if (!req.file) return res.status(400).json({ error: "Berkas wajib diunggah." });
+  try {
+    const key = uploadFileKey(req.file.originalname);
+    const stored = await storeFile(req.file.buffer, key, req.file.mimetype);
+    const doc: LegalJobDocument = {
+      id: "ljd-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      name: req.file.originalname, url: stored.url, key: stored.key, mimeType: req.file.mimetype,
+      size: req.file.size, uploadedAt: new Date().toISOString(), uploadedBy: req.user!.name,
+    };
+    job.documents.push(doc);
+    job.updatedAt = doc.uploadedAt;
+    pushLegalTimeline(job, { label: `Dokumen diunggah: ${doc.name}`, actor: req.user!.name }, doc.uploadedAt);
+    saveDB(db);
+    res.json(job);
+  } catch (err: any) {
+    logger.error({ err }, "Gagal mengunggah dokumen Pekerjaan Legal");
+    res.status(500).json({ error: err?.message || "Gagal mengunggah berkas." });
+  }
+});
+
+// ----- Link formulir eksternal (Bagikan Link Formulir) -----
+
+function legalFormLinkFor(db: any, tid: string): LegalFormLink {
+  if (!db.legalFormLinks) db.legalFormLinks = [];
+  let link = (db.legalFormLinks as LegalFormLink[]).find((l) => l.tenantId === tid);
+  if (!link) {
+    link = { tenantId: tid, token: randomBytes(20).toString("hex"), active: true, createdAt: new Date().toISOString() };
+    db.legalFormLinks.push(link);
+  }
+  return link;
+}
+
+app.get("/api/legal-form-link", requireAuth, async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const link = legalFormLinkFor(db, tenantOf(req));
+  saveDB(db);
+  const url = `${shareBaseUrl(req)}/?legalFormToken=${link.token}`;
+  const qrDataUrl = await QRCode.toDataURL(url, { width: 240, margin: 1 });
+  res.json({ token: link.token, url, qrDataUrl, active: link.active });
+});
+
+// Reset/nonaktifkan link lama — token baru diterbitkan, link lama langsung tidak berlaku.
+app.post("/api/legal-form-link/regenerate", requireAuth, requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  if (!db.legalFormLinks) db.legalFormLinks = [];
+  let link = (db.legalFormLinks as LegalFormLink[]).find((l) => l.tenantId === tid);
+  const now = new Date().toISOString();
+  if (!link) { link = { tenantId: tid, token: "", active: true, createdAt: now }; db.legalFormLinks.push(link); }
+  link.token = randomBytes(20).toString("hex");
+  link.regeneratedAt = now;
+  link.active = true;
+  pushAudit(db, req, { action: "Generate Ulang Link Formulir Pekerjaan Legal", details: "Link lama langsung tidak berlaku." });
+  saveDB(db);
+  const url = `${shareBaseUrl(req)}/?legalFormToken=${link.token}`;
+  const qrDataUrl = await QRCode.toDataURL(url, { width: 240, margin: 1 });
+  res.json({ token: link.token, url, qrDataUrl, active: link.active });
+});
+
+// ----- PUBLIK (tanpa akun) — Formulir Eksternal Pekerjaan Legal -----
+// Sama pola dgn /api/external-review/:token: di-scope ketat oleh token,
+// rate-limited, dan hanya membuka data seperlunya (bukan seluruh tenant).
+
+function resolveLegalFormLink(db: any, token: string): LegalFormLink | null {
+  if (!token || !db.legalFormLinks) return null;
+  const link = (db.legalFormLinks as LegalFormLink[]).find((l) => l.token === token);
+  if (!link || !link.active) return null;
+  return link;
+}
+
+app.get("/api/legal-form/:token", apiLimiter, (req, res) => {
+  const db = loadDB();
+  const link = resolveLegalFormLink(db, req.params.token);
+  if (!link) return res.status(404).json({ error: "Link formulir tidak valid atau sudah tidak berlaku." });
+  const tenant = (db.tenants as any[]).find((t) => t.id === link.tenantId);
+  const jobs = legalJobTenantList(db, link.tenantId);
+  // Jenis Dokumen memakai SUMBER YANG SAMA dengan Kontrak Eksternal
+  // (Konfigurasi > Master Data > Jenis Dokumen) — supaya admin cukup kelola
+  // satu daftar, bukan dua daftar terpisah yang gampang tidak sinkron.
+  const md = withSettingsDefaults(rawSettingsFor(db, link.tenantId)).masterData;
+  const docTypeNames = (md?.docTypes || []).map((d: any) => (typeof d === "string" ? d : d.name)).filter(Boolean);
+  const uniq = (arr: (string | undefined)[]) => Array.from(new Set(arr.filter(Boolean))) as string[];
+  res.json({
+    tenantName: tenant?.name || "Perusahaan",
+    docTypeOptions: uniq(docTypeNames),
+    partnerSuggestions: uniq(jobs.map((j) => j.partnerName)),
+    picSuggestions: uniq([...jobs.map((j) => j.picName), "Marketing", "Account Executive", "Business Development", "Operasional"]),
+  });
+});
+
+app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("file"), async (req, res) => {
+  const db = loadDB();
+  const link = resolveLegalFormLink(db, req.params.token);
+  if (!link) return res.status(404).json({ error: "Link formulir tidak valid atau sudah tidak berlaku." });
+
+  const title = String(req.body?.title || "").trim();
+  const partnerName = String(req.body?.partnerName || "").trim();
+  const docType = String(req.body?.docType || "").trim();
+  const picName = String(req.body?.picName || "").trim();
+  const deadline = String(req.body?.deadline || "").trim();
+  const description = String(req.body?.description || "").trim();
+  const submitterName = String(req.body?.submitterName || "").trim();
+  const submitterEmail = String(req.body?.submitterEmail || "").trim();
+  const missing = [
+    !title && "Judul Pekerjaan", !partnerName && "Partner/Pihak", !docType && "Jenis Dokumen",
+    !picName && "PIC Pemberi Pekerjaan", !deadline && "Deadline",
+  ].filter(Boolean);
+  if (missing.length) return res.status(400).json({ error: `Field wajib belum diisi: ${missing.join(", ")}.` });
+
+  const now = new Date().toISOString();
+  const documents: LegalJobDocument[] = [];
+  if (req.file) {
+    try {
+      const key = uploadFileKey(req.file.originalname);
+      const stored = await storeFile(req.file.buffer, key, req.file.mimetype);
+      documents.push({
+        id: "ljd-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+        name: req.file.originalname, url: stored.url, key: stored.key, mimeType: req.file.mimetype,
+        size: req.file.size, uploadedAt: now, uploadedBy: "Eksternal (form)",
+      });
+    } catch (err) {
+      logger.error({ err }, "Gagal mengunggah lampiran formulir Pekerjaan Legal eksternal");
+      return res.status(500).json({ error: "Gagal mengunggah lampiran. Coba lagi atau kirim tanpa lampiran." });
+    }
+  }
+
+  const job: LegalJob = {
+    id: "lj-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    tenantId: link.tenantId, title, partnerName, docType, picName, deadline,
+    description: description || undefined, documents, status: "menunggu_persetujuan",
+    source: "eksternal", submitterName: submitterName || undefined, submitterEmail: submitterEmail || undefined,
+    notes: [], timeline: [{ id: "ljt-0", label: "Request Masuk (via Formulir Eksternal)", actor: submitterName || "Eksternal", at: now }],
+    createdAt: now, updatedAt: now,
+  };
+  if (!db.legalJobs) db.legalJobs = [];
+  db.legalJobs.push(job);
+  pushNotif(db, link.tenantId, {
+    title: "Pekerjaan Legal Baru Menunggu Persetujuan",
+    message: `"${title}" dari ${partnerName} (via formulir eksternal) menunggu persetujuan Staff Legal.`,
+    type: "info",
+  });
+  saveDB(db);
+  res.json({ success: true, message: "Terima kasih, permintaan Anda sudah kami terima dan akan diproses oleh tim Legal." });
+});
+
+// ----- Dashboard Legal: agregasi ringkasan real-time -----
+
+app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const jobs = legalJobTenantList(db, tid);
+  const contracts = (db.contracts as Contract[]).filter((c) => c.tenantId === tid);
+  const now = Date.now();
+
+  const statusCounts: Record<string, number> = {};
+  for (const j of jobs) statusCounts[j.status] = (statusCounts[j.status] || 0) + 1;
+
+  const dayDiff = (dateStr?: string) => (dateStr ? (new Date(dateStr).getTime() - now) / 86400000 : Infinity);
+  const monitoringKontrak = {
+    aktif: contracts.filter((c) => c.status === "Aktif").length,
+    akanBerakhir30: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) >= 0 && dayDiff(c.endDate) <= 30).length,
+    akanBerakhir60: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) > 30 && dayDiff(c.endDate) <= 60).length,
+    akanBerakhir90: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) > 60 && dayDiff(c.endDate) <= 90).length,
+    expired: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) < 0).length,
+  };
+
+  // Modul Surat-Menyurat belum dibangun di iterasi ini (di luar cakupan 2
+  // halaman yang diminta) — dikembalikan sbg "belum tersedia" apa adanya,
+  // BUKAN angka nol yang dipalsukan seolah-olah datanya nyata.
+  const suratMenyurat = { available: false };
+
+  const activeJobs = jobs.filter((j) => !["selesai", "ditolak", "arsip"].includes(j.status));
+  const needsFollowUp = activeJobs
+    .slice()
+    .sort((a, b) => dayDiff(a.deadline) - dayDiff(b.deadline))
+    .slice(0, 8)
+    .map((j) => ({ id: j.id, title: j.title, status: j.status, priority: j.priority, deadline: j.deadline, partnerName: j.partnerName }));
+
+  const deadlineThisWeek = activeJobs
+    .filter((j) => dayDiff(j.deadline) >= 0 && dayDiff(j.deadline) <= 7)
+    .sort((a, b) => dayDiff(a.deadline) - dayDiff(b.deadline))
+    .map((j) => ({ id: j.id, title: j.title, docType: j.docType, status: j.status, deadline: j.deadline }));
+
+  const recentActivity = jobs
+    .flatMap((j) => j.timeline.map((t) => ({ ...t, jobId: j.id, jobTitle: j.title })))
+    .sort((a, b) => (b.at || "").localeCompare(a.at || ""))
+    .slice(0, 12);
+
+  res.json({
+    statusCounts,
+    totalJobs: jobs.length,
+    monitoringKontrak,
+    suratMenyurat,
+    needsFollowUp,
+    deadlineThisWeek,
+    recentActivity,
+    chartByStatus: LEGAL_JOB_WORKFLOW_STATUSES.map((s) => ({ status: s, count: statusCounts[s] || 0 })),
+  });
 });
 
 // ===== WEB PUSH NOTIFICATION =====

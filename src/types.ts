@@ -274,6 +274,12 @@ export interface Contract {
   // sama seperti preambleEn.
   addendumRecitalEn?: string;
   closingParagraphEn?: string;
+  // Metode pembuatan: "smart" = disusun dari template sistem (pasal otomatis,
+  // preview dirender dari clauses+narasi); "upload" = isi kontrak berasal dari
+  // berkas yang diunggah user (preview menampilkan berkas ITU LANGSUNG,
+  // bukan hasil susun ulang lewat template sistem). Kosong/undefined =
+  // "smart" (kontrak lama sebelum field ini ada, perilaku lama tetap jalan).
+  creationMode?: "smart" | "upload";
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF
   numberSeq?: number; // Nomor urut yang dikonsumsi dari counter persisten (per jenis+tahun) — dipakai sbg baseline anti-duplikat
   docType?: string; // Jenis dokumen saat pendaftaran arsip (Perjanjian, MOU, Addendum, dll)

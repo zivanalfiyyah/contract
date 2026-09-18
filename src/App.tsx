@@ -14696,7 +14696,14 @@ export default function App() {
                   .filter((c) => (monitorScope === "all" ? true : monitorScope === "aktif" ? !isInactive(c) : isInactive(c)))
                   .filter(healthMatch)
                   .filter((c) => (monitorCategory === "Semua" ? true : c.category === monitorCategory))
-                  .filter((c) => (monitorStatus === "Semua" ? true : c.status === monitorStatus))
+                  // Filter berdasarkan unifiedStatus (status gabungan yang sama
+                  // dipakai badge kolom "Status" di tabel & di Pekerjaan Legal —
+                  // lihat CONTRACT_STATUS_LABEL_ID), BUKAN c.status mentah. Dulu
+                  // di sini pakai c.status mentah sehingga label pilihan filter
+                  // ("Disetujui Penuh"/"Sedang Ditinjau") tidak nyambung dengan
+                  // badge yang justru tampil ("Proses TTD"/"Finalisasi") untuk
+                  // baris yang sama — filter & badge kini satu sumber nilai.
+                  .filter((c) => (monitorStatus === "Semua" ? true : (c.unifiedStatus || c.status) === monitorStatus))
                   // Pencarian kini menembus ISI dokumen (pasal + teks OCR), bukan
                   // cuma judul/nomor/pihak — lihat contractSearchIndex.
                   .filter((c) => matchContract(c, monitorSearch) !== null);
@@ -14835,10 +14842,16 @@ export default function App() {
                         className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
                       >
                         <option value="Semua">Semua Status</option>
-                        {Array.from(new Set(contracts.map((c) => c.status)))
+                        {/* Opsi filter dibangun dari unifiedStatus (fallback ke
+                            c.status kalau unifiedStatus belum terisi) — value
+                            & labelnya (CONTRACT_STATUS_LABEL_ID) SAMA PERSIS
+                            dengan yang dipakai badge kolom "Status" di tabel &
+                            di Pekerjaan Legal, supaya memilih sebuah opsi di
+                            sini dijamin cocok dengan badge yang muncul. */}
+                        {Array.from(new Set<string>(contracts.map((c) => c.unifiedStatus || c.status)))
                           .sort()
                           .map((st) => (
-                            <option key={st} value={st}>{contractStatusLabel(st as ContractStatus)}</option>
+                            <option key={st} value={st}>{CONTRACT_STATUS_LABEL_ID[st] || contractStatusLabel(st as ContractStatus)}</option>
                           ))}
                       </select>
                       <select
@@ -16002,8 +16015,15 @@ export default function App() {
                             <p className="font-mono text-xs text-slate-500 mt-1">{c.contractNumber}</p>
                           </td>
                           <td className="p-4">
-                            <span className={contractStatusBadgeClass(c.status)}>
-                              {contractStatusLabel(c.status)}
+                            {/* Pakai unifiedStatus (fallback c.status) + peta
+                                CONTRACT_STATUS_LABEL_ID/BADGE_CLASS yang sama
+                                dipakai Monitoring Kontrak & Pekerjaan Legal,
+                                supaya badge di sini tidak lagi beda label
+                                dengan badge status kontrak yang sama di
+                                halaman lain (mis. "Sedang Ditinjau" di sini
+                                vs "Finalisasi" di Monitoring Kontrak). */}
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || contractStatusBadgeClass(c.status)}`}>
+                              {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
                             </span>
                             {pendingStep && (
                               <p className="text-[10px] text-slate-500 mt-1">Menunggu: {pendingStep.approverName}</p>
@@ -16370,8 +16390,13 @@ export default function App() {
                         >
                           <div className="flex items-start justify-between gap-2">
                             <p className="font-bold text-slate-200 text-sm leading-snug">{c.title}</p>
-                            <span className="text-[9px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full font-bold uppercase shrink-0">
-                              {contractStatusLabel(c.status)}
+                            {/* unifiedStatus (fallback c.status) + peta label/warna
+                                yang sama dipakai Monitoring Kontrak & Pekerjaan
+                                Legal — dulu di sini selalu abu-abu & pakai label
+                                status mentah, jadi tidak nyambung dengan badge
+                                kontrak yang sama di halaman lain. */}
+                            <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase shrink-0 border ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-800 text-slate-400"}`}>
+                              {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
                             </span>
                           </div>
                           <p className="font-mono text-[10px] text-slate-500">{c.contractNumber}</p>

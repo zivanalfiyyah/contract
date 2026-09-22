@@ -2041,6 +2041,91 @@ app.post("/api/master-contracts/upload", requireAuth, upload.single('file'), asy
 // ditaruh utuh (urut, apa adanya) jadi SATU pasal tanpa judul yang bisa
 // diedit bebas dari atas sampai bawah — lebih jujur & lebih aman drpd
 // auto-split yang gampang salah tebak.
+// Coba deteksi struktur "PASAL N" (dan potong blok tanda tangan di ujung)
+// dari teks hasil ekstraksi, supaya dokumen upload yang formatnya rapi
+// tampil TERPISAH per pasal + narasi pembuka di preview — sama seperti mode
+// "Buat dari Template" — bukan cuma satu blok teks raksasa (lihat komentar
+// extractedTextToSingleClause di atas soal alasan awal kenapa dulu SENGAJA
+// tidak mencoba memisah struktur sama sekali).
+//
+// TETAP KONSERVATIF sesuai alasan di atas: hanya dipakai kalau ditemukan
+// MINIMAL 2 baris "PASAL N" berurutan (heading pasal jelas, bukan kebetulan
+// kata "pasal" nongol sekali di tengah kalimat naratif) — kalau tidak
+// cukup yakin, fungsi ini return null dan caller jatuh balik ke
+// extractedTextToSingleClause (satu blok utuh, perilaku lama, tetap aman
+// utk format dokumen apa pun yang tidak/belum dikenali di sini).
+function extractedTextToStructuredClauses(
+  rawText: string,
+): { preamble: string; clauses: { title: string; content: string }[] } | null {
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const toHtmlParagraphs = (block: string): string => {
+    const trimmed = block.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    if (!trimmed) return "<p></p>";
+    const withBreaks = escapeHtml(trimmed).replace(/\n[ \t]*\n/g, "<br><br>").replace(/\n/g, "<br>");
+    return `<p>${withBreaks}</p>`;
+  };
+  const lines = rawText.replace(/\r\n/g, "\n").split("\n");
+  // "PASAL 1", "Pasal 1:", "PASAL I -", dst — heading pasal, opsional teks
+  // judul menyusul di baris yang sama.
+  const pasalRe = /^\s*PASAL\s+([0-9]+|[IVXLCDM]+)\b\s*[:.\-–]?\s*(.*)$/i;
+  const matches: { idx: number; inline: string }[] = [];
+  lines.forEach((line, idx) => {
+    const m = line.match(pasalRe);
+    if (m) matches.push({ idx, inline: (m[2] || "").trim() });
+  });
+  if (matches.length < 2) return null;
+
+  // Heading judul pasal biasanya baris pendek, huruf besar semua (mis.
+  // "RUANG LINGKUP KERJASAMA") — beda dari isi ayat yang berupa kalimat
+  // panjang huruf kecil (mis. "1.1 Pihak Kedua setuju untuk...").
+  const looksLikeHeading = (line: string): boolean => {
+    const t = line.trim();
+    if (!t || t.length > 90) return false;
+    const letters = t.replace(/[^A-Za-zÀ-ÿ]/g, "");
+    if (letters.length < 3) return false;
+    const upper = letters.replace(/[^A-Z]/g, "");
+    return upper.length / letters.length > 0.7;
+  };
+  // "RUANG LINGKUP KERJASAMA" -> "Ruang Lingkup Kerjasama", supaya konsisten
+  // dgn gaya judul pasal mode Template (numbering "Pasal N" sendiri sudah
+  // ditambah otomatis oleh preview, lihat numLabelId di App.tsx — TIDAK
+  // ikut ditaruh di title di sini, cukup teks judulnya saja).
+  const prettyHeading = (raw: string): string => {
+    const t = raw.trim();
+    if (!t) return t;
+    const isAllCaps = t === t.toUpperCase() && /[A-Z]/.test(t);
+    if (!isAllCaps) return t;
+    return t.toLowerCase().replace(/(^|[\s(])([a-zà-ÿ])/g, (_m, sp, c) => sp + c.toUpperCase());
+  };
+  // Blok tanda tangan ("PIHAK PERTAMA" / "PIHAK KEDUA" + placeholder ttd di
+  // bawahnya) sudah punya bagian tampilan sendiri di preview sistem (lihat
+  // blok TTD sebaris di App.tsx) — kalau ikut kebawa jadi isi pasal
+  // terakhir, jadinya dobel. Potong di titik ini kalau ketemu; sisanya
+  // dibuang dari isi pasal (berkas ASLINYA tetap utuh tersimpan, cuma versi
+  // teks-yang-diedit ini yang tidak mengulang blok ttd).
+  const sigRe = /^\s*PIHAK\s+(PERTAMA|KEDUA)\s*[:.]?\s*$/i;
+  let sigIdx = -1;
+  for (let i = matches[0].idx; i < lines.length; i++) {
+    if (sigRe.test(lines[i])) { sigIdx = i; break; }
+  }
+  const bodyEnd = sigIdx !== -1 ? sigIdx : lines.length;
+
+  const preamble = lines.slice(0, matches[0].idx).join("\n").trim();
+  const clauses = matches.map((m, i) => {
+    const end = i + 1 < matches.length ? matches[i + 1].idx : bodyEnd;
+    let contentStart = m.idx + 1;
+    let heading = m.inline;
+    if (!heading && contentStart < end && looksLikeHeading(lines[contentStart])) {
+      heading = lines[contentStart].trim();
+      contentStart += 1;
+    }
+    const content = lines.slice(contentStart, end).join("\n");
+    return { title: prettyHeading(heading), content: toHtmlParagraphs(content) };
+  });
+  return { preamble, clauses };
+}
+
 function extractedTextToSingleClause(rawText: string): { title: string; content: string }[] {
   const escapeHtml = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -2125,11 +2210,19 @@ app.post("/api/master-contracts/extract-text", requireAuth, upload.single("file"
         clauses: [],
       });
     }
-    // Tidak ada preamble/closing terpisah lagi — semua isi file (termasuk
-    // narasi pembuka & blok penutup aslinya) ikut utuh di dalam clause
-    // tunggal ini, bukan dipetakan ke customOpeningParagraph/closingStatement.
-    const clauses = extractedTextToSingleClause(cleaned);
-    res.json({ supported: true, text: cleaned, preamble: "", clauses, closing: "" });
+    // Coba dulu deteksi struktur "PASAL N" (lihat
+    // extractedTextToStructuredClauses) supaya dokumen upload yang
+    // formatnya rapi tampil terpisah per pasal + narasi pembuka di preview,
+    // sama seperti mode "Buat dari Template". Kalau tidak cukup yakin
+    // (< 2 heading pasal terdeteksi), jatuh balik ke perilaku lama: seluruh
+    // isi file ikut utuh (urut, apa adanya) jadi SATU pasal tanpa judul,
+    // tanpa preamble terpisah — supaya format dokumen yang tidak dikenali
+    // tetap aman (isi tidak pernah hilang/ketuker cuma karena tebakan
+    // struktur meleset).
+    const structured = extractedTextToStructuredClauses(cleaned);
+    const clauses = structured ? structured.clauses : extractedTextToSingleClause(cleaned);
+    const preambleOut = structured ? structured.preamble : "";
+    res.json({ supported: true, text: cleaned, preamble: preambleOut, clauses, closing: "" });
   } catch (err: any) {
     logger.error({ err }, "Gagal mengekstrak teks dari berkas upload");
     res.json({

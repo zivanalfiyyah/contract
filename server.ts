@@ -2076,16 +2076,28 @@ function extractedTextToStructuredClauses(
   });
   if (matches.length < 2) return null;
 
-  // Heading judul pasal biasanya baris pendek, huruf besar semua (mis.
-  // "RUANG LINGKUP KERJASAMA") — beda dari isi ayat yang berupa kalimat
-  // panjang huruf kecil (mis. "1.1 Pihak Kedua setuju untuk...").
+  // Heading judul pasal beda-beda gayanya antar dokumen — kadang HURUF
+  // BESAR SEMUA (mis. "RUANG LINGKUP KERJASAMA"), kadang Title Case biasa
+  // (mis. "Definisi & Penafsiran", "Kerahasiaan Informasi (Non-disclosure)")
+  // — beda dari isi ayat yang berupa kalimat panjang huruf kecil biasa
+  // (mis. "1.1 Pihak Kedua setuju untuk menyediakan..."). Diterima sbg
+  // heading kalau salah satu dari dua pola ini terpenuhi, DAN barisnya
+  // pendek & tidak diakhiri tanda baca kalimat (titik/titik dua/titik
+  // koma — ciri paragraf, bukan judul) & tidak diawali nomor ayat ("1.1 ").
   const looksLikeHeading = (line: string): boolean => {
     const t = line.trim();
     if (!t || t.length > 90) return false;
+    if (/[.:;]$/.test(t)) return false;
+    if (/^\d+[.)]/.test(t)) return false;
     const letters = t.replace(/[^A-Za-zÀ-ÿ]/g, "");
     if (letters.length < 3) return false;
     const upper = letters.replace(/[^A-Z]/g, "");
-    return upper.length / letters.length > 0.7;
+    if (upper.length / letters.length > 0.7) return true; // HURUF BESAR SEMUA
+    // Title Case: mayoritas kata (yang punya huruf) diawali huruf besar.
+    const letterWords = t.split(/\s+/).filter((w) => /[A-Za-zÀ-ÿ]/.test(w));
+    if (letterWords.length === 0 || letterWords.length > 8) return false;
+    const titleCaseWords = letterWords.filter((w) => /^[^a-zà-ÿ]*[A-ZÀ-Ý]/.test(w));
+    return titleCaseWords.length / letterWords.length >= 0.6;
   };
   // "RUANG LINGKUP KERJASAMA" -> "Ruang Lingkup Kerjasama", supaya konsisten
   // dgn gaya judul pasal mode Template (numbering "Pasal N" sendiri sudah
@@ -2104,14 +2116,56 @@ function extractedTextToStructuredClauses(
   // terakhir, jadinya dobel. Potong di titik ini kalau ketemu; sisanya
   // dibuang dari isi pasal (berkas ASLINYA tetap utuh tersimpan, cuma versi
   // teks-yang-diedit ini yang tidak mengulang blok ttd).
-  const sigRe = /^\s*PIHAK\s+(PERTAMA|KEDUA)\s*[:.]?\s*$/i;
+  //
+  // Dua gaya baris judul TTD yang ditemukan di dokumen nyata:
+  //  - vertikal: "PIHAK PERTAMA" sendirian di satu baris, "PIHAK KEDUA" di
+  //    baris lain (dipakai contoh sebelumnya);
+  //  - sebaris/kolom: "PIHAK PERTAMA        PIHAK KEDUA" jadi SATU baris
+  //    (kolom kiri-kanan yang di-flatten oleh pdf-parse). Regex kedua HANYA
+  //    cocok kalau baris itu literally DIMULAI dgn satu label & DIAKHIRI
+  //    persis dgn label satunya (boleh ada spasi/pemisah di tengah) — jadi
+  //    kalimat narasi biasa yang kebetulan menyebut kedua label ("...
+  //    disepakati oleh Pihak Pertama dan Pihak Kedua berhak menuntut...")
+  //    TIDAK ikut kepotong, karena ada kata lain sebelum/sesudah label itu.
+  //  Dicari mulai dari heading PASAL TERAKHIR (bukan dari pasal pertama)
+  //  supaya tidak salah kepotong kalau ada pasal di tengah yang kebetulan
+  //  (jarang, tapi tetap dijaga) menyebut label ini di baris tersendiri.
+  const sigLineRe = /^\s*PIHAK\s+(PERTAMA|KEDUA)\s*[:.]?\s*$/i;
+  const sigRowRe =
+    /^\s*PIHAK\s+PERTAMA\b[\s\S]*\bPIHAK\s+KEDUA\s*[:.]?\s*$|^\s*PIHAK\s+KEDUA\b[\s\S]*\bPIHAK\s+PERTAMA\s*[:.]?\s*$/i;
   let sigIdx = -1;
-  for (let i = matches[0].idx; i < lines.length; i++) {
-    if (sigRe.test(lines[i])) { sigIdx = i; break; }
+  for (let i = matches[matches.length - 1].idx; i < lines.length; i++) {
+    if (sigLineRe.test(lines[i]) || sigRowRe.test(lines[i])) { sigIdx = i; break; }
   }
   const bodyEnd = sigIdx !== -1 ? sigIdx : lines.length;
 
-  const preamble = lines.slice(0, matches[0].idx).join("\n").trim();
+  // Baris-baris PENDEK di paling atas dokumen (sebelum PASAL pertama)
+  // biasanya kop surat asli file-nya sendiri (nama perusahaan, alamat,
+  // telepon, judul dokumen, nomor) — semua ini SUDAH ditampilkan sendiri
+  // oleh kop & judul kontrak versi SISTEM di atas area preview, jadi kalau
+  // ikut masuk ke narasi pembuka di sini, isinya dobel persis. Heuristik:
+  // baris pendek (< 70 karakter — kop/nomor/judul biasanya begitu) di awal
+  // dibuang duluan, SAMPAI ketemu baris yang cukup panjang (kalimat narasi
+  // sungguhan, mis. "Pada hari ini, ... kami yang bertandatangan..."), atau
+  // sampai maksimal 8 baris. Kalau SEMUA baris sebelum PASAL pertama pendek
+  // (dokumennya memang singkat, tidak ada kop terpisah) atau pemotongan ini
+  // akan menghabiskan preamble sampai kosong, TIDAK ADA yang dibuang sama
+  // sekali — lebih aman membiarkan dobel drpd salah buang isi asli.
+  const MAX_HEADER_LINES = 8;
+  const NARRATIVE_MIN_LEN = 70;
+  const rawPreambleLines = lines.slice(0, matches[0].idx);
+  let headerCut = 0;
+  while (
+    headerCut < rawPreambleLines.length &&
+    headerCut < MAX_HEADER_LINES &&
+    rawPreambleLines[headerCut].trim().length < NARRATIVE_MIN_LEN
+  ) {
+    headerCut++;
+  }
+  const trimmedHasContent = rawPreambleLines.slice(headerCut).some((l) => l.trim().length > 0);
+  const preamble = (trimmedHasContent ? rawPreambleLines.slice(headerCut) : rawPreambleLines)
+    .join("\n")
+    .trim();
   const clauses = matches.map((m, i) => {
     const end = i + 1 < matches.length ? matches[i + 1].idx : bodyEnd;
     let contentStart = m.idx + 1;
@@ -2179,6 +2233,15 @@ app.post("/api/master-contracts/extract-text", requireAuth, upload.single("file"
       // BUKAN cuma di-trim, karena posisinya bisa di tengah teks (antar
       // halaman), bukan cuma di ujung.
       text = text.replace(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gim, "");
+      // Footer/header "Halaman 1 dari 2" / "Page 1 of 2" dari dokumen ASLI
+      // (bukan marker pdf-parse di atas) ikut ke-extract juga karena
+      // posisinya literal di teks halaman — kalau tidak dibuang, muncul
+      // sebagai baris nyempil di tengah pasal (di batas antar halaman) atau
+      // di awal dokumen (ketuker jadi "bagian narasi pembuka"). Dibuang di
+      // sini juga, dgn alasan sama persis: bisa di tengah teks, bukan cuma
+      // di ujung.
+      text = text.replace(/^\s*Halaman\s+\d+\s+dari\s+\d+\s*$/gim, "");
+      text = text.replace(/^\s*Page\s+\d+\s+of\s+\d+\s*$/gim, "");
       pageCount = Number(result?.total) || 1;
     } else if (
       mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||

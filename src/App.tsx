@@ -5678,6 +5678,17 @@ export default function App() {
             .then((ocrData) => {
               if (ocrData.success) {
                 fetchInitialData();
+                // Kalau halaman detail kontrak ini KEBETULAN sudah kebuka
+                // (misalnya user langsung klik ke kontrak yang baru dibuat
+                // sebelum panggilan OCR di atas selesai), fetchInitialData()
+                // di atas cuma me-refresh daftar kontrak — objek
+                // selectedContract yang sedang ditampilkan di preview TIDAK
+                // ikut ter-update, jadi klausul hasil OCR tidak nongol
+                // sampai user pindah halaman & buka ulang. Sinkronkan
+                // langsung di sini kalau ID-nya cocok.
+                setSelectedContract((prev: any) =>
+                  prev && prev.id === ocrData.contract?.id ? ocrData.contract : prev
+                );
                 showToast(
                   ocrData.simulated
                     ? "Ekstraksi teks otomatis gagal & OCR otomatis juga belum berhasil membaca isi berkas — jalankan ulang OCR manual di halaman detail kontrak."

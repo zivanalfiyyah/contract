@@ -17273,6 +17273,18 @@ export default function App() {
                         // = tetap pakai kalimat baku ini seperti sebelumnya,
                         // jadi kontrak lama yang belum pernah menyentuhnya
                         // tampil identik seperti dulu.
+                        //
+                        // Mode Upload: sama seperti blok "Narasi Pembuka" di atas,
+                        // isi file (termasuk kalimat penutup pembuka aslinya, jika
+                        // ada) sudah menyatu di pasal pertama hasil ekstraksi — jadi
+                        // kalimat baku bawaan sistem ini DISEMBUNYIKAN di sini
+                        // supaya tidak dobel dengan isi file & tidak menampilkan
+                        // redaksi template yang tidak relevan buat dokumen upload.
+                        // Kalau user SENGAJA isi closingStatement manual (override
+                        // eksplisit), tetap ditampilkan — itu pilihan sadar dia.
+                        if (selectedContract.creationMode === "upload" && !selectedContract.closingStatement?.trim()) {
+                          return null;
+                        }
                         const docLang = selectedContract.documentLanguage || "id";
                         const closingIdDefault = "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
                         const closingEnDefault = "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";

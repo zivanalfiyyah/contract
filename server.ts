@@ -2056,7 +2056,7 @@ app.post("/api/master-contracts/upload", requireAuth, upload.single('file'), asy
 // utk format dokumen apa pun yang tidak/belum dikenali di sini).
 function extractedTextToStructuredClauses(
   rawText: string,
-): { preamble: string; clauses: { title: string; content: string }[] } | null {
+): { preamble: string; closing: string; clauses: { title: string; content: string }[] } | null {
   const escapeHtml = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const toHtmlParagraphs = (block: string): string => {
@@ -2163,9 +2163,39 @@ function extractedTextToStructuredClauses(
     headerCut++;
   }
   const trimmedHasContent = rawPreambleLines.slice(headerCut).some((l) => l.trim().length > 0);
-  const preamble = (trimmedHasContent ? rawPreambleLines.slice(headerCut) : rawPreambleLines)
-    .join("\n")
-    .trim();
+  const preambleLines = trimmedHasContent ? rawPreambleLines.slice(headerCut) : rawPreambleLines;
+
+  // Mode Template punya kotak TERPISAH untuk "Narasi Pembuka" vs "Kalimat
+  // Penutup Pembuka" (baku, mis. "Masing-masing pihak sepakat ... sebagai
+  // berikut:") — lihat closingStatement di App.tsx. Supaya strukturnya
+  // SAMA utk dokumen upload, kalimat transisi baku ini dipisah dari narasi
+  // pembuka di sini, bukan ikut jadi satu paragraf. Cirinya: kalimat
+  // TERAKHIR sebelum PASAL pertama, diakhiri titik dua (":"). Awal
+  // kalimatnya dicari mundur maks 4 baris sampai ketemu baris sebelumnya
+  // yang diakhiri tanda baca kalimat (. / ." / dst) — itu tandanya kalimat
+  // BARU dimulai setelahnya. Kalau tidak ketemu batas yang jelas dalam
+  // jangkauan itu, TIDAK dipisah sama sekali (tetap satu narasi pembuka
+  // utuh seperti sebelumnya) — lebih aman drpd salah potong di tengah
+  // kalimat.
+  let closing = "";
+  let openingLines = preambleLines;
+  let lastNonEmptyIdx = -1;
+  for (let i = preambleLines.length - 1; i >= 0; i--) {
+    if (preambleLines[i].trim()) { lastNonEmptyIdx = i; break; }
+  }
+  if (lastNonEmptyIdx !== -1 && preambleLines[lastNonEmptyIdx].trim().endsWith(":")) {
+    const MAX_BACK = 4;
+    let startIdx = -1;
+    for (let i = lastNonEmptyIdx - 1, back = 0; i >= 0 && back < MAX_BACK; i--, back++) {
+      if (/[."”'")]\s*$/.test(preambleLines[i])) { startIdx = i + 1; break; }
+    }
+    if (startIdx === -1 && lastNonEmptyIdx === 0) startIdx = 0;
+    if (startIdx !== -1) {
+      closing = preambleLines.slice(startIdx, lastNonEmptyIdx + 1).join("\n").trim();
+      openingLines = preambleLines.slice(0, startIdx);
+    }
+  }
+  const preamble = openingLines.join("\n").trim();
   const clauses = matches.map((m, i) => {
     const end = i + 1 < matches.length ? matches[i + 1].idx : bodyEnd;
     let contentStart = m.idx + 1;
@@ -2177,7 +2207,7 @@ function extractedTextToStructuredClauses(
     const content = lines.slice(contentStart, end).join("\n");
     return { title: prettyHeading(heading), content: toHtmlParagraphs(content) };
   });
-  return { preamble, clauses };
+  return { preamble, closing, clauses };
 }
 
 function extractedTextToSingleClause(rawText: string): { title: string; content: string }[] {
@@ -2285,7 +2315,8 @@ app.post("/api/master-contracts/extract-text", requireAuth, upload.single("file"
     const structured = extractedTextToStructuredClauses(cleaned);
     const clauses = structured ? structured.clauses : extractedTextToSingleClause(cleaned);
     const preambleOut = structured ? structured.preamble : "";
-    res.json({ supported: true, text: cleaned, preamble: preambleOut, clauses, closing: "" });
+    const closingOut = structured ? structured.closing : "";
+    res.json({ supported: true, text: cleaned, preamble: preambleOut, clauses, closing: closingOut });
   } catch (err: any) {
     logger.error({ err }, "Gagal mengekstrak teks dari berkas upload");
     res.json({

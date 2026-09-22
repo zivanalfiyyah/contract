@@ -5652,6 +5652,46 @@ export default function App() {
           linkedLegalJobId: "",
         });
         fetchInitialData();
+
+        // Mode Upload: kalau ekstraksi teks otomatis (extract-text, lihat
+        // input file di atas) gagal total sehingga kontrak lahir tanpa
+        // pasal sama sekali — biasanya karena berkasnya hasil scan/foto,
+        // bukan PDF/docx dengan teks asli — coba OCR otomatis di
+        // background sekali di sini, supaya preview tidak kosong
+        // menunggu user sadar & klik tombol "OCR -> Teks" manual sendiri
+        // (lihat handleRunOcr). Aman dipanggil begini karena endpoint OCR
+        // HANYA mengisi clauses kalau memang masih kosong (tidak pernah
+        // menimpa apa pun & tidak butuh konfirmasi timpa), jadi tidak
+        // mengganggu jalur mode "smart"/upload yang sudah punya isi.
+        if (
+          newContractForm.creationMode === "upload" &&
+          data.contract?.id &&
+          data.contract?.masterPdfUrl &&
+          (!data.contract.clauses || data.contract.clauses.length === 0)
+        ) {
+          fetch(`/api/contracts/${data.contract.id}/ocr`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userName: "Ahmad GA" }),
+          })
+            .then((r) => r.json())
+            .then((ocrData) => {
+              if (ocrData.success) {
+                fetchInitialData();
+                showToast(
+                  ocrData.simulated
+                    ? "Ekstraksi teks otomatis gagal & OCR otomatis juga belum berhasil membaca isi berkas — jalankan ulang OCR manual di halaman detail kontrak."
+                    : "Ekstraksi teks otomatis gagal (kemungkinan berkas hasil scan) — OCR otomatis berhasil membaca isinya, sudah tampil di preview.",
+                  ocrData.simulated ? "warning" : "success",
+                );
+              }
+            })
+            .catch(() => {
+              // Diam saja: berkas tetap tersimpan, user masih bisa
+              // menjalankan OCR manual sendiri kapan saja dari halaman
+              // detail kontrak seperti sebelumnya.
+            });
+        }
       } else {
         showToast(data.error || "Gagal membuat kontrak", "warning");
       }

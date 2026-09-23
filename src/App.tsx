@@ -6200,10 +6200,27 @@ export default function App() {
     const prevWidth = el.style.width;
     const prevPadding = el.style.padding;
     const prevBorder = el.style.border;
+    // BUG (poin 3 revisi user — token {{Party1Name}}/{{StartDate}}/dll
+    // muncul MENTAH di PDF hasil export, bukan tersubstitusi jadi data
+    // asli): kalau tombol "Export to PDF" dipencet SAAT "Mode Edit" masih
+    // aktif, previewRef masih menampilkan versi RAW contentEditable (token
+    // {{...}} belum disubstitusi — memang disengaja begitu supaya user bisa
+    // MENGEDIT token-nya), bukan versi "Preview" yang sudah tersubstitusi.
+    // generateContractPdf sebelumnya cuma mem-toggle isExportingPdf (buat
+    // sembunyikan tombol edit draft), TIDAK PERNAH memaksa balik ke mode
+    // Preview — jadi screenshot-nya ikut menangkap token mentah itu.
+    // Fix: paksa docEditMode false SELAMA capture (pola sama dengan
+    // isExportingPdf: disimpan lalu dikembalikan di finally), supaya PDF
+    // yang diekspor SELALU dari tampilan Preview yang sudah tersubstitusi,
+    // apa pun mode yang sedang aktif di layar user saat tombol dipencet.
+    const prevDocEditMode = docEditMode;
     try {
       setRangkapCutIndex(null);
       setIsExportingPdf(true);
-      // Let React re-render (hides draft-only edit buttons) before capture.
+      if (prevDocEditMode) setDocEditMode(false);
+      // Let React re-render (hides draft-only edit buttons, dan kalau tadi
+      // Mode Edit aktif — beralih ke tampilan Preview yang token-nya sudah
+      // tersubstitusi) sebelum capture.
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       el.style.maxHeight = "none";
@@ -6675,6 +6692,9 @@ export default function App() {
       el.style.border = prevBorder;
       setIsExportingPdf(false);
       setRangkapCutIndex(null);
+      // Kembalikan Mode Edit persis seperti semula — user yang tadi sedang
+      // mengedit draft tidak kehilangan mode kerjanya cuma gara-gara export.
+      if (prevDocEditMode) setDocEditMode(true);
     }
   };
 
@@ -9850,6 +9870,23 @@ export default function App() {
             const val = variables[key];
             if (val) {
               return <React.Fragment key={index}>{val}</React.Fragment>;
+            } else if (isExportingPdf) {
+              // BUG (poin 3 revisi user): badge "Kosong (Quick-Fix)" di bawah
+              // ini (tombol kuning interaktif, buat isi cepat variabel yang
+              // kosong SAAT diedit di layar) sebelum ini ikut ter-screenshot
+              // apa adanya ke PDF hasil "Export to PDF" — badge tombol
+              // aplikasi (cursor-pointer, hover, border) itu jelas tidak
+              // pantas muncul di dokumen resmi yang siap ditandatangani.
+              // Saat isExportingPdf true, ganti jadi placeholder polos ala
+              // mail-merge ("[Currency]") — TETAP kelihatan datanya belum
+              // lengkap (supaya tidak menyesatkan seolah dokumen sudah utuh),
+              // tapi tanpa chrome tombol/UI aplikasi yang tidak relevan di
+              // atas kertas.
+              return (
+                <span key={index} className="text-rose-500 italic">
+                  [{key}]
+                </span>
+              );
             } else {
               return (
                 <span

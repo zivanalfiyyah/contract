@@ -1932,7 +1932,7 @@ function DocToolbar() {
   };
   const Btn = ({ onClick, title, children }: { onClick: () => void; title: string; children: any }) => (
     <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
-      className="min-w-[28px] h-[28px] px-1.5 text-xs font-bold bg-slate-950 border border-slate-800 rounded hover:bg-slate-800 text-slate-200 cursor-pointer flex items-center justify-center">
+      className="min-w-[34px] h-[34px] px-2 text-sm font-bold bg-slate-950 border border-slate-800 rounded-lg hover:bg-slate-800 hover:border-slate-700 text-slate-200 cursor-pointer flex items-center justify-center transition-colors">
       {children}
     </button>
   );
@@ -2006,190 +2006,245 @@ function DocToolbar() {
     if (activeStructural.table) { activeStructural.table.remove(); activeStructural.table = null; activeStructural.cell = null; return; }
     if (activeStructural.img) { activeStructural.img.remove(); activeStructural.img = null; return; }
   };
-  // Label kecil di atas tiap kelompok tombol — supaya pemula tidak perlu
-  // menghafal/menghover satu-satu utk tahu ikon mana ngapain, cukup baca
-  // judul kelompoknya dulu (mis. "Sisipkan" = semua tombol tambah konten).
-  const GroupLabel = ({ children }: { children: any }) => (
-    <span className="text-[9px] font-bold uppercase tracking-wide text-slate-500 w-full sm:w-auto sm:mr-1">{children}</span>
+  // Judul tiap seksi — desain baru meniru pola "kartu bersekat" (label besar
+  // di atas, lalu isinya) supaya pemula bisa langsung tahu dari judulnya
+  // seksi mana yang mengatur apa, tanpa harus menghover satu-satu dulu.
+  const SectionTitle = ({ children }: { children: any }) => (
+    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-400 mb-1.5">{children}</p>
+  );
+  // Kartu tombol besar (ikon di atas, label di bawah) — dipakai khusus utk
+  // seksi "Sisipkan Dokumen", meniru tampilan kartu grid yang diminta.
+  const InsertCard = ({ onClick, title, icon, label }: { onClick: () => void; title: string; icon: any; label: string }) => (
+    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
+      className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950 hover:bg-slate-800 hover:border-slate-700 py-3 px-2 text-slate-300 cursor-pointer transition-colors">
+      {icon}
+      <span className="text-[10.5px] font-medium leading-none text-center">{label}</span>
+    </button>
+  );
+  // Sama seperti InsertCard, tapi utk aksi yg butuh <input type="file"> atau
+  // <select> tersembunyi di atasnya (dipakai spt file input Gambar/PDF yang
+  // sebelumnya juga berupa <label> — polanya dipertahankan, cuma tampilannya
+  // dibesarkan jadi kartu).
+  const InsertCardWrap = ({ title, icon, label, disabled, children }: { title: string; icon: any; label: string; disabled?: boolean; children: any }) => (
+    <label
+      onMouseDown={(e) => e.preventDefault()}
+      title={title}
+      className={`relative flex flex-col items-center justify-center gap-1.5 rounded-xl border border-slate-800 bg-slate-950 py-3 px-2 text-slate-300 transition-colors ${disabled ? "opacity-50 cursor-wait" : "hover:bg-slate-800 hover:border-slate-700 cursor-pointer"}`}
+    >
+      {icon}
+      <span className="text-[10.5px] font-medium leading-none text-center">{label}</span>
+      {children}
+    </label>
   );
   return (
-    <div className="p-2.5 border border-slate-800 rounded-xl bg-slate-900/60 mb-3 space-y-2">
+    <div className="p-3 border border-slate-800 rounded-2xl bg-slate-900/60 mb-3 space-y-3.5">
       {/* Baris bantuan singkat — cuma sekali tampil di paling atas, supaya
           pemula tahu tiap ikon punya keterangan kalau kursor diarahkan ke
           situ, tanpa harus dijelaskan ulang di tiap tombol. */}
       <p className="text-[10px] text-slate-500 flex items-center gap-1">
         <HelpCircle className="w-3 h-3 shrink-0" /> Arahkan kursor ke tiap tombol untuk melihat fungsinya.
       </p>
-      {/* Kelompok 1: Format teks dasar (mirip Word/Google Docs — Undo/Redo,
-          gaya paragraf, jenis & ukuran huruf, Bold/Italic/dst). */}
-      <div className="flex flex-wrap items-center gap-1">
-        <GroupLabel>Format:</GroupLabel>
-        <Btn onClick={() => exec("undo")} title="Undo — batalkan perubahan terakhir"><RotateCcw className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("redo")} title="Redo — ulangi perubahan yang dibatalkan"><RotateCw className="w-3.5 h-3.5" /></Btn>
-        <span className="w-px h-4 bg-slate-800 mx-0.5" />
-        <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("formatBlock", e.target.value); e.target.selectedIndex = 0; }}
-          title="Gaya teks" className="h-[28px] px-1 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer">
-          <option value="">Teks Normal</option>
-          <option value="h3">Judul</option>
-          <option value="blockquote">Kutipan</option>
-        </select>
-        <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("fontName", e.target.value); e.target.selectedIndex = 0; }}
-          title="Jenis huruf" className="h-[28px] px-1 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer">
-          <option value="">Font</option>
-          {RICH_FONT_OPTIONS.map((f) => (
-            <option key={f} value={f} style={{ fontFamily: /\s/.test(f) ? `'${f}'` : f }}>{f}</option>
-          ))}
-        </select>
-        <span className="w-px h-4 bg-slate-800 mx-0.5" />
-        <Btn onClick={() => exec("bold")} title="Tebal (Bold)"><b>B</b></Btn>
-        <Btn onClick={() => exec("italic")} title="Miring (Italic)"><i>I</i></Btn>
-        <Btn onClick={() => exec("underline")} title="Garis bawah (Underline)"><u>U</u></Btn>
-        <Btn onClick={() => exec("strikeThrough")} title="Coret (Strikethrough)"><Strikethrough className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("removeFormat")} title="Bersihkan semua format teks yang dipilih"><Eraser className="w-3.5 h-3.5" /></Btn>
+
+      {/* Seksi 1: "Text Styling" — Undo/Redo, gaya paragraf + font (dropdown
+          diperbesar), lalu Bold/Italic/Underline/dst. */}
+      <div>
+        <SectionTitle>Text Styling</SectionTitle>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Btn onClick={() => exec("undo")} title="Undo — batalkan perubahan terakhir"><RotateCcw className="w-4 h-4" /></Btn>
+          <Btn onClick={() => exec("redo")} title="Redo — ulangi perubahan yang dibatalkan"><RotateCw className="w-4 h-4" /></Btn>
+          <span className="w-px h-5 bg-slate-800 mx-1" />
+          <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("formatBlock", e.target.value); e.target.selectedIndex = 0; }}
+            title="Gaya teks" className="h-[34px] px-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 cursor-pointer min-w-[110px]">
+            <option value="">Teks Normal</option>
+            <option value="h3">Judul</option>
+            <option value="blockquote">Kutipan</option>
+          </select>
+          <select onMouseDown={(e) => e.stopPropagation()} onChange={(e) => { exec("fontName", e.target.value); e.target.selectedIndex = 0; }}
+            title="Jenis huruf" className="h-[34px] px-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 cursor-pointer min-w-[90px]">
+            <option value="">Font</option>
+            {RICH_FONT_OPTIONS.map((f) => (
+              <option key={f} value={f} style={{ fontFamily: /\s/.test(f) ? `'${f}'` : f }}>{f}</option>
+            ))}
+          </select>
+          <span className="w-px h-5 bg-slate-800 mx-1" />
+          <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg p-0.5">
+            <Btn onClick={() => exec("bold")} title="Tebal (Bold)"><b>B</b></Btn>
+            <Btn onClick={() => exec("italic")} title="Miring (Italic)"><i>I</i></Btn>
+            <Btn onClick={() => exec("underline")} title="Garis bawah (Underline)"><u>U</u></Btn>
+            <Btn onClick={() => exec("strikeThrough")} title="Coret (Strikethrough)"><Strikethrough className="w-4 h-4" /></Btn>
+          </div>
+          <Btn onClick={() => exec("removeFormat")} title="Bersihkan semua format teks yang dipilih"><Eraser className="w-4 h-4" /></Btn>
+        </div>
       </div>
-      {/* Kelompok 2: Perataan & daftar. */}
-      <div className="flex flex-wrap items-center gap-1">
-        <GroupLabel>Rata &amp; Daftar:</GroupLabel>
-        <Btn onClick={() => exec("justifyLeft")} title="Rata kiri"><AlignLeft className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("justifyCenter")} title="Rata tengah"><AlignCenter className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("justifyRight")} title="Rata kanan"><AlignRight className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("justifyFull")} title="Rata kiri-kanan (rapi di kedua sisi)"><AlignJustify className="w-3.5 h-3.5" /></Btn>
-        <span className="w-px h-4 bg-slate-800 mx-0.5" />
-        <Btn onClick={() => exec("insertUnorderedList")} title="Daftar butir (bullet list)"><List className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("insertOrderedList")} title="Daftar bernomor"><ListOrdered className="w-3.5 h-3.5" /></Btn>
-        <Btn onClick={() => exec("formatBlock", "blockquote")} title="Kutipan"><Quote className="w-3.5 h-3.5" /></Btn>
+
+      {/* Seksi 2: "Paragraph & Lists" — perataan teks + daftar/bullet. */}
+      <div>
+        <SectionTitle>Paragraph &amp; Lists</SectionTitle>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex items-center gap-1 bg-slate-950 border border-slate-800 rounded-lg p-0.5">
+            <Btn onClick={() => exec("justifyLeft")} title="Rata kiri"><AlignLeft className="w-4 h-4" /></Btn>
+            <Btn onClick={() => exec("justifyCenter")} title="Rata tengah"><AlignCenter className="w-4 h-4" /></Btn>
+            <Btn onClick={() => exec("justifyRight")} title="Rata kanan"><AlignRight className="w-4 h-4" /></Btn>
+            <Btn onClick={() => exec("justifyFull")} title="Rata kiri-kanan (rapi di kedua sisi)"><AlignJustify className="w-4 h-4" /></Btn>
+          </div>
+          <span className="w-px h-5 bg-slate-800 mx-1" />
+          <Btn onClick={() => exec("insertUnorderedList")} title="Daftar butir (bullet list)">
+            <List className="w-4 h-4" />
+          </Btn>
+          <span className="text-[10px] text-slate-500 -ml-1">Bullet</span>
+          <Btn onClick={() => exec("insertOrderedList")} title="Daftar bernomor">
+            <ListOrdered className="w-4 h-4" />
+          </Btn>
+          <span className="text-[10px] text-slate-500 -ml-1">Lists</span>
+          <Btn onClick={() => exec("formatBlock", "blockquote")} title="Kutipan"><Quote className="w-4 h-4" /></Btn>
+        </div>
       </div>
-      {/* Kelompok 3: Sisipkan konten — SEMUA tombol tambah-sesuatu dikumpulkan
-          di sini, dan yang tadinya cuma ikon (rawan membingungkan pemula:
-          "ikon ini buat apa?") sekarang diberi teks label singkat di sebelah
-          ikonnya, bukan cuma mengandalkan tooltip hover. */}
-      <div className="flex flex-wrap items-center gap-1">
-        <GroupLabel>Sisipkan:</GroupLabel>
-        <Btn onClick={() => { const url = window.prompt("Masukkan URL tautan:"); if (url) exec("createLink", url); }} title="Sisipkan tautan/link ke halaman web">
-          <Link2 className="w-3.5 h-3.5" /><span className="text-[10px] ml-1">Tautan</span>
-        </Btn>
-        <label
-          onMouseDown={(e) => e.preventDefault()}
-          title="Sisipkan gambar (JPG/PNG) — klik gambarnya lagi setelah disisipkan utk memperbesar/menggeser"
-          className="h-[28px] px-1.5 text-xs bg-slate-950 border border-slate-800 rounded hover:bg-slate-800 text-slate-200 cursor-pointer flex items-center justify-center"
-        >
-          <ImageIcon className="w-3.5 h-3.5" /><span className="text-[10px] ml-1">Gambar</span>
-          <input
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (!f) return;
-              const reader = new FileReader();
-              // Dibungkus <span contenteditable="false" style="resize:
-              // horizontal;..."> — SENGAJA cuma horizontal (bukan "both"),
-              // karena img di dalamnya width:100% + height:AUTO (proporsional
-              // ngikutin lebar, bukan dipaksa 100% tinggi wrapper) — itu yg
-              // bikin versi sebelumnya gepeng saat wrapper di-resize bebas 2
-              // arah. Drag gagang di kanan = lebar berubah, tinggi ikut
-              // otomatis, rasio selalu terjaga. Wrapper contenteditable=false
-              // jadi satu unit atomik yg bisa digeser-pindah (drag) dlm teks.
-              reader.onload = () =>
-                exec(
-                  "insertHTML",
-                  `<span contenteditable="false" data-img-wrap="1" style="display:inline-block;resize:horizontal;overflow:hidden;max-width:100%;width:280px;line-height:0;vertical-align:middle;"><img src="${String(reader.result || "")}" style="width:100%;height:auto;display:block;" /></span>&nbsp;`,
-                );
-              reader.readAsDataURL(f);
-              e.target.value = "";
-            }}
+
+      {/* Seksi 3: "Document Insertion" — SEMUA tombol tambah-sesuatu jadi
+          kartu grid besar dengan ikon + label, meniru tampilan kartu yang
+          diminta (Insert Image / Insert Link / Insert Table / dst). */}
+      <div>
+        <SectionTitle>Document Insertion</SectionTitle>
+        <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-1.5">
+          <InsertCardWrap
+            title="Sisipkan gambar (JPG/PNG) — klik gambarnya lagi setelah disisipkan utk memperbesar/menggeser"
+            icon={<ImageIcon className="w-4 h-4" />}
+            label="Insert Image"
+          >
+            <input
+              type="file"
+              accept="image/*"
+              className="absolute inset-0 opacity-0 cursor-pointer"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (!f) return;
+                const reader = new FileReader();
+                // Dibungkus <span contenteditable="false" style="resize:
+                // horizontal;..."> — SENGAJA cuma horizontal (bukan "both"),
+                // karena img di dalamnya width:100% + height:AUTO (proporsional
+                // ngikutin lebar, bukan dipaksa 100% tinggi wrapper) — itu yg
+                // bikin versi sebelumnya gepeng saat wrapper di-resize bebas 2
+                // arah. Drag gagang di kanan = lebar berubah, tinggi ikut
+                // otomatis, rasio selalu terjaga. Wrapper contenteditable=false
+                // jadi satu unit atomik yg bisa digeser-pindah (drag) dlm teks.
+                reader.onload = () =>
+                  exec(
+                    "insertHTML",
+                    `<span contenteditable="false" data-img-wrap="1" style="display:inline-block;resize:horizontal;overflow:hidden;max-width:100%;width:280px;line-height:0;vertical-align:middle;"><img src="${String(reader.result || "")}" style="width:100%;height:auto;display:block;" /></span>&nbsp;`,
+                  );
+                reader.readAsDataURL(f);
+                e.target.value = "";
+              }}
+            />
+          </InsertCardWrap>
+          <InsertCard
+            onClick={() => { const url = window.prompt("Masukkan URL tautan:"); if (url) exec("createLink", url); }}
+            title="Sisipkan tautan/link ke halaman web"
+            icon={<Link2 className="w-4 h-4" />}
+            label="Insert Link"
           />
-        </label>
-        <label
-          onMouseDown={(e) => e.preventDefault()}
-          title={pdfBusy ? "Memproses PDF…" : "Sisipkan file PDF — tiap halamannya otomatis jadi gambar, ditempel berurutan"}
-          className={`h-[28px] px-1.5 text-xs bg-slate-950 border border-slate-800 rounded text-slate-200 flex items-center justify-center ${pdfBusy ? "opacity-50 cursor-wait" : "hover:bg-slate-800 cursor-pointer"}`}
-        >
-          <FileDigit className="w-3.5 h-3.5" /><span className="text-[10px] ml-1">{pdfBusy ? "Memproses…" : "PDF"}</span>
-          <input
-            type="file"
-            accept="application/pdf,.pdf"
-            className="hidden"
+          <InsertCard
+            onClick={() =>
+              exec(
+                "insertHTML",
+                // table-layout:fixed WAJIB — supaya lebar kolom ditentukan oleh
+                // lebar sel HEADER (baris pertama) saja & konsisten ke semua
+                // baris di bawahnya. Tanpa ini, drag-resize di th tidak akan
+                // benar-benar mengubah lebar kolom (browser hitung ulang lebar
+                // dari konten terlebar di kolom itu, bukan dari style width).
+                '<table style="width:100%;border-collapse:collapse;table-layout:fixed;margin:8px 0;"><tbody>' +
+                  `<tr><th style="${TABLE_TH_STYLE}">Kolom 1</th><th style="${TABLE_TH_STYLE}">Kolom 2</th><th style="${TABLE_TH_STYLE}">Kolom 3</th></tr>` +
+                  `<tr><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td></tr>` +
+                  `<tr><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td></tr>` +
+                  "</tbody></table>",
+              )
+            }
+            title="Sisipkan tabel (3 kolom) — klik tabelnya lagi setelah disisipkan utk memperbesar/memperkecil ukurannya"
+            icon={<Table2 className="w-4 h-4" />}
+            label="Insert Table"
+          />
+          <InsertCardWrap
+            title={pdfBusy ? "Memproses PDF…" : "Sisipkan file PDF — tiap halamannya otomatis jadi gambar, ditempel berurutan"}
+            icon={<FileDigit className="w-4 h-4" />}
+            label={pdfBusy ? "Memproses…" : "Insert PDF"}
             disabled={pdfBusy}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              e.target.value = "";
-              if (!f) return;
-              void insertPdfAsImages(f);
-            }}
+          >
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              className="absolute inset-0 opacity-0 cursor-pointer disabled:cursor-wait"
+              disabled={pdfBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (!f) return;
+                void insertPdfAsImages(f);
+              }}
+            />
+          </InsertCardWrap>
+          <InsertCard
+            onClick={() => exec("insertHorizontalRule")}
+            title="Sisipkan garis pemisah horizontal"
+            icon={<MinusIcon className="w-4 h-4" />}
+            label="Insert Line"
           />
-        </label>
-        <Btn
-          onClick={() =>
-            exec(
-              "insertHTML",
-              // table-layout:fixed WAJIB — supaya lebar kolom ditentukan oleh
-              // lebar sel HEADER (baris pertama) saja & konsisten ke semua
-              // baris di bawahnya. Tanpa ini, drag-resize di th tidak akan
-              // benar-benar mengubah lebar kolom (browser hitung ulang lebar
-              // dari konten terlebar di kolom itu, bukan dari style width).
-              '<table style="width:100%;border-collapse:collapse;table-layout:fixed;margin:8px 0;"><tbody>' +
-                `<tr><th style="${TABLE_TH_STYLE}">Kolom 1</th><th style="${TABLE_TH_STYLE}">Kolom 2</th><th style="${TABLE_TH_STYLE}">Kolom 3</th></tr>` +
-                `<tr><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td></tr>` +
-                `<tr><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td></tr>` +
-                "</tbody></table>",
-            )
-          }
-          title="Sisipkan tabel (3 kolom) — klik tabelnya lagi setelah disisipkan utk memperbesar/memperkecil ukurannya"
-        >
-          <Table2 className="w-3.5 h-3.5" /><span className="text-[10px] ml-1">Tabel</span>
-        </Btn>
-        <Btn onClick={() => exec("insertHorizontalRule")} title="Sisipkan garis pemisah horizontal">
-          <MinusIcon className="w-3.5 h-3.5" /><span className="text-[10px] ml-1">Garis</span>
-        </Btn>
-        <span className="w-px h-4 bg-slate-800 mx-0.5" />
-        <select
-          onMouseDown={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            const tok = e.target.value;
-            if (tok) exec("insertText", tok);
-            e.target.selectedIndex = 0;
-          }}
-          title="Sisipkan token konfigurasi data (Pihak Pertama, tanggal, PT, dll) — otomatis terisi dari data kontrak"
-          className="h-[28px] px-1.5 text-[11px] bg-indigo-500/10 border border-indigo-500/30 rounded text-indigo-400 font-semibold cursor-pointer"
-        >
-          <option value="">+ Data Kontrak…</option>
-          {DOC_INSERT_TOKENS.map((t) => (
-            <option key={t.token} value={t.token}>{t.label}</option>
-          ))}
-        </select>
+          <InsertCardWrap
+            title="Sisipkan token konfigurasi data (Pihak Pertama, tanggal, PT, dll) — otomatis terisi dari data kontrak"
+            icon={<ChevronRight className="w-4 h-4 text-indigo-400" />}
+            label="Dynamic Field"
+          >
+            <select
+              onMouseDown={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                const tok = e.target.value;
+                if (tok) exec("insertText", tok);
+                e.target.selectedIndex = 0;
+              }}
+              className="absolute inset-0 opacity-0 cursor-pointer"
+            >
+              <option value="">+ Data Kontrak…</option>
+              {DOC_INSERT_TOKENS.map((t) => (
+                <option key={t.token} value={t.token}>{t.label}</option>
+              ))}
+            </select>
+          </InsertCardWrap>
+        </div>
       </div>
-      {/* Kelompok 4: Edit tabel — 5 tombol terpisah (+Baris/+Kolom/-Baris/
+
+      {/* Seksi 4: Edit tabel — 5 tombol terpisah (+Baris/+Kolom/-Baris/
           -Kolom/Warna) DIRAPIKAN jadi 1 dropdown "Tabel: Baris & Kolom",
           supaya toolbar tidak penuh tombol kecil bertuliskan singkatan yang
           membingungkan pemula ("-Baris" itu ngapain?). Isi dropdown ditulis
           lengkap dengan kata kerja jelas (Tambah/Hapus). */}
-      <div className="flex flex-wrap items-center gap-1">
-        <GroupLabel>Tabel:</GroupLabel>
-        <select
-          onMouseDown={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            const action = e.target.value;
-            if (action === "addRow") addTableRow();
-            else if (action === "addCol") addTableCol();
-            else if (action === "removeRow") removeTableRow();
-            else if (action === "removeCol") removeTableCol();
-            else if (action === "color") colorTableHeader();
-            e.target.selectedIndex = 0;
-          }}
-          title="Klik dulu DI DALAM tabel yang mau diubah, baru pilih aksinya di sini"
-          className="h-[28px] px-1.5 text-[11px] bg-slate-950 border border-slate-800 rounded text-slate-200 cursor-pointer"
-        >
-          <option value="">Baris &amp; Kolom…</option>
-          <option value="addRow">+ Tambah Baris</option>
-          <option value="addCol">+ Tambah Kolom</option>
-          <option value="removeRow">− Hapus Baris Ini</option>
-          <option value="removeCol">− Hapus Kolom Ini</option>
-          <option value="color">Ubah Warna Header</option>
-        </select>
-        <Btn onClick={deleteSelectedElement} title="Hapus tabel atau gambar yang terakhir Anda klik">
-          <Trash2 className="w-3.5 h-3.5 text-rose-400" /><span className="text-[10px] ml-1 text-rose-400">Hapus</span>
-        </Btn>
+      <div>
+        <SectionTitle>Table Tools</SectionTitle>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <select
+            onMouseDown={(e) => e.stopPropagation()}
+            onChange={(e) => {
+              const action = e.target.value;
+              if (action === "addRow") addTableRow();
+              else if (action === "addCol") addTableCol();
+              else if (action === "removeRow") removeTableRow();
+              else if (action === "removeCol") removeTableCol();
+              else if (action === "color") colorTableHeader();
+              e.target.selectedIndex = 0;
+            }}
+            title="Klik dulu DI DALAM tabel yang mau diubah, baru pilih aksinya di sini"
+            className="h-[34px] px-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 cursor-pointer"
+          >
+            <option value="">Baris &amp; Kolom…</option>
+            <option value="addRow">+ Tambah Baris</option>
+            <option value="addCol">+ Tambah Kolom</option>
+            <option value="removeRow">− Hapus Baris Ini</option>
+            <option value="removeCol">− Hapus Kolom Ini</option>
+            <option value="color">Ubah Warna Header</option>
+          </select>
+          <Btn onClick={deleteSelectedElement} title="Hapus tabel atau gambar yang terakhir Anda klik">
+            <Trash2 className="w-4 h-4 text-rose-400" />
+          </Btn>
+          <span className="text-[10px] text-rose-400 -ml-1">Hapus</span>
+        </div>
       </div>
     </div>
   );

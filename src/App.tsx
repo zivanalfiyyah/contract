@@ -1883,6 +1883,16 @@ function DocToolbar() {
       {children}
     </button>
   );
+  // Gaya sel resizable — SAMA POLA dengan wrapper gambar yang sudah ada di
+  // toolbar ini (resize:horizontal pada gambar) — cuma pindah ke sel tabel.
+  // Header (th): resize:horizontal SAJA (drag gagang di kanan → kolom itu
+  // melebar/menyempit; table-layout:fixed di bawah membuat lebar baris
+  // header yang menentukan lebar SELURUH kolom, jadi cukup resize di th).
+  // Sel isi (td): resize:vertical SAJA (drag gagang di bawah → baris itu
+  // jadi lebih tinggi/pendek). overflow:auto WAJIB ada, browser tidak
+  // menampilkan gagang resize kalau overflow:visible (default).
+  const TABLE_TH_STYLE = "border:1px solid #64748b;background:#86efac;padding:6px 8px;resize:horizontal;overflow:auto;min-width:40px;";
+  const TABLE_TD_STYLE = "border:1px solid #64748b;padding:6px 8px;resize:vertical;overflow:auto;min-height:20px;";
   const addTableRow = () => {
     const t = activeStructural.table;
     if (!t) return;
@@ -1891,7 +1901,7 @@ function DocToolbar() {
     const row = t.insertRow(-1);
     for (let i = 0; i < colCount; i++) {
       const cell = row.insertCell(-1);
-      cell.setAttribute("style", "border:1px solid #64748b;padding:6px 8px;");
+      cell.setAttribute("style", TABLE_TD_STYLE);
       cell.innerHTML = "&nbsp;";
     }
   };
@@ -1903,11 +1913,11 @@ function DocToolbar() {
       const cell = row.insertCell(-1) as HTMLTableCellElement;
       if (isHeaderRow && row.cells[0]?.tagName === "TH") {
         const th = document.createElement("th");
-        th.setAttribute("style", "border:1px solid #64748b;background:#86efac;padding:6px 8px;");
+        th.setAttribute("style", TABLE_TH_STYLE);
         th.innerHTML = "Kolom Baru";
         row.replaceChild(th, cell);
       } else {
-        cell.setAttribute("style", "border:1px solid #64748b;padding:6px 8px;");
+        cell.setAttribute("style", TABLE_TD_STYLE);
         cell.innerHTML = "&nbsp;";
       }
     }
@@ -2011,14 +2021,19 @@ function DocToolbar() {
         onClick={() =>
           exec(
             "insertHTML",
-            '<table style="width:100%;border-collapse:collapse;margin:8px 0;"><tbody>' +
-              '<tr><th style="border:1px solid #64748b;background:#86efac;padding:6px 8px;">Kolom 1</th><th style="border:1px solid #64748b;background:#86efac;padding:6px 8px;">Kolom 2</th><th style="border:1px solid #64748b;background:#86efac;padding:6px 8px;">Kolom 3</th></tr>' +
-              '<tr><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td></tr>' +
-              '<tr><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td><td style="border:1px solid #64748b;padding:6px 8px;">&nbsp;</td></tr>' +
+            // table-layout:fixed WAJIB — supaya lebar kolom ditentukan oleh
+            // lebar sel HEADER (baris pertama) saja & konsisten ke semua
+            // baris di bawahnya. Tanpa ini, drag-resize di th tidak akan
+            // benar-benar mengubah lebar kolom (browser hitung ulang lebar
+            // dari konten terlebar di kolom itu, bukan dari style width).
+            '<table style="width:100%;border-collapse:collapse;table-layout:fixed;margin:8px 0;"><tbody>' +
+              `<tr><th style="${TABLE_TH_STYLE}">Kolom 1</th><th style="${TABLE_TH_STYLE}">Kolom 2</th><th style="${TABLE_TH_STYLE}">Kolom 3</th></tr>` +
+              `<tr><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td></tr>` +
+              `<tr><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td><td style="${TABLE_TD_STYLE}">&nbsp;</td></tr>` +
               "</tbody></table>",
           )
         }
-        title="Sisipkan tabel (3 kolom)"
+        title="Sisipkan tabel (3 kolom) — tiap kolom/baris bisa di-resize: drag gagang di pojok kanan-bawah header utk lebar kolom, drag gagang di sel biasa utk tinggi baris"
       >
         <Table2 className="w-3.5 h-3.5" />
       </Btn>

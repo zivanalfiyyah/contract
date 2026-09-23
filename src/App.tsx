@@ -91,6 +91,9 @@ import {
   Link2,
   Table2,
   Minus as MinusIcon,
+  Rows3,
+  Columns3,
+  Palette,
   QrCode,
   X,
   Filter,
@@ -2036,8 +2039,18 @@ function DocToolbar() {
       {children}
     </label>
   );
+  // Tombol ikon + teks label sejajar (bukan dropdown) — dipakai khusus utk
+  // seksi "Table Tools". Revisi (feedback user): dropdown "Baris & Kolom…"
+  // dianggap kurang jelas krn aksinya tersembunyi di balik klik dropdown
+  // dulu; dikembalikan jadi tombol langsung yang kelihatan semua sekaligus.
+  const LabelBtn = ({ onClick, title, icon, label, danger }: { onClick: () => void; title: string; icon: any; label: string; danger?: boolean }) => (
+    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
+      className={`h-[34px] px-2.5 text-xs font-medium bg-slate-950 border border-slate-800 rounded-lg hover:bg-slate-800 hover:border-slate-700 flex items-center gap-1.5 cursor-pointer transition-colors ${danger ? "text-rose-400" : "text-slate-300"}`}>
+      {icon}<span>{label}</span>
+    </button>
+  );
   return (
-    <div className="p-3 border border-slate-800 rounded-2xl bg-slate-900/60 mb-3 space-y-3.5">
+    <div className="p-3 border border-slate-800 rounded-2xl bg-slate-900 shadow-xl mb-3 space-y-3.5">
       {/* Baris bantuan singkat — cuma sekali tampil di paling atas, supaya
           pemula tahu tiap ikon punya keterangan kalau kursor diarahkan ke
           situ, tanpa harus dijelaskan ulang di tiap tombol. */}
@@ -2211,39 +2224,20 @@ function DocToolbar() {
         </div>
       </div>
 
-      {/* Seksi 4: Edit tabel — 5 tombol terpisah (+Baris/+Kolom/-Baris/
-          -Kolom/Warna) DIRAPIKAN jadi 1 dropdown "Tabel: Baris & Kolom",
-          supaya toolbar tidak penuh tombol kecil bertuliskan singkatan yang
-          membingungkan pemula ("-Baris" itu ngapain?). Isi dropdown ditulis
-          lengkap dengan kata kerja jelas (Tambah/Hapus). */}
+      {/* Seksi 4: Edit tabel — tombol LANGSUNG (bukan dropdown), supaya semua
+          aksi kelihatan sekaligus tanpa perlu klik buka dulu. Klik dulu DI
+          DALAM tabel yang mau diubah, baru pilih tombol aksinya di sini. */}
       <div>
         <SectionTitle>Table Tools</SectionTitle>
+        <p className="text-[10px] text-slate-500 -mt-1 mb-1.5">Klik dulu di dalam tabel yang mau diubah, lalu pilih aksi di bawah ini.</p>
         <div className="flex flex-wrap items-center gap-1.5">
-          <select
-            onMouseDown={(e) => e.stopPropagation()}
-            onChange={(e) => {
-              const action = e.target.value;
-              if (action === "addRow") addTableRow();
-              else if (action === "addCol") addTableCol();
-              else if (action === "removeRow") removeTableRow();
-              else if (action === "removeCol") removeTableCol();
-              else if (action === "color") colorTableHeader();
-              e.target.selectedIndex = 0;
-            }}
-            title="Klik dulu DI DALAM tabel yang mau diubah, baru pilih aksinya di sini"
-            className="h-[34px] px-2 text-xs bg-slate-950 border border-slate-800 rounded-lg text-slate-200 cursor-pointer"
-          >
-            <option value="">Baris &amp; Kolom…</option>
-            <option value="addRow">+ Tambah Baris</option>
-            <option value="addCol">+ Tambah Kolom</option>
-            <option value="removeRow">− Hapus Baris Ini</option>
-            <option value="removeCol">− Hapus Kolom Ini</option>
-            <option value="color">Ubah Warna Header</option>
-          </select>
-          <Btn onClick={deleteSelectedElement} title="Hapus tabel atau gambar yang terakhir Anda klik">
-            <Trash2 className="w-4 h-4 text-rose-400" />
-          </Btn>
-          <span className="text-[10px] text-rose-400 -ml-1">Hapus</span>
+          <LabelBtn onClick={addTableRow} title="Tambah baris baru di bagian bawah tabel" icon={<Rows3 className="w-3.5 h-3.5" />} label="+ Baris" />
+          <LabelBtn onClick={addTableCol} title="Tambah kolom baru di tabel" icon={<Columns3 className="w-3.5 h-3.5" />} label="+ Kolom" />
+          <LabelBtn onClick={removeTableRow} title="Hapus baris tempat sel yang terakhir Anda klik" icon={<Rows3 className="w-3.5 h-3.5" />} label="− Baris" />
+          <LabelBtn onClick={removeTableCol} title="Hapus kolom tempat sel yang terakhir Anda klik" icon={<Columns3 className="w-3.5 h-3.5" />} label="− Kolom" />
+          <LabelBtn onClick={colorTableHeader} title="Ubah warna baris header tabel" icon={<Palette className="w-3.5 h-3.5" />} label="Warna Header" />
+          <span className="w-px h-5 bg-slate-800 mx-1" />
+          <LabelBtn onClick={deleteSelectedElement} title="Hapus tabel atau gambar yang terakhir Anda klik" icon={<Trash2 className="w-3.5 h-3.5" />} label="Hapus" danger />
         </div>
       </div>
     </div>
@@ -17385,7 +17379,19 @@ export default function App() {
                       </div>
                     </div>
 
-                    {docEditMode && <DocToolbar />}
+                    {/* Toolbar dibuat "melayang" (sticky) — feedback user: saat
+                        scroll dokumen ke bawah utk edit bagian tertentu,
+                        toolbar ikut ke-scroll ke luar layar dan harus scroll
+                        ke atas lagi tiap mau pakai tombol format. top-[69px]
+                        = pas di bawah header aplikasi (yang juga sticky di
+                        atasnya, lihat <header className="... sticky top-0
+                        z-40">), z-30 (di bawah header) supaya toolbar tetap
+                        kelihatan tapi tidak menimpa header. */}
+                    {docEditMode && (
+                      <div className="sticky top-[69px] z-30">
+                        <DocToolbar />
+                      </div>
+                    )}
                     {/* Standard Indonesian Style Document Formatting */}
                     <div
                       ref={previewRef}

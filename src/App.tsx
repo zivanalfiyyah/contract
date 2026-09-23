@@ -3924,6 +3924,29 @@ export default function App() {
     : status === "Terminated" ? "Diakhiri"
     : status;
 
+  // Cermin dari computeUnifiedLegalStatus di server.ts (satu-satunya sumber
+  // kebenaran ASLI ada di server, dipakai GET /api/contracts & GET
+  // /api/contracts/:id lewat field unifiedStatus). Fungsi ini HANYA fallback
+  // untuk sesaat setelah aksi (approve/sign/dll) yang responsnya belum
+  // membawa unifiedStatus terbaru dari server — supaya badge status utama di
+  // halaman detail kontrak TIDAK PERNAH tampil beda dari badge yang sama di
+  // tabel Monitoring Kontrak / Pekerjaan Legal (mis. "Disetujui Penuh" di
+  // sini padahal "Proses TTD" di tabel — itu status yang sama, cuma beda
+  // representasi: FullyApproved berarti isi kontrak sudah disetujui penuh
+  // TAPI TTD basah belum diunggah, makanya di tabel disebut "Proses TTD").
+  const computeUnifiedContractStatusClient = (c: Contract): string => {
+    if (c.status === "Draft") {
+      if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
+      if (c.externalReviewToken) return "ReviewInternalEksternal";
+      return "Draft";
+    }
+    if (c.status === "OnReview") return "Finalisasi";
+    if (c.status === "FullyApproved") return "ProsesTTD";
+    return c.status;
+  };
+  const unifiedContractStatusOf = (c: Contract): string =>
+    (c as any).unifiedStatus || computeUnifiedContractStatusClient(c);
+
   // Untuk Arsip per Folder: kontrak dianggap "sudah ditandatangani" (bucket
   // Approve) kalau sudah pernah lolos aktivasi (upload bukti TTD basah) —
   // status Aktif/TidakAktif/Archived/Terminated semuanya sudah lewat titik
@@ -16614,24 +16637,21 @@ export default function App() {
                     <span className="font-mono text-sm font-bold bg-indigo-950 text-indigo-400 px-2.5 py-0.5 rounded border border-indigo-900">
                       {selectedContract.contractNumber}
                     </span>
+                    {/* Dipakai unifiedContractStatusOf (bukan selectedContract.status
+                        mentah) supaya badge ini SELALU identik dengan badge status
+                        yang sama di tabel Monitoring Kontrak & Pekerjaan Legal —
+                        sebelumnya di sini baca status mentah ("FullyApproved" ->
+                        "Disetujui Penuh") sedangkan tabel baca unifiedStatus
+                        ("FullyApproved" -> "Proses TTD"), jadi user melihat 2
+                        label berbeda untuk kontrak yang sama. */}
                     <span
-                      className={`text-xs px-2.5 py-0.5 rounded-full font-bold uppercase ${
-                        selectedContract.status === "Aktif"
-                          ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
-                          : selectedContract.status === "TidakAktif"
-                            ? "bg-orange-500/15 text-orange-400 border border-orange-500/20"
-                            : selectedContract.status === "Archived"
-                              ? "bg-purple-500/15 text-purple-400 border border-purple-500/20"
-                              : selectedContract.status === "Terminated"
-                                ? "bg-rose-500/15 text-rose-400 border border-rose-500/20"
-                                : selectedContract.status === "OnReview"
-                                  ? "bg-indigo-500/15 text-indigo-400 border border-indigo-500/20"
-                                  : selectedContract.status === "FullyApproved"
-                                    ? "bg-teal-500/15 text-teal-400 border border-teal-500/20"
-                                    : "bg-amber-500/15 text-amber-400 border border-amber-500/20"
+                      className={`text-xs px-2.5 py-0.5 rounded-full font-bold uppercase border ${
+                        CONTRACT_STATUS_BADGE_CLASS[unifiedContractStatusOf(selectedContract)] ||
+                        "bg-amber-500/15 text-amber-400 border-amber-500/20"
                       }`}
                     >
-                      {contractStatusLabel(selectedContract.status)}
+                      {CONTRACT_STATUS_LABEL_ID[unifiedContractStatusOf(selectedContract)] ||
+                        contractStatusLabel(selectedContract.status)}
                     </span>
                   </div>
                   <h2 className="text-xl font-bold text-slate-100">

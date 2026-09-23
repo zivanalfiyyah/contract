@@ -1752,7 +1752,15 @@ app.get("/api/contracts/generate-number", requireAuth, (req: AuthedRequest, res)
 app.get("/api/contracts/:id", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
-  if (contract) res.json(contract);
+  // Sertakan unifiedStatus di sini juga (sebelumnya cuma dihitung di list
+  // GET /api/contracts) — tanpa ini, badge status di halaman detail kontrak
+  // (yang baca selectedContract.status mentah) bisa tampil beda dari badge
+  // di tabel Monitoring Kontrak/Pekerjaan Legal (yang baca unifiedStatus),
+  // contoh: detail bilang "Disetujui Penuh" (Contract.status="FullyApproved")
+  // padahal tabel sudah bilang "Proses TTD" (unifiedStatus hasil mapping
+  // yang sama). computeUnifiedLegalStatus adalah satu-satunya sumber
+  // kebenaran, jadi dipakai lagi di sini, bukan dihitung ulang terpisah.
+  if (contract) res.json({ ...contract, unifiedStatus: computeUnifiedLegalStatus(contract) });
   else res.status(404).json({ error: "Contract not found" });
 });
 

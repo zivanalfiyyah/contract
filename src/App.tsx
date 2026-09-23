@@ -6313,6 +6313,22 @@ export default function App() {
         el.querySelectorAll("[data-pdf-force-break]"),
       ).map((elm) => ((elm as HTMLElement).getBoundingClientRect().top - elTopCss) * scale);
 
+      // Rentang tinggi tiap <img> di dalam preview (kop/logo perusahaan
+      // MAUPUN foto lampiran yang disisipkan lewat toolbar gambar) — dipakai
+      // di bawah supaya potongan halaman TIDAK PERNAH jatuh di TENGAH sebuah
+      // gambar. <img> di lampiran ditempel via dangerouslySetInnerHTML
+      // (bodyHtml section, lihat attachmentSectionsBlock), jadi bukan child
+      // langsung previewRef ataupun `.group/clause` — tidak ikut kehitung di
+      // safeBreakPointsPx di atas, itu sebabnya sebelum ini foto lampiran
+      // bisa kepotong pas separuh kalau titik potong per-halaman kebetulan
+      // jatuh persis di tengah tinggi fotonya.
+      const imageZonesPx: { top: number; bottom: number }[] = Array.from(
+        el.querySelectorAll("img"),
+      ).map((img) => {
+        const r = (img as HTMLElement).getBoundingClientRect();
+        return { top: (r.top - elTopCss) * scale, bottom: (r.bottom - elTopCss) * scale };
+      });
+
       const canvas = await html2canvas(el, {
         scale,
         windowWidth,
@@ -6395,6 +6411,33 @@ export default function App() {
             // baik daripada halaman kosong sama sekali.
           }
         }
+        // Jangan sampai potongan halaman jatuh di TENGAH sebuah <img> (poin
+        // revisi: foto lampiran kepotong karena kepanjangan). Cuma berlaku
+        // untuk gambar yang MULAI di halaman ini (img.top >= awal slice) —
+        // kalau gambar sudah mulai dari halaman SEBELUMNYA dan masih lanjut
+        // ke sini, itu berarti gambarnya sendiri lebih tinggi dari satu
+        // halaman penuh dan memang tidak mungkin dihindari (dibiarkan apa
+        // adanya, lebih baik daripada halaman kosong tak berujung). Kalau
+        // gambar baru mulai di halaman ini tapi tidak cukup ruang sampai
+        // akhir halaman, potongan digeser ke PERSIS sebelum gambar itu —
+        // otomatis membuat gambar tsb pindah utuh ke halaman berikutnya.
+        for (const img of imageZonesPx) {
+          const cutY = renderedHeightPx + sliceHeightPx;
+          const imgStartsThisSlice = img.top >= renderedHeightPx - 1;
+          const cutInsideImage = cutY > img.top + 1 && cutY < img.bottom - 1;
+          if (imgStartsThisSlice && cutInsideImage) {
+            const pushedBackHeight = img.top - renderedHeightPx;
+            // Guard minimal: kalau gambar itu mulai nyaris di awal halaman
+            // (mis. halaman ini memang KHUSUS diawali gambar itu), menggeser
+            // mundur cuma bikin slice ~0px (loop tak maju) — biarkan potongan
+            // asli jalan, gambar itu sendiri yang lebih tinggi dari 1 halaman.
+            if (pushedBackHeight > pageHeightPx * 0.05) {
+              sliceHeightPx = pushedBackHeight;
+            }
+            break;
+          }
+        }
+
         // Bulatkan ke atas: pageCanvas.height (integer, dibulatkan browser)
         // TIDAK BOLEH lebih kecil dari area yang mau digambar — kalau lebih
         // kecil, sisa barisnya ketinggalan transparan (lihat fillRect di

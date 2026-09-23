@@ -2375,6 +2375,19 @@ function TableSelectionOverlay() {
     el.style.width = next + "px";
     bump((t) => t + 1);
   };
+  // Perataan tabel di dalam kolom dokumen — baru kelihatan efeknya SETELAH
+  // tabel diperkecil (selebar 100% penuh, rata kiri/tengah/kanan sama saja
+  // tidak ada ruang kosong). Dipakai supaya sisa ruang kosong akibat resize
+  // (persis yg dikeluhkan user di screenshot — tabel mengecil tapi nempel
+  // rata kiri, ruang di kanannya nganggur) bisa diarahkan sesuai mau user.
+  // margin-left/right "auto" (bukan float, beda dari align gambar di atas)
+  // karena <table> itu elemen block biasa — teknik standar utk block box
+  // yang lebarnya sudah eksplisit (bukan 100%).
+  const align = (mode: "left" | "center" | "right") => {
+    el.style.marginLeft = mode === "left" ? "0" : "auto";
+    el.style.marginRight = mode === "right" ? "0" : "auto";
+    bump((t) => t + 1);
+  };
   const OverlayBtn = ({ onClick, title, children }: { onClick: () => void; title: string; children: any }) => (
     <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
       className="w-7 h-7 flex items-center justify-center rounded hover:bg-slate-800 text-slate-200 cursor-pointer">
@@ -2387,12 +2400,15 @@ function TableSelectionOverlay() {
         style={{ position: "fixed", top: Math.max(4, rect.top - 40), left: rect.left, zIndex: 9999 }}
         className="flex items-center gap-0.5 bg-slate-900 border border-indigo-500 rounded-lg shadow-2xl px-1 py-0.5"
       >
-        <span className="text-[10px] text-slate-400 px-1.5">Ukuran tabel</span>
+        <OverlayBtn onClick={() => align("left")} title="Rata kiri"><AlignLeft className="w-3.5 h-3.5" /></OverlayBtn>
+        <OverlayBtn onClick={() => align("center")} title="Rata tengah"><AlignCenter className="w-3.5 h-3.5" /></OverlayBtn>
+        <OverlayBtn onClick={() => align("right")} title="Rata kanan"><AlignRight className="w-3.5 h-3.5" /></OverlayBtn>
         <span className="w-px h-4 bg-slate-700 mx-0.5" />
+        <span className="text-[10px] text-slate-400 px-1">Ukuran</span>
         <OverlayBtn onClick={() => resizeBy(0.85)} title="Perkecil"><span className="text-sm leading-none">−</span></OverlayBtn>
         <OverlayBtn onClick={() => resizeBy(1.15)} title="Perbesar"><span className="text-sm leading-none">+</span></OverlayBtn>
         <span className="w-px h-4 bg-slate-700 mx-0.5" />
-        <OverlayBtn onClick={() => { el.style.width = "100%"; bump((t) => t + 1); }} title="Kembalikan ke lebar penuh"><RotateCcw className="w-3.5 h-3.5" /></OverlayBtn>
+        <OverlayBtn onClick={() => { el.style.width = "100%"; el.style.marginLeft = ""; el.style.marginRight = ""; bump((t) => t + 1); }} title="Kembalikan ke lebar penuh"><RotateCcw className="w-3.5 h-3.5" /></OverlayBtn>
         <OverlayBtn onClick={() => { el.remove(); setEl(null); }} title="Hapus tabel"><Trash2 className="w-3.5 h-3.5 text-rose-400" /></OverlayBtn>
       </div>
       <div style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width, height: rect.height, border: "2px solid #6366f1", pointerEvents: "none", zIndex: 9998, boxSizing: "border-box" }} />

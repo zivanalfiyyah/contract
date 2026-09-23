@@ -13258,9 +13258,56 @@ export default function App() {
 
                       {numberFormatModule === "dcs" ? (
                         <>
-                          <p className="text-[10px] text-slate-500">
-                            Format bawaan untuk jenis dokumen <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan) yang belum punya format khusus sendiri. Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di tab <b>Jenis Dokumen (Semua Modul)</b>. Token tersedia: <code>{"{DocType} {Department} {Year} {Month} {MonthRoman} {Day} {Sequence:4}"}</code>
-                          </p>
+                          <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
+                            <p className="text-[11px] text-slate-300 font-semibold">Cara kerja penomoran (DCS)</p>
+                            <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside leading-relaxed">
+                              <li>Format bawaan untuk jenis dokumen <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan) yang belum punya format khusus sendiri.</li>
+                              <li>Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di tab <b>Jenis Dokumen (Semua Modul)</b>.</li>
+                              <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — tiap ganti tahun urutan mulai lagi dari 1.</li>
+                            </ol>
+                          </div>
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] text-slate-500">Klik untuk menyisipkan ke format di bawah:</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              {[
+                                { t: "{DocType}", l: "Jenis dokumen", d: "Kode singkat jenis dokumen, mis. SOP, IK, MEMO" },
+                                { t: "{Department}", l: "Departemen", d: "Kode departemen penyusun, mis. HED" },
+                                { t: "{Year}", l: "Tahun", d: "2026" },
+                                { t: "{Month}", l: "Bulan angka", d: "1 … 12" },
+                                { t: "{MonthRoman}", l: "Bulan Romawi", d: "I, II, III … XII" },
+                                { t: "{Day}", l: "Tanggal", d: "1 … 31" },
+                                { t: "{Sequence:4}", l: "Nomor urut", d: "0001, 0002, 0003 — dihitung per jenis dokumen per tahun. Angka 4 = jumlah digit." },
+                              ].map((tok) => (
+                                <button
+                                  key={tok.t}
+                                  type="button"
+                                  title={`${tok.t} — ${tok.d}`}
+                                  onClick={() => {
+                                    // Sisipkan dengan pemisah "/" otomatis, kalau
+                                    // tidak hasilnya menempel jadi {Year}{Year}.
+                                    const cur = dcsNumberingMaskDraft || "";
+                                    const needsSep = cur.length > 0 && !/[/.\-_]$/.test(cur);
+                                    setDcsNumberingMaskDraft(cur + (needsSep ? "/" : "") + tok.t);
+                                  }}
+                                  className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-violet-500/50 rounded-lg text-[10px] text-slate-300 cursor-pointer transition"
+                                >
+                                  + {tok.l}
+                                </button>
+                              ))}
+                            </div>
+                            {/* Penjelasan tiap token ditampilkan langsung di sini (tidak
+                                hanya lewat hover/title) supaya terlihat tanpa perlu
+                                mengarahkan kursor satu-satu ke tiap chip. */}
+                            <ul className="text-[10px] text-slate-500 space-y-0.5 list-disc list-inside leading-relaxed">
+                              <li><code className="text-slate-400">{"{DocType}"}</code> — Kode singkat jenis dokumen, mis. SOP, IK, MEMO</li>
+                              <li><code className="text-slate-400">{"{Department}"}</code> — Kode departemen penyusun, mis. HED</li>
+                              <li><code className="text-slate-400">{"{Year}"}</code> — Tahun, mis. 2026</li>
+                              <li><code className="text-slate-400">{"{Month}"}</code> — Bulan angka, 1 … 12</li>
+                              <li><code className="text-slate-400">{"{MonthRoman}"}</code> — Bulan angka Romawi, I … XII</li>
+                              <li><code className="text-slate-400">{"{Day}"}</code> — Tanggal, 1 … 31</li>
+                              <li><code className="text-slate-400">{"{Sequence:4}"}</code> — Nomor urut per jenis dokumen per tahun. Angka menentukan jumlah digit, mis. {"{Sequence:4}"} → 0001</li>
+                            </ul>
+                          </div>
                           <div className="flex items-center gap-2">
                             <input
                               type="text"
@@ -13277,9 +13324,14 @@ export default function App() {
                               Simpan
                             </button>
                           </div>
-                          <span className="block text-[10px] font-mono text-slate-600">
-                            Preview: {previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })}
-                          </span>
+                          {/* Preview diperbesar (sebelumnya text-[10px] abu-abu gelap,
+                              nyaris tak terlihat) supaya jelas terbaca. */}
+                          <div className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg">
+                            <p className="text-[10px] text-slate-500 mb-0.5">Preview</p>
+                            <p className="text-sm font-mono font-semibold text-emerald-300 break-all">
+                              {previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })}
+                            </p>
+                          </div>
                         </>
                       ) : (
                         <>
@@ -13324,7 +13376,21 @@ export default function App() {
                                 </button>
                               ))}
                             </div>
-                            <p className="text-[10px] text-slate-600">Arahkan kursor ke chip untuk melihat artinya. Segmen yang kosong (mis. kode tambahan tak diisi) otomatis dirapikan agar tidak ada garis miring dobel.</p>
+                            {/* Penjelasan tiap token ditampilkan langsung di sini (tidak
+                                hanya lewat hover/title) supaya terlihat tanpa perlu
+                                mengarahkan kursor satu-satu ke tiap chip. */}
+                            <ul className="text-[10px] text-slate-500 space-y-0.5 list-disc list-inside leading-relaxed">
+                              <li><code className="text-slate-400">{"{Sequence:3}"}</code> — Nomor urut, 001/002/003 — dihitung per jenis dokumen per tahun. Angka menentukan jumlah digit.</li>
+                              <li><code className="text-slate-400">{"{DocTypeCode}"}</code> — Kode singkat jenis dokumen, mis. PKS</li>
+                              <li><code className="text-slate-400">{"{Codes}"}</code> — Kode tambahan jenis dokumen bila diisi, mis. TBK</li>
+                              <li><code className="text-slate-400">{"{MonthRoman}"}</code> — Bulan dalam angka Romawi, I … XII</li>
+                              <li><code className="text-slate-400">{"{Year}"}</code> — Tahun, mis. 2026</li>
+                              <li><code className="text-slate-400">{"{Prefix}"}</code> — Prefix kategori, atau Prefix Default di bawah bila kategori tak punya prefix sendiri</li>
+                              <li><code className="text-slate-400">{"{Category}"}</code> — Nama kategori, mis. Vendor</li>
+                              <li><code className="text-slate-400">{"{DocType}"}</code> — Nama lengkap jenis dokumen</li>
+                              <li><code className="text-slate-400">{"{Month}"}</code> — Bulan angka, 1 … 12</li>
+                              <li><code className="text-slate-400">{"{Day}"}</code> — Tanggal, 1 … 31 (token sama juga tersedia di format nomor Dokumen Internal/DCS)</li>
+                            </ul>
                           </div>
                           <div>
                             <label className="block text-[10px] text-slate-500 mb-1">Prefix Default (dipakai token {"{Prefix}"} kalau kategori tak punya prefix sendiri)</label>
@@ -13341,9 +13407,14 @@ export default function App() {
                             onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: e.target.value } })}
                             className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
                           />
-                          <span className="block text-[10px] font-mono text-slate-600">
-                            Preview: {previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) })}
-                          </span>
+                          {/* Preview diperbesar (sebelumnya text-[10px] abu-abu gelap,
+                              nyaris tak terlihat) supaya jelas terbaca. */}
+                          <div className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg">
+                            <p className="text-[10px] text-slate-500 mb-0.5">Preview</p>
+                            <p className="text-sm font-mono font-semibold text-emerald-300 break-all">
+                              {previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) })}
+                            </p>
+                          </div>
                           <button
                             onClick={handleSaveSettings}
                             className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer"

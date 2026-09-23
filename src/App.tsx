@@ -1877,6 +1877,59 @@ function DocToolbar() {
     try { document.execCommand("styleWithCSS", false, "true"); } catch { /* noop */ }
     document.execCommand(cmd, false, arg);
   };
+  // Sisipkan PDF sebagai gambar — poin revisi "import PDF di Lampiran".
+  // Mengikuti konvensi industri utk lampiran (bukti/dokumen pendukung):
+  // ditempel sebagai gambar per-halaman (bisa dilihat langsung + ikut
+  // ke-export saat "Export to PDF", persis seperti foto JPG yang sudah
+  // bisa disisipkan sejak awal), BUKAN diekstrak jadi teks — beda dari
+  // fitur "Upload Dokumen" utama yang memang mengekstrak isi jadi pasal.
+  // pdfjs-dist di-import DINAMIS (bukan di top-level file) supaya library
+  // ini (lumayan besar) cuma dimuat SAAT tombol ini dipakai, tidak
+  // menambah beban awal aplikasi & tidak berisiko ke fitur lain kalau
+  // gagal dimuat (kegagalannya kekurung di dalam fungsi ini saja).
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const insertPdfAsImages = async (file: File) => {
+    setPdfBusy(true);
+    try {
+      const pdfjsLib = await import("pdfjs-dist");
+      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+        "pdfjs-dist/build/pdf.worker.mjs",
+        import.meta.url,
+      ).toString();
+      const buf = await file.arrayBuffer();
+      const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
+      let html = "";
+      for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i);
+        // scale 2 = cukup tajam utk dibaca & dicetak ulang lewat "Export to
+        // PDF" (yang sendiri men-screenshot preview di scale hingga 2x —
+        // lihat generateContractPdf), tanpa bikin ukuran dokumen membengkak.
+        const viewport = page.getViewport({ scale: 2 });
+        const canvas = document.createElement("canvas");
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+        // JPEG (bukan PNG) — halaman PDF hasil scan biasanya berupa foto
+        // penuh (bukan garis/teks tajam), jauh lebih kecil ukurannya sbg
+        // JPEG tanpa kehilangan kualitas yang kentara.
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        // display:block (bukan inline-block ala wrapper gambar JPG biasa)
+        // supaya tiap halaman PDF turun ke barisnya sendiri-sendiri secara
+        // berurutan, bukan berjejer menyamping. width:100% otomatis
+        // menyesuaikan lebar kolom dokumen (sama seperti foto lampiran
+        // biasa), height:auto menjaga rasio asli halaman PDF-nya.
+        html += `<span contenteditable="false" data-img-wrap="1" style="display:block;width:100%;line-height:0;margin:4px 0;"><img src="${dataUrl}" style="width:100%;height:auto;display:block;" /></span>`;
+      }
+      exec("insertHTML", html);
+    } catch (err) {
+      console.error("Gagal memproses PDF:", err);
+      window.alert("Gagal membaca file PDF ini. Pastikan filenya tidak rusak/terkunci password, lalu coba lagi.");
+    } finally {
+      setPdfBusy(false);
+    }
+  };
   const Btn = ({ onClick, title, children }: { onClick: () => void; title: string; children: any }) => (
     <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
       className="min-w-[28px] h-[28px] px-1.5 text-xs font-bold bg-slate-950 border border-slate-800 rounded hover:bg-slate-800 text-slate-200 cursor-pointer flex items-center justify-center">
@@ -2014,6 +2067,25 @@ function DocToolbar() {
               );
             reader.readAsDataURL(f);
             e.target.value = "";
+          }}
+        />
+      </label>
+      <label
+        onMouseDown={(e) => e.preventDefault()}
+        title={pdfBusy ? "Memproses PDF…" : "Sisipkan PDF (tiap halaman jadi gambar, berurutan)"}
+        className={`min-w-[28px] h-[28px] px-1.5 text-xs bg-slate-950 border border-slate-800 rounded text-slate-200 flex items-center justify-center ${pdfBusy ? "opacity-50 cursor-wait" : "hover:bg-slate-800 cursor-pointer"}`}
+      >
+        <FileDigit className="w-3.5 h-3.5" />
+        <input
+          type="file"
+          accept="application/pdf,.pdf"
+          className="hidden"
+          disabled={pdfBusy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (!f) return;
+            void insertPdfAsImages(f);
           }}
         />
       </label>

@@ -1936,16 +1936,19 @@ function DocToolbar() {
       {children}
     </button>
   );
-  // Gaya sel resizable — SAMA POLA dengan wrapper gambar yang sudah ada di
-  // toolbar ini (resize:horizontal pada gambar) — cuma pindah ke sel tabel.
-  // Header (th): resize:horizontal SAJA (drag gagang di kanan → kolom itu
-  // melebar/menyempit; table-layout:fixed di bawah membuat lebar baris
-  // header yang menentukan lebar SELURUH kolom, jadi cukup resize di th).
-  // Sel isi (td): resize:vertical SAJA (drag gagang di bawah → baris itu
-  // jadi lebih tinggi/pendek). overflow:auto WAJIB ada, browser tidak
-  // menampilkan gagang resize kalau overflow:visible (default).
-  const TABLE_TH_STYLE = "border:1px solid #64748b;background:#86efac;padding:6px 8px;resize:horizontal;overflow:auto;min-width:40px;";
-  const TABLE_TD_STYLE = "border:1px solid #64748b;padding:6px 8px;resize:vertical;overflow:auto;min-height:20px;";
+  // Revisi (feedback user setelah dicoba): versi SEBELUMNYA pakai CSS
+  // `resize` bawaan browser di TIAP sel (th/td) — ternyata gagang resize
+  // kecil di pojok tiap sel malah NEMPEL/NUTUPIN teks isi sel (apalagi sel
+  // sempit, padding cuma 6px), bikin "teks nya tidak terbaca". Diganti total
+  // dengan gagang resize TUNGGAL di pojok TABEL (bukan per-sel) — pola PERSIS
+  // sama dgn resize gambar yang sudah ada & terbukti nyaman (lihat
+  // ImageSelectionOverlay: klik objek → muncul gagang mengambang, drag utk
+  // resize) — sekarang dipakai lagi utk tabel lewat TableSelectionOverlay di
+  // bawah. th/td jadi POLOS lagi (tanpa resize/overflow), teks selalu penuh
+  // terbaca; ukuran keseluruhan tabel yang dibesar/kecilkan, kolom ikut
+  // menyesuaikan proporsional (table-layout:fixed).
+  const TABLE_TH_STYLE = "border:1px solid #64748b;background:#86efac;padding:6px 8px;";
+  const TABLE_TD_STYLE = "border:1px solid #64748b;padding:6px 8px;";
   const addTableRow = () => {
     const t = activeStructural.table;
     if (!t) return;
@@ -2105,7 +2108,7 @@ function DocToolbar() {
               "</tbody></table>",
           )
         }
-        title="Sisipkan tabel (3 kolom) — tiap kolom/baris bisa di-resize: drag gagang di pojok kanan-bawah header utk lebar kolom, drag gagang di sel biasa utk tinggi baris"
+        title="Sisipkan tabel (3 kolom) — klik tabelnya lagi setelah disisipkan utk memperbesar/memperkecil ukurannya"
       >
         <Table2 className="w-3.5 h-3.5" />
       </Btn>
@@ -2195,6 +2198,11 @@ function InlineRich({ html, onSave, className, placeholder }: { html: string; on
         // Kontrol mengambang ala Canva (lihat ImageSelectionOverlay) — muncul
         // nempel di gambar yang baru diklik, ilang kalau klik bagian lain.
         window.dispatchEvent(new CustomEvent("docimg:select", { detail: imgUnit }));
+        // Sama utk tabel (lihat TableSelectionOverlay) — TAPI cuma dipasang
+        // kalau yang diklik BUKAN gambar, supaya klik gambar di dalam sel
+        // tabel (jarang, tapi mungkin) tetap memunculkan overlay gambar,
+        // bukan overlay tabel keduanya sekaligus tumpang-tindih.
+        window.dispatchEvent(new CustomEvent("doctable:select", { detail: imgUnit ? null : (target.closest("table") as HTMLTableElement | null) }));
       }}
       className={className || "focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1 empty:before:content-[attr(data-placeholder)] empty:before:text-slate-600"}
     />
@@ -2293,6 +2301,100 @@ function ImageSelectionOverlay() {
       {/* Garis seleksi (bingkai biru) + gagang resize pojok kanan-bawah —
           drag gagang ini utk resize langsung di tempat, rasio gambar
           terjaga otomatis (lihat height:auto di img saat disisipkan). */}
+      <div style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width, height: rect.height, border: "2px solid #6366f1", pointerEvents: "none", zIndex: 9998, boxSizing: "border-box" }} />
+      <div
+        onPointerDown={startResize}
+        style={{ position: "fixed", top: rect.top + rect.height - 6, left: rect.left + rect.width - 6, width: 12, height: 12, background: "#6366f1", borderRadius: 9999, cursor: "nwse-resize", zIndex: 9999, border: "2px solid white" }}
+      />
+    </div>
+  );
+}
+
+// Kontrol resize tabel mengambang — SAMA POLA PERSIS dengan
+// ImageSelectionOverlay di atas (klik tabel → gagang mengambang muncul,
+// drag pojok kanan-bawah utk memperbesar/memperkecil), cuma target elemennya
+// <table>, bukan gambar. Dibuat SEBAGAI PENGGANTI resize per-sel (CSS
+// `resize` bawaan browser di tiap th/td) yang sebelumnya dicoba — ternyata
+// gagang kecil di tiap sel malah menutupi/mepet ke teks isi sel (feedback
+// user: "teks nya tidak terbaca"). Dengan cara ini, sel-selnya sendiri POLOS
+// (lihat TABLE_TH_STYLE/TABLE_TD_STYLE di DocToolbar, sudah tidak ada
+// resize/overflow lagi) — yang di-resize itu TABEL-nya sebagai satu objek
+// utuh, table-layout:fixed otomatis membagi ulang lebar kolom secara
+// proporsional, sama seperti drag gagang tabel di Word.
+function TableSelectionOverlay() {
+  const [el, setEl] = useState<HTMLTableElement | null>(null);
+  const [, bump] = useState(0);
+  const boxRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onSelect = (e: Event) => setEl(((e as CustomEvent).detail as HTMLTableElement) || null);
+    window.addEventListener("doctable:select", onSelect as EventListener);
+    return () => window.removeEventListener("doctable:select", onSelect as EventListener);
+  }, []);
+  useEffect(() => {
+    if (!el) return;
+    const reposition = () => bump((t) => t + 1);
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    const onDocClick = (ev: MouseEvent) => {
+      const t = ev.target as Node;
+      if (boxRef.current?.contains(t)) return;
+      if (el.contains(t) || el === t) return;
+      setEl(null);
+    };
+    document.addEventListener("mousedown", onDocClick, true);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+      document.removeEventListener("mousedown", onDocClick, true);
+    };
+  }, [el]);
+  if (!el || !document.contains(el)) return null;
+  const rect = el.getBoundingClientRect();
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = rect.width;
+    const onMove = (ev: PointerEvent) => {
+      // Minimal 120px — di bawah itu isi sel jadi tidak muat sama sekali
+      // (mirip batas 40px punya gambar, disesuaikan krn tabel biasanya
+      // berkolom banyak).
+      const next = Math.max(120, Math.round(startWidth + (ev.clientX - startX)));
+      el.style.width = next + "px";
+      bump((t) => t + 1);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  };
+  const resizeBy = (factor: number) => {
+    const next = Math.max(120, Math.round(rect.width * factor));
+    el.style.width = next + "px";
+    bump((t) => t + 1);
+  };
+  const OverlayBtn = ({ onClick, title, children }: { onClick: () => void; title: string; children: any }) => (
+    <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={onClick} title={title}
+      className="w-7 h-7 flex items-center justify-center rounded hover:bg-slate-800 text-slate-200 cursor-pointer">
+      {children}
+    </button>
+  );
+  return (
+    <div ref={boxRef}>
+      <div
+        style={{ position: "fixed", top: Math.max(4, rect.top - 40), left: rect.left, zIndex: 9999 }}
+        className="flex items-center gap-0.5 bg-slate-900 border border-indigo-500 rounded-lg shadow-2xl px-1 py-0.5"
+      >
+        <span className="text-[10px] text-slate-400 px-1.5">Ukuran tabel</span>
+        <span className="w-px h-4 bg-slate-700 mx-0.5" />
+        <OverlayBtn onClick={() => resizeBy(0.85)} title="Perkecil"><span className="text-sm leading-none">−</span></OverlayBtn>
+        <OverlayBtn onClick={() => resizeBy(1.15)} title="Perbesar"><span className="text-sm leading-none">+</span></OverlayBtn>
+        <span className="w-px h-4 bg-slate-700 mx-0.5" />
+        <OverlayBtn onClick={() => { el.style.width = "100%"; bump((t) => t + 1); }} title="Kembalikan ke lebar penuh"><RotateCcw className="w-3.5 h-3.5" /></OverlayBtn>
+        <OverlayBtn onClick={() => { el.remove(); setEl(null); }} title="Hapus tabel"><Trash2 className="w-3.5 h-3.5 text-rose-400" /></OverlayBtn>
+      </div>
       <div style={{ position: "fixed", top: rect.top, left: rect.left, width: rect.width, height: rect.height, border: "2px solid #6366f1", pointerEvents: "none", zIndex: 9998, boxSizing: "border-box" }} />
       <div
         onPointerDown={startResize}
@@ -10457,6 +10559,7 @@ export default function App() {
       {/* Kontrol gambar mengambang ala Canva — global, lepas dari alur
           dokumen manapun (lihat komentar di definisi komponennya). */}
       <ImageSelectionOverlay />
+      <TableSelectionOverlay />
       {/* Toast Alert — z-[100], DI ATAS semua modal (z-50): modal disusun
           belakangan di urutan DOM, jadi kalau z-index-nya SAMA (50=50), modal
           menang dan toast tertutup di belakangnya — user tidak tahu simpan

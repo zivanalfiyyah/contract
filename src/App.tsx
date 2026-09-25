@@ -17,6 +17,8 @@ import {
   Users,
   LayoutDashboard,
   Plus,
+  Hash,
+  Save,
   Search,
   Settings,
   CheckCircle,
@@ -1894,6 +1896,30 @@ let activeStructural: { table: HTMLTableElement | null; cell: HTMLTableCellEleme
 // SELEKSI DOM aktif, jadi satu toolbar ini otomatis "ngikutin" contentEditable
 // manapun yang barusan difokus, asal tombolnya sendiri tidak pernah mencuri
 // fokus (onMouseDown preventDefault, sama pola dgn Btn di RichTextEditor).
+// Sama seperti InsertCard, tapi utk aksi yg butuh <input type="file"> atau
+// <select> tersembunyi di atasnya (dipakai spt file input Gambar/PDF yang
+// sebelumnya juga berupa <label> — polanya dipertahankan, cuma tampilannya
+// dibesarkan jadi kartu).
+// WAJIB di luar DocToolbar (bukan komponen yang dibuat di dalam render-nya):
+// saat dialog pilih-file terbuka, editor kehilangan fokus → lampiran disimpan
+// (onBlur) → App render ulang → komponen yang didefinisikan di dalam render
+// dianggap TIPE BARU oleh React sehingga <input type="file"> yang sedang
+// dipakai dilepas & diganti elemen baru. File yang dipilih lalu tidak pernah
+// sampai ke onChange — Insert Image & Insert PDF "tidak terjadi apa-apa".
+function InsertCardWrap({ title, icon, label, disabled, children }: { title: string; icon: any; label: string; disabled?: boolean; children: any }) {
+  return (
+    <label
+      onMouseDown={(e) => e.preventDefault()}
+      title={title}
+      className={`relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 px-2.5 min-w-[64px] text-slate-300 transition-colors ${disabled ? "opacity-50 cursor-wait" : "hover:bg-indigo-500/10 hover:text-indigo-400 cursor-pointer"}`}
+    >
+      {icon}
+      <span className="text-[10px] font-medium leading-none text-center whitespace-nowrap">{label}</span>
+      {children}
+    </label>
+  );
+}
+
 function DocToolbar() {
   const exec = (cmd: string, arg?: string) => {
     try { document.execCommand("styleWithCSS", false, "true"); } catch { /* noop */ }
@@ -1915,11 +1941,18 @@ function DocToolbar() {
   const insertPdfAsImages = async (file: File) => {
     setPdfBusy(true);
     try {
-      const pdfjsLib = await import("pdfjs-dist");
-      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-        "pdfjs-dist/build/pdf.worker.mjs",
-        import.meta.url,
-      ).toString();
+      // Build "legacy" pdf.js (sama seperti UploadedDocumentWorkspace): build
+      // modern v6 memakai API JS sangat baru (Map.getOrInsertComputed) yang
+      // belum ada di banyak browser → error "getOrInsertComputed is not a
+      // function" dan PDF gagal disisipkan. Legacy build menyertakan polyfill.
+      // Worker di-resolve lewat "?url" Vite — `new URL("pdfjs-dist/...",
+      // import.meta.url)` dengan nama paket (bukan path relatif) tidak
+      // di-resolve Vite dan berujung 404.
+      const [pdfjsLib, workerMod]: any[] = await Promise.all([
+        import("pdfjs-dist/legacy/build/pdf.mjs"),
+        import("pdfjs-dist/legacy/build/pdf.worker.mjs?url"),
+      ]);
+      pdfjsLib.GlobalWorkerOptions.workerSrc = workerMod.default;
       const buf = await file.arrayBuffer();
       const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
       let html = "";
@@ -2039,21 +2072,8 @@ function DocToolbar() {
       <span className="text-[10px] font-medium leading-none text-center whitespace-nowrap">{label}</span>
     </button>
   );
-  // Sama seperti InsertCard, tapi utk aksi yg butuh <input type="file"> atau
-  // <select> tersembunyi di atasnya (dipakai spt file input Gambar/PDF yang
-  // sebelumnya juga berupa <label> — polanya dipertahankan, cuma tampilannya
-  // dibesarkan jadi kartu).
-  const InsertCardWrap = ({ title, icon, label, disabled, children }: { title: string; icon: any; label: string; disabled?: boolean; children: any }) => (
-    <label
-      onMouseDown={(e) => e.preventDefault()}
-      title={title}
-      className={`relative flex flex-col items-center justify-center gap-1 rounded-md py-1.5 px-2.5 min-w-[64px] text-slate-300 transition-colors ${disabled ? "opacity-50 cursor-wait" : "hover:bg-indigo-500/10 hover:text-indigo-400 cursor-pointer"}`}
-    >
-      {icon}
-      <span className="text-[10px] font-medium leading-none text-center whitespace-nowrap">{label}</span>
-      {children}
-    </label>
-  );
+  // InsertCardWrap (kartu utk input file Gambar/PDF & select Dynamic Field)
+  // didefinisikan DI LUAR DocToolbar — lihat komentar di atas DocToolbar.
   // Tombol ikon + teks label sejajar (bukan dropdown) — dipakai khusus utk
   // seksi "Table Tools". Revisi (feedback user): dropdown "Baris & Kolom…"
   // dianggap kurang jelas krn aksinya tersembunyi di balik klik dropdown
@@ -3533,6 +3553,19 @@ export default function App() {
   const [allTenants, setAllTenants] = useState<any[]>([]);
   const [userForm, setUserForm] = useState<any>(null);
   const [tenantForm, setTenantForm] = useState<any>(null);
+  // Platform kerja sama milik perusahaan yang sedang login (tenant.platforms,
+  // diatur di Kelola Perusahaan) — isi dropdown "Kerjasama Platform" di wizard.
+  const [tenantPlatforms, setTenantPlatforms] = useState<string[]>([]);
+  const fetchTenantPlatforms = async () => {
+    try {
+      const res = await fetch("/api/tenant-platforms");
+      if (res.ok) setTenantPlatforms((await res.json()).platforms || []);
+    } catch {
+      setTenantPlatforms([]);
+    }
+  };
+  // Input ketik untuk menambah platform di form Tambah/Edit Perusahaan.
+  const [tenantPlatformInput, setTenantPlatformInput] = useState("");
   const [backups, setBackups] = useState<any[]>([]);
   const [isRunningBackup, setIsRunningBackup] = useState(false);
   const [emailConfigured, setEmailConfigured] = useState<boolean | null>(null);
@@ -3827,6 +3860,8 @@ export default function App() {
   // konsep yang serupa. Dua state terpisah (bukan satu) supaya user bisa
   // sedang lihat Format Nomor Kontrak sambil Margin masih di mode DCS, dst.
   const [numberFormatModule, setNumberFormatModule] = useState<"dcs" | "kontrak">("dcs");
+  // Panduan & daftar token di kartu Format Nomor Dokumen — dilipat (accordion).
+  const [numberGuideOpen, setNumberGuideOpen] = useState(false);
   const [marginModule, setMarginModule] = useState<"dcs" | "kontrak">("dcs");
   // Rule override milik SATU jenis dokumen yang sedang dibuka di form edit
   // (dcsDocTypeForm) — state TERPISAH dari dcsNumberingRule di atas (bukan
@@ -3918,7 +3953,7 @@ export default function App() {
     currencies: (appSettings.masterData?.currencies || ["IDR", "USD"]) as string[],
     categoryPrefixes: (appSettings.masterData?.categoryPrefixes || {}) as Record<string, string>,
     defaultNumberPrefix: (appSettings.masterData?.defaultNumberPrefix || "GA-AGR") as string,
-    defaultNumberMask: (appSettings.masterData?.defaultNumberMask || "{Sequence:3}/{DocTypeCode}/{Codes}/{MonthRoman}/{Year}") as string,
+    defaultNumberMask: (appSettings.masterData?.defaultNumberMask || "{Sequence:3}/{DocTypeCode}/{Platform}/{Codes}/{MonthRoman}/{Year}") as string,
     copyStatuses: (appSettings.masterData?.copyStatuses || ["Disimpan", "Dikirim", "Di-assign", "Diarsipkan"]) as string[],
     departments: (appSettings.masterData?.departments || []) as string[],
     categoryOpeningParagraphs: (appSettings.masterData?.categoryOpeningParagraphs || {}) as Record<string, string>,
@@ -4059,6 +4094,10 @@ export default function App() {
   // Pratinjau nomor — cerminan renderMask di server (numbering-utils.ts):
   // {Sequence} → contoh "1", {MonthRoman} → bulan romawi, token kosong ""
   // dibuang & pemisah dirapikan, token belum diisi tampil literal {Name}.
+  // Cerminan platformCode() di server.ts — nama platform → segmen {Platform}.
+  const platformCode = (name: string | undefined): string =>
+    String(name || "").trim().toUpperCase().replace(/[\s/]+/g, "-").replace(/[^A-Z0-9-]/g, "");
+
   const previewNumberMask = (mask: string, tokens: Record<string, string>): string => {
     const roman = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
     try {
@@ -4400,6 +4439,8 @@ export default function App() {
     title: "",
     category: "Vendor" as any,
     docType: "" as string,
+    // Platform kerja sama (opsional) — lihat tenantPlatforms (Kelola Perusahaan).
+    platform: "" as string,
     creationMode: "smart" as "smart" | "upload",
     parties: [
       { role: "Pihak Pertama", name: appSettings.companyName || "[Nama perusahaan belum diisi]", type: "Company" },
@@ -5369,6 +5410,7 @@ export default function App() {
     if (isCreating && newContractForm.category && newContractForm.creationMode === "smart") {
       const params = new URLSearchParams({ category: newContractForm.category });
       if (newContractForm.docType) params.set("docType", newContractForm.docType);
+      if (newContractForm.platform) params.set("platform", newContractForm.platform);
       fetch(`/api/contracts/generate-number?${params.toString()}`)
         .then(r => r.json())
         .then(data => {
@@ -5378,7 +5420,7 @@ export default function App() {
         })
         .catch(err => console.error("Error fetching contract number:", err));
     }
-  }, [isCreating, newContractForm.category, newContractForm.docType, newContractForm.creationMode]);
+  }, [isCreating, newContractForm.category, newContractForm.docType, newContractForm.platform, newContractForm.creationMode]);
 
   // CATATAN: form Pendaftaran Dokumen (arsip) & mode Upload di wizard = murni
   // unggah PDF, jadi nomornya DIISI BEBAS oleh user (nomor dari vendor/dokumen
@@ -5396,11 +5438,12 @@ export default function App() {
     }
     const params = new URLSearchParams({ category: newContractForm.category });
     if (newContractForm.docType) params.set("docType", newContractForm.docType);
+    if (newContractForm.platform) params.set("platform", newContractForm.platform);
     fetch(`/api/contracts/generate-number?${params.toString()}`)
       .then((r) => r.json())
       .then((data) => setUploadNumberPreview(data.contractNumber || ""))
       .catch((err) => console.error("Error fetching upload number preview:", err));
-  }, [isCreating, newContractForm.creationMode, newContractForm.category, newContractForm.docType]);
+  }, [isCreating, newContractForm.creationMode, newContractForm.category, newContractForm.docType, newContractForm.platform]);
 
   const [docRegNumberPreview, setDocRegNumberPreview] = useState("");
   useEffect(() => {
@@ -5422,6 +5465,7 @@ export default function App() {
     if (!renewSource) return;
     const params = new URLSearchParams({ category: renewSource.category });
     if (renewSource.docType) params.set("docType", renewSource.docType);
+    if (renewSource.platform) params.set("platform", renewSource.platform);
     fetch(`/api/contracts/generate-number?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -5436,6 +5480,7 @@ export default function App() {
   useEffect(() => {
     if (!addendumSource) return;
     const params = new URLSearchParams({ category: addendumSource.category, docType: "Addendum / Amandemen" });
+    if (addendumSource.platform) params.set("platform", addendumSource.platform);
     fetch(`/api/contracts/generate-number?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -5489,6 +5534,7 @@ export default function App() {
       setNotifications(resNotifications);
       if (resSettings) setAppSettings(resSettings);
       setSubFolders(resSubFolders || []);
+      fetchTenantPlatforms();
       fetchDcsDocs();
       fetchDcsDocTypes();
       fetchDcsNumberingRule();
@@ -5962,6 +6008,7 @@ export default function App() {
           title: "",
           category: "Vendor",
           docType: "",
+          platform: "",
           creationMode: "smart",
           parties: [
             { role: "Pihak Pertama", name: appSettings.companyName || "[Nama perusahaan belum diisi]", type: "Company" },
@@ -8999,6 +9046,8 @@ export default function App() {
       const data = await res.json();
       if (data.success) {
         setTenantForm(null);
+        setTenantPlatformInput("");
+        fetchTenantPlatforms();
         showToast(isEdit ? "Perusahaan diperbarui" : `Perusahaan "${data.tenant.name}" dibuat dengan admin ${data.admin?.email}`, "success");
         fetchAllTenants();
       } else {
@@ -13612,218 +13661,238 @@ export default function App() {
                       <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Format Nomor &amp; Margin Halaman</p>
                     </div>
 
-                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
-                      <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                        <FileDigit className="w-4 h-4 text-violet-400" /> Penomoran Terintegrasi per Jenis Dokumen
-                      </h4>
-                      <p className="text-[11px] text-slate-400 leading-relaxed">
-                        Penomoran dokumen disatukan berpatokan pada <strong className="text-slate-200">Jenis Dokumen</strong> (seperti *Perjanjian, MOU, Addendum*). Setiap jenis dokumen memiliki Kode Singkatan dan Format Nomor tersendiri di panel Jenis Kontrak / Dokumen di atas, serta memiliki nomor urut independen yang dimulai dari <code>001</code> tiap tahunnya.
-                      </p>
+                    <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl shadow-sm lg:col-span-2 flex items-start justify-between gap-3">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <div className="p-2.5 bg-indigo-500/10 text-indigo-400 rounded-lg shrink-0">
+                          <FileDigit className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="text-sm font-bold text-slate-100">Penomoran Terintegrasi per Jenis Dokumen</h4>
+                          <p className="text-xs text-slate-500 leading-relaxed mt-0.5">
+                            Penomoran dokumen disatukan berpatokan pada <strong className="text-slate-300">Jenis Dokumen</strong> (seperti Perjanjian, MOU, Addendum). Setiap jenis dokumen memiliki Kode Singkatan dan Format Nomor tersendiri di panel Jenis Kontrak / Dokumen di atas, serta memiliki nomor urut independen yang dimulai dari <code className="font-mono text-indigo-400">001</code> tiap tahunnya.
+                          </p>
+                        </div>
+                      </div>
+                      <span className="hidden sm:inline text-xs font-semibold px-2.5 py-1 bg-slate-950 text-slate-400 rounded-md border border-slate-800 shrink-0">GA &amp; Legal</span>
                     </div>
 
-                    {/* ==== Format Nomor Dokumen — SATU kartu, dua mode ====
+                    {(() => {
+                      // Tampilan saja — state, handler simpan & preview TETAP
+                      // yang sama seperti sebelumnya (DCS: dcsNumberingMaskDraft
+                      // + handleSaveDcsNumberingRule; Kontrak: masterData
+                      // .defaultNumberMask/.defaultNumberPrefix + handleSaveSettings).
+                      const isDcs = numberFormatModule === "dcs";
+                      const mask = isDcs ? dcsNumberingMaskDraft : masterData.defaultNumberMask;
+                      const setMask = (v: string) => {
+                        if (isDcs) setDcsNumberingMaskDraft(v);
+                        else setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: v } });
+                      };
+                      // Sisipkan dengan pemisah "/" otomatis, kalau tidak hasilnya
+                      // menempel jadi {Year}{Year} (perilaku lama dipertahankan).
+                      const insertToken = (t: string) => {
+                        const cur = mask || "";
+                        const needsSep = cur.length > 0 && !/[/.\-_]$/.test(cur);
+                        setMask(cur + (needsSep ? "/" : "") + t);
+                      };
+                      type Tok = { t: string; l: string; d: string };
+                      const groups: { title: string; tokens: Tok[] }[] = isDcs
+                        ? [
+                            { title: "1. Urutan & Jenis", tokens: [
+                              { t: "{Sequence:4}", l: "Nomor urut", d: "0001, 0002, 0003 — dihitung per jenis dokumen per tahun. Angka 4 = jumlah digit." },
+                              { t: "{DocType}", l: "Jenis dokumen", d: "Kode singkat jenis dokumen, mis. SOP, IK, MEMO" },
+                            ] },
+                            { title: "2. Waktu & Tanggal", tokens: [
+                              { t: "{Year}", l: "Tahun", d: "Tahun, mis. 2026" },
+                              { t: "{MonthRoman}", l: "Bulan Romawi", d: "Bulan angka Romawi, I … XII" },
+                              { t: "{Month}", l: "Bulan angka", d: "Bulan angka, 1 … 12" },
+                              { t: "{Day}", l: "Tanggal", d: "Tanggal, 1 … 31" },
+                            ] },
+                            { title: "3. Atribut Tambahan", tokens: [
+                              { t: "{Department}", l: "Departemen", d: "Kode departemen penyusun, mis. HED" },
+                            ] },
+                          ]
+                        : [
+                            { title: "1. Urutan & Jenis", tokens: [
+                              { t: "{Sequence:3}", l: "Nomor urut", d: "001, 002, 003 — dihitung per jenis dokumen per tahun. Angka 3 = jumlah digit." },
+                              { t: "{DocTypeCode}", l: "Kode jenis", d: "Kode singkat jenis dokumen, mis. PKS" },
+                              { t: "{DocType}", l: "Nama jenis", d: "Nama lengkap jenis dokumen" },
+                            ] },
+                            { title: "2. Waktu & Tanggal", tokens: [
+                              { t: "{Year}", l: "Tahun", d: "Tahun, mis. 2026" },
+                              { t: "{MonthRoman}", l: "Bulan Romawi", d: "Bulan dalam angka Romawi, I … XII" },
+                              { t: "{Month}", l: "Bulan angka", d: "Bulan angka, 1 … 12" },
+                              { t: "{Day}", l: "Tanggal", d: "Tanggal, 1 … 31 (token sama juga tersedia di format nomor Dokumen Internal/DCS)" },
+                            ] },
+                            { title: "3. Atribut Tambahan", tokens: [
+                              { t: "{Prefix}", l: "Prefix", d: "Prefix kategori, atau Prefix Default bila kategori tak punya prefix sendiri" },
+                              { t: "{Category}", l: "Kategori", d: "Nama kategori, mis. Vendor" },
+                              { t: "{Codes}", l: "Kode tambahan", d: "Kode tambahan jenis dokumen bila diisi, mis. TBK" },
+                              { t: "{Platform}", l: "Platform", d: "Platform kerja sama yang dipilih di form buat kontrak, mis. ASMAT / TIKETUX. Daftar platform tiap perusahaan diatur di Kelola Perusahaan. Tidak dipilih = segmen ini hilang otomatis. Nomor urut tetap satu urutan untuk semua platform." },
+                            ] },
+                          ];
+                      const preview = isDcs
+                        ? previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })
+                        : previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Platform: platformCode(tenantPlatforms[0]), Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) });
+                      const saveDisabled = isDcs && (dcsBusy || dcsNumberingMaskDraft === dcsNumberingRule?.mask);
+                      const segBtn = (active: boolean) =>
+                        `px-4 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${active ? "bg-slate-900 text-indigo-400 shadow-sm font-bold" : "text-slate-400 hover:text-slate-200 font-semibold"}`;
+                      return (
+                    /* ==== Format Nomor Dokumen — SATU kartu, dua mode ====
                         Sebelumnya 2 kartu terpisah ("Format Nomor Dokumen DCS"
                         & "Format Nomor Dokumen Kontrak") dengan mekanisme
                         simpan yang beda di baliknya: DCS punya tabel rule
                         sendiri di Postgres (disimpan lewat tombol "Simpan"
                         khusus di sini → handleSaveDcsNumberingRule), Kontrak
                         cuma field JSON di appSettings.masterData (ikut
-                        tersimpan lewat tombol "Simpan Master Data" di atas
-                        halaman). Digabung jadi 1 kartu dengan toggle supaya
-                        orang awam tidak bingung ada 2 kartu mirip — tapi
-                        state & endpoint di baliknya TETAP terpisah persis
-                        seperti sebelumnya, cuma switch tampilan saja. */}
-                    <div className="p-4 bg-slate-950/60 border border-slate-800 rounded-xl space-y-3 lg:col-span-2">
-                      <div className="flex items-center justify-between flex-wrap gap-2">
-                        <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                          <FileDigit className="w-4 h-4 text-violet-400" /> Format Nomor Dokumen
-                        </h4>
-                        <div className="flex bg-slate-900 border border-slate-800 rounded-lg p-0.5">
-                          <button
-                            type="button"
-                            onClick={() => setNumberFormatModule("dcs")}
-                            className={`px-3 py-1 rounded-md text-[10px] font-bold cursor-pointer transition ${numberFormatModule === "dcs" ? "bg-violet-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                          >
-                            DCS
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setNumberFormatModule("kontrak")}
-                            className={`px-3 py-1 rounded-md text-[10px] font-bold cursor-pointer transition ${numberFormatModule === "kontrak" ? "bg-indigo-600 text-white" : "text-slate-400 hover:text-slate-200"}`}
-                          >
-                            Kontrak
-                          </button>
+                        tersimpan lewat handleSaveSettings). Digabung jadi 1
+                        kartu dengan toggle supaya orang awam tidak bingung
+                        ada 2 kartu mirip — tapi state & endpoint di baliknya
+                        TETAP terpisah persis seperti sebelumnya. */
+                    <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-sm overflow-hidden lg:col-span-2">
+                      {/* Header + tab switcher */}
+                      <div className="p-5 border-b border-slate-800 bg-slate-950/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-center gap-2.5">
+                          <div className="p-2 bg-indigo-600 text-white rounded-lg shadow-sm shadow-indigo-500/20">
+                            <Hash className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <h4 className="text-sm font-bold text-slate-100">Format Nomor Dokumen</h4>
+                            <p className="text-xs text-slate-500">Konfigurasi token urutan dan atribut penomoran</p>
+                          </div>
+                        </div>
+                        <div className="inline-flex p-1 bg-slate-800 rounded-xl self-start sm:self-auto">
+                          <button type="button" onClick={() => setNumberFormatModule("dcs")} className={segBtn(isDcs)}>DCS</button>
+                          <button type="button" onClick={() => setNumberFormatModule("kontrak")} className={segBtn(!isDcs)}>Kontrak</button>
                         </div>
                       </div>
 
-                      {numberFormatModule === "dcs" ? (
-                        <>
-                          <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
-                            <p className="text-[11px] text-slate-300 font-semibold">Cara kerja penomoran (DCS)</p>
-                            <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside leading-relaxed">
-                              <li>Format bawaan untuk jenis dokumen <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan) yang belum punya format khusus sendiri.</li>
-                              <li>Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di tab <b>Jenis Dokumen (Semua Modul)</b>.</li>
-                              <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — tiap ganti tahun urutan mulai lagi dari 1.</li>
-                            </ol>
-                          </div>
-                          <div className="space-y-1.5">
-                            <p className="text-[10px] text-slate-500">Klik untuk menyisipkan ke format di bawah:</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {[
-                                { t: "{DocType}", l: "Jenis dokumen", d: "Kode singkat jenis dokumen, mis. SOP, IK, MEMO" },
-                                { t: "{Department}", l: "Departemen", d: "Kode departemen penyusun, mis. HED" },
-                                { t: "{Year}", l: "Tahun", d: "2026" },
-                                { t: "{Month}", l: "Bulan angka", d: "1 … 12" },
-                                { t: "{MonthRoman}", l: "Bulan Romawi", d: "I, II, III … XII" },
-                                { t: "{Day}", l: "Tanggal", d: "1 … 31" },
-                                { t: "{Sequence:4}", l: "Nomor urut", d: "0001, 0002, 0003 — dihitung per jenis dokumen per tahun. Angka 4 = jumlah digit." },
-                              ].map((tok) => (
-                                <button
-                                  key={tok.t}
-                                  type="button"
-                                  title={`${tok.t} — ${tok.d}`}
-                                  onClick={() => {
-                                    // Sisipkan dengan pemisah "/" otomatis, kalau
-                                    // tidak hasilnya menempel jadi {Year}{Year}.
-                                    const cur = dcsNumberingMaskDraft || "";
-                                    const needsSep = cur.length > 0 && !/[/.\-_]$/.test(cur);
-                                    setDcsNumberingMaskDraft(cur + (needsSep ? "/" : "") + tok.t);
-                                  }}
-                                  className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-violet-500/50 rounded-lg text-[10px] text-slate-300 cursor-pointer transition"
-                                >
-                                  + {tok.l}
-                                </button>
-                              ))}
+                      <div className="p-5 space-y-6">
+                        {/* Panduan (accordion) — berisi cara kerja + arti tiap token */}
+                        <div className="border border-indigo-500/20 bg-indigo-500/5 rounded-xl overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => setNumberGuideOpen((v) => !v)}
+                            className="w-full px-4 py-3 flex items-center justify-between text-left text-xs font-semibold text-slate-200 hover:bg-indigo-500/10 transition cursor-pointer"
+                          >
+                            <span className="flex items-center gap-2">
+                              <HelpCircle className="w-4 h-4 text-indigo-400" />
+                              Panduan &amp; Cara Kerja Penomoran ({isDcs ? "DCS" : "Kontrak"})
+                            </span>
+                            <ChevronDown className={`w-4 h-4 text-indigo-400 transition-transform duration-200 ${numberGuideOpen ? "rotate-180" : ""}`} />
+                          </button>
+                          {numberGuideOpen && (
+                            <div className="px-4 pb-4 pt-3 text-xs text-slate-400 space-y-3 border-t border-indigo-500/15 bg-slate-900/60">
+                              {isDcs ? (
+                                <ul className="list-disc list-inside space-y-1.5 pl-1 leading-relaxed">
+                                  <li>Format bawaan untuk jenis dokumen <b className="text-violet-400">DCS</b> (SOP/IK/Memo/Kebijakan) yang belum punya format khusus sendiri.</li>
+                                  <li>Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di tab <b>Jenis Dokumen (Semua Modul)</b>.</li>
+                                  <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — tiap ganti tahun urutan mulai lagi dari 1.</li>
+                                </ul>
+                              ) : (
+                                <ul className="list-disc list-inside space-y-1.5 pl-1 leading-relaxed">
+                                  <li>Tiap <b>Jenis Dokumen</b> boleh punya "Format Nomor" sendiri (diatur di panel Jenis Kontrak / Dokumen di atas).</li>
+                                  <li>Jenis dokumen yang <b>tidak</b> punya format sendiri memakai <b>Format Nomor Dokumen Kontrak</b> di bawah ini.</li>
+                                  <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — jadi PKS dan Sewa punya urutan masing-masing, dan tiap ganti tahun keduanya mulai lagi dari 1.</li>
+                                  <li>Nomor dibuat otomatis &amp; terkunci saat dokumen <b>disusun di sistem</b>. Untuk dokumen <b>hasil unggahan PDF</b>, nomor diisi bebas sesuai dokumen aslinya dan tidak memakai urutan ini.</li>
+                                </ul>
+                              )}
+                              <div className="space-y-1">
+                                <p className="font-semibold text-slate-300">Arti tiap token:</p>
+                                <ul className="space-y-0.5 leading-relaxed">
+                                  {groups.flatMap((g) => g.tokens).map((tok) => (
+                                    <li key={tok.t}><code className="font-mono text-indigo-400">{tok.t}</code> — {tok.d}</li>
+                                  ))}
+                                </ul>
+                              </div>
                             </div>
-                            {/* Penjelasan tiap token ditampilkan langsung di sini (tidak
-                                hanya lewat hover/title) supaya terlihat tanpa perlu
-                                mengarahkan kursor satu-satu ke tiap chip. */}
-                            <ul className="text-[10px] text-slate-500 space-y-0.5 list-disc list-inside leading-relaxed">
-                              <li><code className="text-slate-400">{"{DocType}"}</code> — Kode singkat jenis dokumen, mis. SOP, IK, MEMO</li>
-                              <li><code className="text-slate-400">{"{Department}"}</code> — Kode departemen penyusun, mis. HED</li>
-                              <li><code className="text-slate-400">{"{Year}"}</code> — Tahun, mis. 2026</li>
-                              <li><code className="text-slate-400">{"{Month}"}</code> — Bulan angka, 1 … 12</li>
-                              <li><code className="text-slate-400">{"{MonthRoman}"}</code> — Bulan angka Romawi, I … XII</li>
-                              <li><code className="text-slate-400">{"{Day}"}</code> — Tanggal, 1 … 31</li>
-                              <li><code className="text-slate-400">{"{Sequence:4}"}</code> — Nomor urut per jenis dokumen per tahun. Angka menentukan jumlah digit, mis. {"{Sequence:4}"} → 0001</li>
-                            </ul>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="text"
-                              value={dcsNumberingMaskDraft}
-                              onChange={(e) => setDcsNumberingMaskDraft(e.target.value)}
-                              placeholder="{DocType}/{Department}/{Year}/{Sequence:4}"
-                              className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
-                            />
-                            <button
-                              onClick={handleSaveDcsNumberingRule}
-                              disabled={dcsBusy || dcsNumberingMaskDraft === dcsNumberingRule?.mask}
-                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg cursor-pointer"
-                            >
-                              Simpan
-                            </button>
-                          </div>
-                          {/* Preview diperbesar (sebelumnya text-[10px] abu-abu gelap,
-                              nyaris tak terlihat) supaya jelas terbaca. */}
-                          <div className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg">
-                            <p className="text-[10px] text-slate-500 mb-0.5">Preview</p>
-                            <p className="text-sm font-mono font-semibold text-emerald-300 break-all">
-                              {previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })}
-                            </p>
-                          </div>
-                        </>
-                      ) : (
-                        <>
-                          <div className="p-3 bg-slate-900 border border-slate-800 rounded-lg space-y-2">
-                            <p className="text-[11px] text-slate-300 font-semibold">Cara kerja penomoran (Kontrak)</p>
-                            <ol className="text-[11px] text-slate-400 space-y-1 list-decimal list-inside leading-relaxed">
-                              <li>Tiap <b>Jenis Dokumen</b> boleh punya "Format Nomor" sendiri (diatur di panel Jenis Kontrak / Dokumen di atas).</li>
-                              <li>Jenis dokumen yang <b>tidak</b> punya format sendiri memakai <b>Format Nomor Dokumen Kontrak</b> di bawah ini.</li>
-                              <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — jadi PKS dan Sewa punya urutan masing-masing, dan tiap ganti tahun keduanya mulai lagi dari 1.</li>
-                              <li>Nomor dibuat otomatis &amp; terkunci saat dokumen <b>disusun di sistem</b>. Untuk dokumen <b>hasil unggahan PDF</b>, nomor diisi bebas sesuai dokumen aslinya dan tidak memakai urutan ini.</li>
-                            </ol>
-                          </div>
+                          )}
+                        </div>
+
+                        {/* Prefix Default — khusus Kontrak */}
+                        {!isDcs && (
                           <div className="space-y-1.5">
-                            <p className="text-[10px] text-slate-500">Klik untuk menyisipkan ke format di bawah:</p>
-                            <div className="flex flex-wrap gap-1.5">
-                              {[
-                                { t: "{Sequence:3}", l: "Nomor urut", d: "001, 002, 003 — dihitung per jenis dokumen per tahun. Angka 3 = jumlah digit." },
-                                { t: "{DocTypeCode}", l: "Kode jenis", d: "Kode singkat jenis dokumen, mis. PKS" },
-                                { t: "{Codes}", l: "Kode tambahan", d: "Kode ekstra jenis dokumen bila diisi, mis. TBK" },
-                                { t: "{MonthRoman}", l: "Bulan Romawi", d: "I, II, III … XII" },
-                                { t: "{Year}", l: "Tahun", d: "2026" },
-                                { t: "{Prefix}", l: "Prefix", d: "Prefix kategori, atau Prefix Default bila kategori tak punya" },
-                                { t: "{Category}", l: "Kategori", d: "Nama kategori, mis. Vendor" },
-                                { t: "{DocType}", l: "Nama jenis", d: "Nama lengkap jenis dokumen" },
-                                { t: "{Month}", l: "Bulan angka", d: "1 … 12" },
-                                { t: "{Day}", l: "Tanggal", d: "1 … 31 — sama seperti token yang tersedia di format nomor Dokumen Internal (DCS)" },
-                              ].map((tok) => (
-                                <button
-                                  key={tok.t}
-                                  type="button"
-                                  title={`${tok.t} — ${tok.d}`}
-                                  onClick={() => {
-                                    // Sisipkan dengan pemisah "/" otomatis, kalau
-                                    // tidak hasilnya menempel jadi {Year}{Year}.
-                                    const cur = masterData.defaultNumberMask || "";
-                                    const needsSep = cur.length > 0 && !/[/.\-_]$/.test(cur);
-                                    setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: cur + (needsSep ? "/" : "") + tok.t } });
-                                  }}
-                                  className="px-2 py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/50 rounded-lg text-[10px] text-slate-300 cursor-pointer transition"
-                                >
-                                  + {tok.l}
-                                </button>
-                              ))}
-                            </div>
-                            {/* Penjelasan tiap token ditampilkan langsung di sini (tidak
-                                hanya lewat hover/title) supaya terlihat tanpa perlu
-                                mengarahkan kursor satu-satu ke tiap chip. */}
-                            <ul className="text-[10px] text-slate-500 space-y-0.5 list-disc list-inside leading-relaxed">
-                              <li><code className="text-slate-400">{"{Sequence:3}"}</code> — Nomor urut, 001/002/003 — dihitung per jenis dokumen per tahun. Angka menentukan jumlah digit.</li>
-                              <li><code className="text-slate-400">{"{DocTypeCode}"}</code> — Kode singkat jenis dokumen, mis. PKS</li>
-                              <li><code className="text-slate-400">{"{Codes}"}</code> — Kode tambahan jenis dokumen bila diisi, mis. TBK</li>
-                              <li><code className="text-slate-400">{"{MonthRoman}"}</code> — Bulan dalam angka Romawi, I … XII</li>
-                              <li><code className="text-slate-400">{"{Year}"}</code> — Tahun, mis. 2026</li>
-                              <li><code className="text-slate-400">{"{Prefix}"}</code> — Prefix kategori, atau Prefix Default di bawah bila kategori tak punya prefix sendiri</li>
-                              <li><code className="text-slate-400">{"{Category}"}</code> — Nama kategori, mis. Vendor</li>
-                              <li><code className="text-slate-400">{"{DocType}"}</code> — Nama lengkap jenis dokumen</li>
-                              <li><code className="text-slate-400">{"{Month}"}</code> — Bulan angka, 1 … 12</li>
-                              <li><code className="text-slate-400">{"{Day}"}</code> — Tanggal, 1 … 31 (token sama juga tersedia di format nomor Dokumen Internal/DCS)</li>
-                            </ul>
-                          </div>
-                          <div>
-                            <label className="block text-[10px] text-slate-500 mb-1">Prefix Default (dipakai token {"{Prefix}"} kalau kategori tak punya prefix sendiri)</label>
+                            <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">Prefix Default</label>
                             <input
                               type="text"
                               value={masterData.defaultNumberPrefix}
                               onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberPrefix: e.target.value.trim().toUpperCase() } })}
-                              className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
+                              placeholder="Misal: GA-AGR"
+                              className="w-full max-w-sm px-3.5 py-2 text-sm font-semibold font-mono bg-slate-900 border border-slate-700 rounded-lg text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition"
                             />
-                          </div>
-                          <input
-                            type="text"
-                            value={masterData.defaultNumberMask}
-                            onChange={(e) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, defaultNumberMask: e.target.value } })}
-                            className="w-full px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-xs font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
-                          />
-                          {/* Preview diperbesar (sebelumnya text-[10px] abu-abu gelap,
-                              nyaris tak terlihat) supaya jelas terbaca. */}
-                          <div className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg">
-                            <p className="text-[10px] text-slate-500 mb-0.5">Preview</p>
-                            <p className="text-sm font-mono font-semibold text-emerald-300 break-all">
-                              {previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) })}
+                            <p className="text-[11px] text-slate-500">
+                              Digunakan pada token <code className="bg-slate-950 px-1 py-0.5 rounded text-indigo-400 font-mono">{"{Prefix}"}</code> jika kategori tidak memiliki prefix tersendiri.
                             </p>
                           </div>
-                          <button
-                            onClick={handleSaveSettings}
-                            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer"
-                          >
-                            Simpan
-                          </button>
-                        </>
-                      )}
+                        )}
+
+                        {/* Token dikelompokkan per kategori */}
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">Klik Tag Untuk Menyisipkan Variabel:</label>
+                            <span className="text-[11px] text-slate-500 hidden sm:inline">Arahkan kursor ke tag untuk penjelasan</span>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
+                            {groups.map((g) => (
+                              <div key={g.title} className="space-y-2">
+                                <span className="text-[11px] font-bold text-slate-500 block border-b border-slate-800 pb-1">{g.title}</span>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {g.tokens.map((tok) => (
+                                    <button
+                                      key={tok.t}
+                                      type="button"
+                                      title={`${tok.t} — ${tok.d}`}
+                                      onClick={() => insertToken(tok.t)}
+                                      className="px-2.5 py-1 text-xs font-medium bg-slate-900 hover:bg-indigo-500/10 hover:text-indigo-400 hover:border-indigo-500/40 hover:-translate-y-px text-slate-300 rounded-md border border-slate-800 shadow-sm transition flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <Plus className="w-3 h-3 text-slate-500" /> {tok.l}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Pola format */}
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">Pola Format Nomor</label>
+                          <input
+                            type="text"
+                            value={mask}
+                            onChange={(e) => setMask(e.target.value)}
+                            placeholder={isDcs ? "{DocType}/{Department}/{Year}/{Sequence:4}" : undefined}
+                            className="w-full px-4 py-2.5 font-mono text-sm bg-slate-950/40 border border-slate-700 rounded-xl text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition"
+                          />
+                        </div>
+
+                        {/* Live preview — sengaja selalu gelap (warna tetap, tidak
+                            ikut dibalik tema terang/gelap) seperti desain. */}
+                        <div className="p-4 bg-[#0f172a] rounded-xl border border-[#1e293b] shadow-inner flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="space-y-1 min-w-0">
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-[#94a3b8] flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-[#34d399] animate-pulse" /> Live Preview Output
+                            </span>
+                            <p className="font-mono text-lg font-bold text-[#34d399] tracking-wide break-all">{preview || "(Masukkan pola)"}</p>
+                          </div>
+                          <span className="text-[11px] text-[#94a3b8] bg-[#1e293b] px-3 py-1 rounded-full border border-[#334155] self-start sm:self-center shrink-0">Contoh Hasil Dokumen</span>
+                        </div>
+                      </div>
+
+                      {/* Footer aksi */}
+                      <div className="p-4 bg-slate-950/60 border-t border-slate-800 flex items-center justify-between gap-3">
+                        <span className="text-xs text-slate-500 hidden sm:inline">Perubahan akan langsung berlaku untuk dokumen baru.</span>
+                        <button
+                          type="button"
+                          onClick={isDcs ? handleSaveDcsNumberingRule : handleSaveSettings}
+                          disabled={saveDisabled}
+                          className="w-full sm:w-auto px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm rounded-xl transition-all shadow-md shadow-indigo-500/20 flex items-center justify-center gap-2 cursor-pointer"
+                        >
+                          <Save className="w-4 h-4" /> Simpan Format
+                        </button>
+                      </div>
                     </div>
+                      );
+                    })()}
 
                     {/* ==== Margin Halaman Dokumen — SATU kartu, dua mode ====
                         Beda dari kartu Format Nomor di atas: margin DCS &
@@ -14149,7 +14218,7 @@ export default function App() {
                             const preview = previewNumberMask(dt.numberMask || masterData.defaultNumberMask, {
                               Prefix: effCode || masterData.defaultNumberPrefix,
                               Category: cat0, DocType: dt.name || "", DocTypeCode: effCode,
-                              Codes: codes, Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1),
+                              Platform: platformCode(tenantPlatforms[0]), Codes: codes, Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1),
                               Day: String(new Date().getDate()),
                             });
                             return (
@@ -15041,7 +15110,7 @@ export default function App() {
                       <p className="text-[13px] text-slate-500">{allTenants.length} organisasi. Menambah perusahaan sekaligus membuat akun admin pertamanya.</p>
                     </div>
                     <button
-                      onClick={() => setTenantForm({ name: "", branch: "", adminName: "", adminEmail: "", adminPassword: "" })}
+                      onClick={() => { setTenantPlatformInput(""); setTenantForm({ name: "", branch: "", adminName: "", adminEmail: "", adminPassword: "", platforms: [] }); }}
                       className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[13px] font-semibold flex items-center gap-1.5 cursor-pointer shrink-0 transition"
                     >
                       <Plus className="w-4 h-4" /> Tambah perusahaan
@@ -15059,8 +15128,16 @@ export default function App() {
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.active ? "bg-emerald-400" : "bg-slate-600"}`} title={t.active ? "Aktif" : "Nonaktif"} />
                           </div>
                           <p className="text-[12px] text-slate-500 truncate">{t.branch || "Tanpa cabang"} · <span className="font-mono text-slate-600">{t.id}</span></p>
+                          {Array.isArray(t.platforms) && t.platforms.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1 mt-1">
+                              <span className="text-[11px] text-slate-500">Platform:</span>
+                              {t.platforms.map((p: string) => (
+                                <span key={p} className="text-[10px] px-1.5 py-0.5 rounded-md bg-violet-500/10 border border-violet-500/30 text-violet-300">{p}</span>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                        <button onClick={() => setTenantForm({ id: t.id, name: t.name, branch: t.branch, active: t.active })} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer shrink-0 opacity-60 group-hover:opacity-100 transition"><Pencil className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => { setTenantPlatformInput(""); setTenantForm({ id: t.id, name: t.name, branch: t.branch, active: t.active, platforms: Array.isArray(t.platforms) ? t.platforms : [] }); }} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer shrink-0 opacity-60 group-hover:opacity-100 transition"><Pencil className="w-3.5 h-3.5" /></button>
                       </div>
                     ))}
                     {allTenants.length === 0 && <p className="text-slate-500 text-[13px] py-10 text-center">Belum ada perusahaan.</p>}
@@ -21014,6 +21091,37 @@ export default function App() {
                     </div>
                     )}
 
+                    {/* Platform kerja sama (opsional) — berlaku untuk semua
+                        kategori, jenis dokumen & kedua metode pembuatan. Nilai
+                        terpilih mengisi segmen {Platform} di nomor, mis.
+                        144/PKS/TIKETUX/IX/2026. Kosong = segmen dihilangkan. */}
+                    {/* Disembunyikan bila perusahaan tidak punya platform. */}
+                    {(tenantPlatforms.length > 0 || !!newContractForm.platform) && (
+                    <div className="space-y-1.5">
+                      <label className="block text-sm font-semibold text-slate-300">
+                        Kerjasama Platform <span className="text-slate-500 font-normal">(opsional)</span>
+                      </label>
+                      <select
+                        value={newContractForm.platform}
+                        onChange={(e) => setNewContractForm({ ...newContractForm, platform: e.target.value })}
+                        className="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="">— Tidak dipilih —</option>
+                        {!tenantPlatforms.includes(newContractForm.platform) && newContractForm.platform && (
+                          <option value={newContractForm.platform}>{newContractForm.platform}</option>
+                        )}
+                        {tenantPlatforms.map((p) => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-slate-500">
+                        Platform yang menjadi pihak kerja sama — tampil di nomor dokumen
+                        {newContractForm.platform ? <> sebagai <span className="font-mono text-slate-400">{platformCode(newContractForm.platform)}</span></> : ""}.
+                        Daftar platform perusahaan diatur di Konfigurasi &gt; Kelola Perusahaan.
+                      </p>
+                    </div>
+                    )}
+
                     <div className="space-y-1.5">
                       <label className="block text-sm font-semibold text-slate-300 flex items-center gap-1.5">
                         Nomor Dokumen{newContractForm.creationMode === "upload" ? " (dari vendor/penerbit)" : ""}
@@ -24347,6 +24455,53 @@ export default function App() {
                 <label className="block text-xs font-semibold text-slate-300">Cabang / Lokasi</label>
                 <input type="text" value={tenantForm.branch || ""} onChange={(e) => setTenantForm({ ...tenantForm, branch: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
               </div>
+              {/* Platform kerja sama milik perusahaan ini → pilihan dropdown
+                  "Kerjasama Platform" di wizard kontrak & segmen {Platform}
+                  di nomor dokumen (mis. 144/PKS/ASMAT/IX/2026). */}
+              {(() => {
+                const list: string[] = Array.isArray(tenantForm.platforms) ? tenantForm.platforms : [];
+                const addPlatform = () => {
+                  const v = tenantPlatformInput.trim();
+                  if (!v) return;
+                  if (!list.some((x) => x.toLowerCase() === v.toLowerCase())) {
+                    setTenantForm({ ...tenantForm, platforms: [...list, v] });
+                  }
+                  setTenantPlatformInput("");
+                };
+                return (
+                  <div className="space-y-1.5">
+                    <label className="block text-xs font-semibold text-slate-300">Platform Kerjasama <span className="font-normal text-slate-500">(opsional)</span></label>
+                    <div className="flex flex-wrap gap-1.5">
+                      {list.map((p, i) => (
+                        <span key={p} className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 bg-slate-900 border border-slate-800 rounded-full text-slate-200">
+                          {p} <span className="font-mono text-[10px] text-slate-500">{platformCode(p)}</span>
+                          <button
+                            type="button"
+                            onClick={() => setTenantForm({ ...tenantForm, platforms: list.filter((_, xi) => xi !== i) })}
+                            title="Hapus"
+                            className="text-slate-500 hover:text-rose-400 cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        </span>
+                      ))}
+                      {list.length === 0 && <span className="text-[11px] text-slate-500 italic">Belum ada platform.</span>}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={tenantPlatformInput}
+                        onChange={(e) => setTenantPlatformInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addPlatform(); } }}
+                        placeholder="mis. Asmat, Tiketux — tekan Enter"
+                        className="flex-1 px-3 py-2 bg-slate-900 border border-dashed border-slate-700 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                      />
+                      <button type="button" onClick={addPlatform} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg cursor-pointer">Tambah</button>
+                    </div>
+                    <p className="text-[10px] text-slate-500">Muncul sebagai pilihan "Kerjasama Platform" saat membuat kontrak, dan tertulis di nomor dokumen, mis. 144/PKS/{platformCode(list[0] || "Asmat")}/IX/2026.</p>
+                  </div>
+                );
+              })()}
               {!tenantForm.id ? (
                 <>
                   <div className="space-y-1.5">

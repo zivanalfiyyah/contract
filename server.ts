@@ -714,7 +714,16 @@ app.delete("/api/users/:id", requireAuth, requireRole("admin"), (req: AuthedRequ
 // ===== TENANT MANAGEMENT (super_admin only) =====
 app.get("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedRequest, res) => {
   const db = loadDB();
-  res.json(db.tenants);
+  // Sertakan platform efektif (termasuk fallback perusahaan bawaan) supaya
+  // form Edit Perusahaan menampilkan isi yang sama dengan yang dipakai wizard.
+  res.json((db.tenants as any[]).map((t) => ({ ...t, platforms: platformsForTenant(db, t.id) })));
+});
+
+// Platform kerja sama milik perusahaan pengguna yang sedang login — dipakai
+// dropdown "Kerjasama Platform" di wizard kontrak (semua peran boleh baca).
+app.get("/api/tenant-platforms", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  res.json({ platforms: platformsForTenant(db, tenantOf(req)) });
 });
 
 app.post("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedRequest, res) => {
@@ -728,7 +737,7 @@ app.post("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedRe
     return res.status(400).json({ error: "Email admin sudah terpakai" });
   }
   const tid = "t-" + Date.now();
-  db.tenants.push({ id: tid, name, branch: branch || "", active: true, createdAt: new Date().toISOString() });
+  db.tenants.push({ id: tid, name, branch: branch || "", active: true, platforms: normalizePlatformList(req.body.platforms), createdAt: new Date().toISOString() });
   const adminUser: User = {
     id: "usr-" + Date.now(), tenantId: tid, name: adminName || "Admin " + name,
     email: adminEmail, passwordHash: hashPassword(adminPassword), role: "admin", active: true,
@@ -750,6 +759,7 @@ app.put("/api/tenants/:id", requireAuth, requireRole("super_admin"), (req: Authe
   if (req.body.name) tenant.name = req.body.name;
   if (req.body.branch !== undefined) tenant.branch = req.body.branch;
   if (typeof req.body.active === "boolean") tenant.active = req.body.active;
+  if (Array.isArray(req.body.platforms)) tenant.platforms = normalizePlatformList(req.body.platforms);
   pushAudit(db, req, { action: "Update Tenant", details: `Memperbarui perusahaan "${tenant.name}"` });
   saveDB(db);
   res.json({ success: true, tenant });
@@ -1013,8 +1023,63 @@ const initialVendors: VendorData[] = [
 //  - LEGACY_DEFAULT_MASK: default LAMA — diperlakukan sebagai "belum dikustom",
 //    jadi otomatis di-upgrade ke default baru (lihat withSettingsDefaults).
 //    Mask yang benar-benar dikustom tenant TIDAK diubah.
-const REFERENCE_DEFAULT_MASK = "{Sequence:3}/{DocTypeCode}/{Codes}/{MonthRoman}/{Year}";
+//  - PREVIOUS_REFERENCE_MASK: default sebelum segmen {Platform} ditambahkan —
+//    juga dianggap "belum dikustom" dan di-upgrade otomatis.
+const REFERENCE_DEFAULT_MASK = "{Sequence:3}/{DocTypeCode}/{Platform}/{Codes}/{MonthRoman}/{Year}";
+const PREVIOUS_REFERENCE_MASK = "{Sequence:3}/{DocTypeCode}/{Codes}/{MonthRoman}/{Year}";
 const LEGACY_DEFAULT_MASK = "{Prefix}-{Year}-{Sequence:4}";
+// Format bawaan jenis Addendum — versi lama (tanpa {Platform}) di-upgrade
+// otomatis, sama seperti default mask di atas.
+const ADDENDUM_DEFAULT_MASK = "ADD-{Sequence:3}/{Platform}/{Year}";
+const PREVIOUS_ADDENDUM_MASK = "ADD-{Sequence:3}/{Year}";
+
+// Platform kerja sama (Asmat, Tiketux, dst) → segmen {Platform} pada nomor.
+// Ditulis lengkap huruf besar; spasi & "/" diganti "-" supaya tidak memecah
+// pemisah segmen nomor. Kosong = kontrak tidak terkait platform → segmen
+// dibuang otomatis oleh renderMask.
+function platformCode(name: string | undefined): string {
+  return String(name || "").trim().toUpperCase().replace(/[\s\/]+/g, "-").replace(/[^A-Z0-9\-]/g, "");
+}
+
+// Daftar platform dari request (Kelola Perusahaan) → array nama unik, rapi.
+function normalizePlatformList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const v of raw) {
+    const name = String(v ?? "").trim().slice(0, 50);
+    if (name && platformCode(name) && !out.some((x) => x.toLowerCase() === name.toLowerCase())) out.push(name);
+  }
+  return out.slice(0, 30);
+}
+
+// Platform kerja sama milik sebuah perusahaan (tenant.platforms). Perusahaan
+// bawaan (DEFAULT_TENANT_ID) yang tersimpan sebelum field ini ada otomatis
+// dapat Asmat & Tiketux; perusahaan lain mulai kosong sampai diisi di
+// Konfigurasi > Kelola Perusahaan.
+function platformsForTenant(db: any, tid: string): string[] {
+  const tenant = ((db.tenants || []) as any[]).find((t) => t.id === tid);
+  if (tenant && Array.isArray(tenant.platforms)) return normalizePlatformList(tenant.platforms);
+  return tid === DEFAULT_TENANT_ID ? ["Asmat", "Tiketux"] : [];
+}
+
+// Platform berlaku untuk SEMUA jenis dokumen, termasuk yang format nomornya
+// sudah dikustom tenant tanpa token {Platform}. Kalau mask belum memuatnya,
+// sisipkan segmen {Platform} tepat setelah kode jenis ({DocTypeCode} /
+// {Prefix}); kalau tak ada, sebelum bulan/tahun; paling akhir di ujung.
+// Token kosong (platform tidak dipilih) tetap dibuang renderMask, jadi mask
+// tanpa platform menghasilkan nomor yang sama persis seperti sebelumnya.
+function ensurePlatformToken(mask: string): string {
+  if (/\{Platform\}/.test(mask)) return mask;
+  for (const anchor of ["{DocTypeCode}", "{Prefix}"]) {
+    const i = mask.indexOf(anchor);
+    if (i >= 0) return mask.slice(0, i + anchor.length) + "/{Platform}" + mask.slice(i + anchor.length);
+  }
+  for (const anchor of ["{MonthRoman}", "{Month}", "{Year}"]) {
+    const i = mask.indexOf(anchor);
+    if (i >= 0) return mask.slice(0, i) + "{Platform}/" + mask.slice(i);
+  }
+  return mask + "/{Platform}";
+}
 
 function createDefaultDB() {
   return {
@@ -1236,7 +1301,7 @@ function defaultSettings() {
         { id: "dt-sewa-menyewa", name: "Sewa Menyewa", code: "SWM", extraCodes: [] as { label: string; value: string }[], categories: [] as string[], defaultTemplateId: "", numberMask: "" },
         // numberMask sengaja terisi (beda dari jenis dokumen lain di sini) —
         // addendum lazimnya punya seri nomor sendiri di praktik hukum Indonesia.
-        { id: "dt-addendum", name: "Addendum / Amandemen", code: "ADD", extraCodes: [] as { label: string; value: string }[], categories: [] as string[], defaultTemplateId: "", numberMask: "ADD-{Sequence:3}/{Year}" },
+        { id: "dt-addendum", name: "Addendum / Amandemen", code: "ADD", extraCodes: [] as { label: string; value: string }[], categories: [] as string[], defaultTemplateId: "", numberMask: ADDENDUM_DEFAULT_MASK },
         { id: "dt-legalitas", name: "Legalitas / Izin Perusahaan", code: "LGL", extraCodes: [] as { label: string; value: string }[], categories: ["Legalitas Perusahaan"], defaultTemplateId: "", numberMask: "" },
         { id: "dt-lainnya", name: "Lainnya", code: "LL", extraCodes: [] as { label: string; value: string }[], categories: [] as string[], defaultTemplateId: "", numberMask: "" },
       ],
@@ -1364,6 +1429,9 @@ function withSettingsDefaults(settings: any) {
   // feature (contract lifecycle is now Draft → Aktif without signing).
   const savedMasterData = { ...(settings?.masterData || {}) };
   delete savedMasterData.internalDocKinds;
+  // platforms: dipindah dari masterData ke data perusahaan (tenant.platforms,
+  // Kelola Perusahaan) — bersihkan sisa lama bila pernah tersimpan.
+  delete savedMasterData.platforms;
   // docTypes adalah array, jadi merge dangkal di bawah akan MENGGANTI array
   // default sepenuhnya kalau tenant sudah punya list sendiri — backfill field
   // baru (id/defaultTemplateId/numberMask) di sini supaya tenant lama tetap
@@ -1374,7 +1442,7 @@ function withSettingsDefaults(settings: any) {
       name: d.name,
       categories: Array.isArray(d.categories) ? d.categories : [],
       defaultTemplateId: d.defaultTemplateId || "",
-      numberMask: d.numberMask || "",
+      numberMask: d.numberMask === PREVIOUS_ADDENDUM_MASK ? ADDENDUM_DEFAULT_MASK : (d.numberMask || ""),
       // Modul tujuan jenis kontrak: "external" | "employee" | "both".
       // Data lama tanpa field ini = "both" (muncul di kontrak eksternal & karyawan).
       appliesTo: d.appliesTo === "external" || d.appliesTo === "employee" ? d.appliesTo : "both",
@@ -1395,7 +1463,11 @@ function withSettingsDefaults(settings: any) {
   }
   // Upgrade default: mask LAMA (atau kosong) dianggap belum dikustom → pakai
   // default baru gaya referensi. Mask yang benar-benar dikustom tak diubah.
-  if (!savedMasterData.defaultNumberMask || savedMasterData.defaultNumberMask === LEGACY_DEFAULT_MASK) {
+  if (
+    !savedMasterData.defaultNumberMask ||
+    savedMasterData.defaultNumberMask === LEGACY_DEFAULT_MASK ||
+    savedMasterData.defaultNumberMask === PREVIOUS_REFERENCE_MASK
+  ) {
     savedMasterData.defaultNumberMask = REFERENCE_DEFAULT_MASK;
   }
   const merged: any = {
@@ -1769,11 +1841,12 @@ app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
 app.get("/api/contracts/generate-number", requireAuth, (req: AuthedRequest, res) => {
   const category = (req.query.category as string) || "General";
   const docType = (req.query.docType as string) || undefined;
+  const platform = (req.query.platform as string) || undefined;
   const db = loadDB();
   const tid = tenantOf(req);
   const currentYear = new Date().getFullYear().toString();
   // Pratinjau: JANGAN konsumsi nomor (consume:false) — cuma tampilkan calon nomor.
-  const { number } = generateContractNumber(db, tid, category, docType, currentYear, { consume: false });
+  const { number } = generateContractNumber(db, tid, category, docType, currentYear, { consume: false, platform });
   res.json({ contractNumber: number });
 });
 
@@ -1799,7 +1872,7 @@ app.get("/api/contracts/:id", requireAuth, (req: AuthedRequest, res) => {
 // DCS_MASK_TOKENS) — sebelumnya hanya ada di sisi DCS tanpa alasan bisnis,
 // murni kesenjangan implementasi antara dua mesin yang sebenarnya berbagi
 // renderMask() yang sama (numbering-utils.ts).
-const CONTRACT_MASK_TOKENS = ["Prefix", "Category", "DocType", "DocTypeCode", "Codes", "MonthRoman", "Year", "Month", "Day"];
+const CONTRACT_MASK_TOKENS = ["Prefix", "Category", "DocType", "DocTypeCode", "Platform", "Codes", "MonthRoman", "Year", "Month", "Day"];
 
 const CONTRACT_CODE_SEP = "/"; // pemisah antar kode tambahan (extraCodes) di {Codes}
 
@@ -1850,9 +1923,11 @@ function captureTemplateSnapshot(db: any, tid: string, templateId: string | unde
 // Auto agreement number, format token dinamis (lihat numbering-utils.ts).
 // Penomoran berpatokan tunggal pada Jenis Dokumen (docType) jika dipilih.
 // Nomor urut memakai COUNTER PERSISTEN per (tenant|jenis|tahun) di db.numberCounters.
+// `platform` (opsional) hanya mengisi segmen {Platform} — TIDAK memecah urutan:
+// Asmat & Tiketux berbagi satu nomor urut per jenis dokumen per tahun.
 function generateContractNumber(
   db: any, tid: string, category: string, docType: string | undefined, year: string,
-  opts?: { consume?: boolean },
+  opts?: { consume?: boolean; platform?: string },
 ): { number: string; seq: number } {
   const consume = opts?.consume !== false;
   const md = withSettingsDefaults(rawSettingsFor(db, tid)).masterData;
@@ -1868,7 +1943,8 @@ function generateContractNumber(
   const dtCode = explicitCode || (docType ? suggestDocTypeCode(docType) : "");
   const prefix = dtCode || md.defaultNumberPrefix || "GA-AGR";
   let mask = dtObj?.numberMask || md.defaultNumberMask || REFERENCE_DEFAULT_MASK;
-  if (mask === LEGACY_DEFAULT_MASK) mask = REFERENCE_DEFAULT_MASK;
+  if (mask === LEGACY_DEFAULT_MASK || mask === PREVIOUS_REFERENCE_MASK) mask = REFERENCE_DEFAULT_MASK;
+  mask = ensurePlatformToken(mask);
 
   if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
   const key = contractScopeKey(tid, category, docType, year);
@@ -1895,7 +1971,7 @@ function generateContractNumber(
   const now = new Date();
   const number = renderMask(mask, {
     Prefix: prefix, Category: category, DocType: docType || "",
-    DocTypeCode: dtCode || prefix, Codes: codes,
+    DocTypeCode: dtCode || prefix, Platform: platformCode(opts?.platform), Codes: codes,
     Year: Number(year), Month: now.getMonth() + 1, Day: now.getDate(),
   }, seq);
   return { number, seq };
@@ -2469,12 +2545,19 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
   // untuk dokumen yg dibuat di sistem). Kalau manualNumber kosong, jatuh ke
   // penomoran otomatis seperti biasa.
   const manualNumber = typeof req.body.manualNumber === "string" ? req.body.manualNumber.trim() : "";
+  // Platform kerja sama (opsional) — wajib salah satu dari master data bila diisi.
+  const platform = typeof req.body.platform === "string" ? req.body.platform.trim() : "";
+  if (platform) {
+    if (!platformsForTenant(db, tid).includes(platform)) {
+      return res.status(400).json({ error: `Platform "${platform}" tidak terdaftar untuk perusahaan ini (Konfigurasi > Kelola Perusahaan).` });
+    }
+  }
   let contractNumber: string, numberSeq: number | undefined;
   if (manualNumber) {
     contractNumber = manualNumber.slice(0, 80);
     numberSeq = undefined;
   } else {
-    const gen = generateContractNumber(db, tid, req.body.category, req.body.docType, currentYear);
+    const gen = generateContractNumber(db, tid, req.body.category, req.body.docType, currentYear, { platform });
     contractNumber = gen.number;
     numberSeq = gen.seq;
   }
@@ -2518,6 +2601,7 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
     currentDocumentVersion: originalDocument ? 0 : undefined,
     masterPdfUrl: originalDocument ? originalDocument.url : (req.body.masterPdfUrl || null),
     docType: req.body.docType || undefined,
+    platform: platform || undefined,
     notes: req.body.notes || undefined,
     subFolderId: req.body.subFolderId || undefined,
     copies: buildContractCopies(Number(req.body.copyCount) || 1, !!req.body.hasMaterai),
@@ -2919,7 +3003,7 @@ app.post("/api/contracts/bulk-import/commit", requireAuth, requireRole("admin", 
     // jejaknya. Kalau kosong, baru sistem yang menerbitkan nomor.
     const nomorAsli = String(r.documentNumber || "").trim();
     const tahun = String(r.startDate).slice(0, 4);
-    const gen = nomorAsli ? null : generateContractNumber(db, tid, r.category || "", r.docType || undefined, tahun);
+    const gen = nomorAsli ? null : generateContractNumber(db, tid, r.category || "", r.docType || undefined, tahun, { platform: r.platform || undefined });
     const now = new Date().toISOString();
     const kontrak: any = {
       id: "ctr-" + Date.now() + "-" + i,
@@ -2929,6 +3013,7 @@ app.post("/api/contracts/bulk-import/commit", requireAuth, requireRole("admin", 
       title: judul,
       category: r.category || "",
       docType: r.docType || "",
+      platform: r.platform || undefined,
       templateId: "",
       party1Name: r.party1Name || "", party2Name: r.party2Name || "", party2Type: r.party2Type || "",
       startDate: r.startDate, endDate: r.endDate,
@@ -3667,7 +3752,7 @@ app.post("/api/contracts/:id/addendum", requireAuth, requireRole("admin", "staff
 
   const ADDENDUM_DOC_TYPE = "Addendum / Amandemen";
   const currentYear = new Date().getFullYear().toString();
-  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, ADDENDUM_DOC_TYPE, currentYear);
+  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, ADDENDUM_DOC_TYPE, currentYear, { platform: parent.platform });
 
   const newAddendum: Contract = {
     id: "ctr-" + Date.now(),
@@ -3678,6 +3763,8 @@ app.post("/api/contracts/:id/addendum", requireAuth, requireRole("admin", "staff
     numberSeq,
     title: req.body.title || `Addendum ${parent.title}`,
     category: parent.category,
+    // Addendum ikut platform kerja sama kontrak induknya.
+    platform: parent.platform,
     party1Name: parent.party1Name,
     party2Name: parent.party2Name,
     party2Type: parent.party2Type,
@@ -4515,7 +4602,7 @@ app.post("/api/contracts/:id/renew", requireAuth, requireRole("admin", "staff", 
     const endObj = new Date(startObj);
     endObj.setFullYear(endObj.getFullYear() + 1); // Perpanjang otomatis 1 tahun
 
-    const { number: newContractNumber, seq: newNumberSeq } = generateContractNumber(db, tid, sourceContract.category, sourceContract.docType, currentYear);
+    const { number: newContractNumber, seq: newNumberSeq } = generateContractNumber(db, tid, sourceContract.category, sourceContract.docType, currentYear, { platform: sourceContract.platform });
     const newStartDate = req.body.startDate || startObj.toISOString().split("T")[0];
     const newEndDate = req.body.endDate || endObj.toISOString().split("T")[0];
 

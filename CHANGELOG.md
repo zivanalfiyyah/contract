@@ -1,5 +1,21 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #7] — Segmen Platform Kerjasama (Asmat / Tiketux) di nomor dokumen kontrak
+
+### Ringkasan
+
+- **Dropdown baru "Kerjasama Platform" (opsional)** di Wizard Kontrak, Langkah 1 — tampil untuk semua kategori, semua jenis dokumen, dan kedua metode (Buat dari Template & Upload Dokumen).
+- **Token nomor baru `{Platform}`.** Format default sekarang `{Sequence:3}/{DocTypeCode}/{Platform}/{Codes}/{MonthRoman}/{Year}` → mis. `144/PKS/TIKETUX/IX/2026`. Platform tidak dipilih = segmen hilang otomatis → `144/PKS/IX/2026` (sama seperti sebelumnya).
+- **Nomor urut tetap satu urutan** per jenis dokumen per tahun untuk semua platform (Asmat & Tiketux tidak punya urutan terpisah).
+- **Daftar platform milik tiap perusahaan, dikelola di Konfigurasi > Kelola Perusahaan** (form Tambah/Edit Perusahaan, field `tenant.platforms`). Wizard hanya menampilkan platform perusahaan yang sedang login; perusahaan tanpa platform tidak melihat dropdown ini. Perusahaan bawaan (`t-01`) otomatis berisi Asmat & Tiketux, perusahaan lain mulai kosong.
+- Endpoint baru `GET /api/tenant-platforms`; `POST/PUT /api/tenants` menerima `platforms: string[]`. Nama ditulis lengkap huruf besar di nomor; spasi diganti `-` (mis. "Bus Online" → `BUS-ONLINE`).
+- Kontrak menyimpan field baru `platform`. Perpanjangan & Addendum mewarisi platform kontrak sumber/induknya.
+
+### Migrasi
+
+- Tidak perlu migrasi data. Nomor kontrak yang sudah terbit tidak diubah.
+- Tenant yang masih memakai format default lama (`{Sequence:3}/{DocTypeCode}/{Codes}/{MonthRoman}/{Year}`) dan format Addendum bawaan lama (`ADD-{Sequence:3}/{Year}`) otomatis di-upgrade ke versi ber-`{Platform}`. Format yang sudah dikustom tenant tidak diubah di Konfigurasi, tetapi saat nomor diterbitkan segmen `{Platform}` otomatis disisipkan setelah kode jenis (`{DocTypeCode}`/`{Prefix}`) bila mask belum memuatnya — jadi platform tetap muncul di semua jenis dokumen.
+
 ## [Unreleased #6] — Editor lengkap Document Workspace: edit teks asli PDF, editor Word, dukungan .doc
 
 ### Ringkasan

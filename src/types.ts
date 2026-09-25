@@ -3,6 +3,10 @@ export interface Tenant {
   name: string;
   branch: string;
   active?: boolean;
+  // Platform kerja sama milik perusahaan (mis. Asmat, Tiketux) — pilihan
+  // dropdown "Kerjasama Platform" di wizard kontrak & token {Platform} di
+  // nomor. Diatur di Konfigurasi > Kelola Perusahaan.
+  platforms?: string[];
   createdAt?: string;
 }
 
@@ -302,6 +306,7 @@ export interface Contract {
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF
   numberSeq?: number; // Nomor urut yang dikonsumsi dari counter persisten (per jenis+tahun) — dipakai sbg baseline anti-duplikat
   docType?: string; // Jenis dokumen saat pendaftaran arsip (Perjanjian, MOU, Addendum, dll)
+  platform?: string; // Platform kerja sama (Asmat, Tiketux, dst — masterData.platforms); mengisi token {Platform} di nomor. Kosong = tidak terkait platform
   notes?: string; // Catatan bebas dari form pendaftaran dokumen
   exportedPdfUrl?: string; // Hasil export PDF yang di-host server untuk dibagikan via email/WA
   exportedPdfKey?: string; // Kunci storage berkas export di atas — dipakai fetch ulang server-side (mis. lampiran email)

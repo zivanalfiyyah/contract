@@ -512,7 +512,7 @@ export interface ContractVersion {
   isOriginal?: boolean;
   file?: StoredDocumentRef;
   basedOnVersion?: number;
-  editMethod?: "original" | "docx-inline" | "pdf-overlay" | "pdf-text" | "revision-upload" | "converted";
+  editMethod?: "original" | "docx-inline" | "pdf-overlay" | "pdf-text" | "revision-upload" | "converted" | "pdf-to-docx";
   // Berkas yang diunggah user bila `file` hasil konversi (mis. .doc -> .docx
   // agar bisa diedit). Berkas asli ini tetap tersimpan & bisa diunduh.
   sourceFile?: StoredDocumentRef;

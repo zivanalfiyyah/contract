@@ -20,13 +20,16 @@
 //           .docx ASLI (src/docx-patch.ts), part lain disalin apa adanya.
 //  - DOC  : dikonversi ke .docx (LibreOffice di server) utk pratinjau & edit;
 //           .doc asli tetap tersimpan.
+//  - PDF -> Word: tombol "Edit seperti Word" mengubah PDF jadi .docx
+//           (pdf-to-docx.ts, server) sebagai versi baru lalu membuka editor
+//           Word di atas — teks turun baris otomatis. PDF asli tetap utuh.
 // ---------------------------------------------------------------------------
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Download, Edit3, FileText, History, Loader2, RotateCcw, Save, Type, Upload, X,
   Square, Trash2, AlertTriangle, Lock, ZoomIn, ZoomOut, CheckCircle, Bold, Italic,
   Underline, AlignLeft, AlignCenter, AlignRight, AlignJustify, TableRowsSplit, Rows3, TextCursorInput,
-  AlignVerticalSpaceAround,
+  AlignVerticalSpaceAround, FileType2,
 } from "lucide-react";
 import type { Contract, ContractVersion, StoredDocumentRef } from "./types";
 import {
@@ -49,7 +52,7 @@ interface Props {
 interface VersionsResponse {
   currentVersion: number;
   versions: ContractVersion[];
-  capabilities?: { docConversion: boolean; pdfTextEdit: boolean };
+  capabilities?: { docConversion: boolean; pdfTextEdit: boolean; pdfToWord?: boolean };
 }
 
 type BuildResult =
@@ -79,6 +82,7 @@ const METHOD_LABEL: Record<string, string> = {
   "pdf-overlay": "Anotasi di workspace (PDF)",
   "revision-upload": "Unggah revisi / kembalikan",
   converted: "Konversi .doc → .docx",
+  "pdf-to-docx": "Diubah dari PDF ke Word",
 };
 
 function nameForVersion(original: string, version: number, ext: string) {
@@ -210,6 +214,24 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
     setDirty(false);
   };
 
+  // "Edit seperti Word": PDF -> .docx (versi baru), lalu langsung mode edit.
+  const startWordEdit = async () => {
+    const ok = await askConfirm(
+      "PDF ini akan diubah menjadi dokumen Word sebagai versi baru, supaya bisa diedit seperti di Word (teks turun baris otomatis, Enter = paragraf baru). PDF asli tetap tersimpan utuh di riwayat versi. Periksa kembali tampilannya setelah diubah.",
+      { title: "Edit seperti Word", confirmLabel: "Ubah ke Word" },
+    );
+    if (!ok) return;
+    setSaving(true);
+    try {
+      const data = await postJson(`/api/contracts/${contract.id}/document-versions/pdf-to-docx`, {});
+      await afterNewVersion(data);
+      setPendingEdit(true);
+      showToast(`PDF diubah ke Word sebagai Versi ${data.version.version} — PDF asli tetap tersimpan.`, "success");
+    } catch (e: any) {
+      showToast(e.message, "warning");
+    } finally { setSaving(false); }
+  };
+
   const handleSave = async () => {
     if (!shownFile || !fileBuf || !editorRef.current) return;
     setSaving(true);
@@ -322,6 +344,13 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Edit3 className="w-3.5 h-3.5" />} Edit Dokumen
             </button>
           )}
+          {!editMode && canEditShown && shownFile?.format === "pdf" && caps?.pdfToWord && (
+            <button type="button" onClick={startWordEdit} disabled={saving || loading}
+              title="Ubah PDF ini menjadi dokumen Word (versi baru) supaya bisa diedit seperti di Word — teks otomatis turun baris. PDF asli tetap tersimpan."
+              className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-sky-500/10 border-sky-500/30 text-sky-300 hover:bg-sky-500/20 flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileType2 className="w-3.5 h-3.5" />} Edit seperti Word
+            </button>
+          )}
           {editMode && (
             <>
               <input
@@ -379,6 +408,9 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
       )}
       {!isViewingCurrent && (
         <p className="text-[11px] text-amber-300/90 flex items-center gap-1.5"><AlertTriangle className="w-3 h-3" /> Anda melihat versi lama (read-only). Versi aktif: {currentVersion === 0 ? "Original" : `Versi ${currentVersion}`}.</p>
+      )}
+      {!editMode && canEditShown && shownFile?.format === "pdf" && caps?.pdfToWord && (
+        <p className="text-[11px] text-sky-300/90">"Edit Dokumen" mengubah teks PDF per baris (tata letak tetap persis). Untuk menambah/mengubah kalimat panjang dengan teks yang otomatis turun baris, pakai "Edit seperti Word" — PDF asli tetap tersimpan.</p>
       )}
       {docAsDocx && !editMode && (
         <p className="text-[11px] text-sky-300/90">Berkas Word 97-2003 (.doc) ditampilkan lewat konversi ke .docx. Klik "Edit Dokumen" untuk membuat versi .docx yang bisa diedit — berkas .doc asli tetap tersimpan.</p>

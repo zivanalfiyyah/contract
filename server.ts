@@ -24,6 +24,7 @@ import {
 } from "./contract-documents.js";
 import { convertDocToDocx, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
+import { convertPdfToDocx } from "./pdf-to-docx.js";
 import { pool as dcsPool } from "./db.js";
 import { createDcsRouter, initDcs } from "./dcs/routes.js";
 import { runDcsReminderCheck, startDcsReminderScheduler } from "./dcs/reminders.js";
@@ -4266,7 +4267,7 @@ app.get("/api/contracts/:id/document-versions", requireAuth, (req: AuthedRequest
     documentSource: resolveDocumentSource(contract),
     currentVersion: currentDocumentVersionNumber(contract, versions),
     versions,
-    capabilities: { docConversion: isOfficeConverterAvailable(), pdfTextEdit: true },
+    capabilities: { docConversion: isOfficeConverterAvailable(), pdfTextEdit: true, pdfToWord: true },
   });
 });
 
@@ -4474,6 +4475,41 @@ app.post("/api/contracts/:id/document-versions/convert", requireAuth, requireRol
     res.json({ success: true, contract, version: ver });
   } catch (err: any) {
     res.status(err?.status || 500).json({ error: err?.message || "Konversi gagal." });
+  }
+});
+
+// "Edit seperti Word": ubah versi aktif PDF -> .docx sebagai versi BARU
+// (pdf-to-docx.ts, tanpa Python/layanan luar). PDF-nya tetap tersimpan utuh
+// di versi sebelumnya & jadi sourceFile versi baru ini.
+app.post("/api/contracts/:id/document-versions/pdf-to-docx", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+  const pre = findOwnedContract(loadDB(), req, req.params.id);
+  if (!assertEditableUploadContract(pre, res)) return;
+  const preVersions = uploadedDocumentVersions(loadDB(), pre);
+  const cur = preVersions.find((v) => v.version === currentDocumentVersionNumber(pre, preVersions));
+  if (!cur?.file || cur.file.format !== "pdf") return res.status(400).json({ error: "Versi aktif bukan berkas PDF." });
+  try {
+    const { docx, stats } = await convertPdfToDocx(await readStoredDocument(cur.file, uploadDir));
+    const baseName = (preVersions.find((v) => v.isOriginal)?.file?.fileName || cur.file.fileName).replace(/\.pdf$/i, "").replace(/\s*\(v\d+\)$/, "");
+    const db = loadDB();
+    const contract = findOwnedContract(db, req, req.params.id)!;
+    const versions = uploadedDocumentVersions(db, contract);
+    const current = currentDocumentVersionNumber(contract, versions);
+    if (current !== cur.version) return res.status(409).json({ error: "Dokumen sudah berubah. Muat ulang workspace." });
+    const nextNum = versions.length ? Math.max(...versions.map((v) => v.version)) + 1 : 1;
+    const stored = await storeFile(docx, `contractdoc-${contract.id.replace(/[^\w-]/g, "")}-${Date.now()}-pdf2docx.docx`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    const ver = pushDocumentVersion(db, req, contract, buildDocumentRef(docx, stored, `${baseName} (v${nextNum}).docx`, "docx", req.user!.name), {
+      comment: `Diubah dari PDF ke Word agar bisa diedit seperti Word (dari ${cur.isOriginal ? "original" : `versi ${cur.version}`})`,
+      basedOnVersion: current, editMethod: "pdf-to-docx", sourceFile: cur.file,
+    });
+    pushAudit(db, req, {
+      contractId: contract.id, contractNumber: contract.contractNumber, action: "Convert Document",
+      details: `Konversi PDF "${cur.file.fileName}" ke Word sebagai versi ${ver.version} (${stats.paragraphs} paragraf, ${stats.tables} tabel, ${stats.images} gambar). PDF asli tetap utuh.`,
+    });
+    saveDB(db);
+    res.json({ success: true, contract, version: ver, stats });
+  } catch (err: any) {
+    if (!err?.status) logger.error({ err, contractId: pre.id }, "Gagal mengubah PDF ke Word");
+    res.status(err?.status || 500).json({ error: err?.message || "Gagal mengubah PDF ke Word." });
   }
 });
 

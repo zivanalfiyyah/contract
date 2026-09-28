@@ -1,5 +1,24 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #8] — "Edit seperti Word" untuk kontrak hasil Upload PDF
+
+### Ringkasan
+
+- **Tombol baru "Edit seperti Word"** di Document Workspace saat versi aktif berupa PDF (kontrak Draft). PDF diubah menjadi dokumen Word (.docx) sebagai **versi baru**, lalu langsung terbuka di editor Word yang sudah ada: teks otomatis turun baris saat mentok di margin kanan, Enter = paragraf baru, isi di bawahnya ikut bergeser.
+- **PDF asli tidak pernah diubah** — tetap di riwayat versi & tercatat sebagai `sourceFile` versi hasil konversi.
+- Konversi dilakukan di server **tanpa Python / layanan luar** (`pdf-to-docx.ts`): baris teks dibaca PDFium (yang sudah dipakai editor PDF), digabung jadi paragraf, lalu disusun jadi .docx dengan JSZip (sudah ada di dependensi). Yang dipertahankan: perataan (kiri/tengah/kanan/rata kiri-kanan), indentasi & daftar bernomor, jarak antarparagraf & jarak baris, tebal/miring/warna/ukuran huruf, kotak catatan berwarna, garis pemisah, tabel bergaris, gambar/logo, serta teks berulang di atas/bawah halaman (jadi header/footer, nomor halaman otomatis).
+- Editor PDF per baris ("Edit Dokumen") **tetap ada** untuk koreksi kecil tanpa mengubah tata letak.
+
+### Endpoint baru
+
+- `POST /api/contracts/:id/document-versions/pdf-to-docx` — ubah versi aktif (PDF) ke Word sebagai versi baru (`editMethod: "pdf-to-docx"`). `GET .../document-versions` menambah `capabilities.pdfToWord`.
+
+### Batasan
+
+- PDF hasil scan (isinya gambar) ditolak dengan pesan jelas — tidak bisa jadi Word yang bisa diedit.
+- Tabel tanpa garis tegak menjadi baris ber-tab; tata letak dua kolom/objek bertumpuk bisa bergeser. Periksa hasil konversi sebelum dipakai.
+- Tidak perlu migrasi data & tidak ada dependency baru.
+
 ## [Unreleased #7] — Segmen Platform Kerjasama (Asmat / Tiketux) di nomor dokumen kontrak
 
 ### Ringkasan

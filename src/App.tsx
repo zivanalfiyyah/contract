@@ -11,6 +11,7 @@ import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
 import UploadedDocumentWorkspace from "./UploadedDocumentWorkspace";
+import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
 import {
   FileText,
   Briefcase,
@@ -3637,6 +3638,11 @@ export default function App() {
 
   // PDF Export State
   const [isExportingPdf, setIsExportingPdf] = useState(false);
+  // Pop-up pilihan format (Word/PDF) utk tombol "Download Dokumen" pada
+  // kontrak hasil Upload Dokumen — lihat handleExportPdf & DocumentDownloadModal.
+  const [docDownloadPicker, setDocDownloadPicker] = useState<{
+    contractId: string; sourceFormat: SourceDocFormat; officeToPdfAvailable: boolean;
+  } | null>(null);
   // Lihat file input "Berkas Dokumen/Template Kontrak" di wizard mode Upload
   // — true selagi /api/master-contracts/extract-text lagi baca & memecah
   // teks berkas jadi pasal-pasal.
@@ -6942,10 +6948,32 @@ export default function App() {
       showToast("Dokumen belum bisa diunduh — selesaikan approval matriks terlebih dahulu.", "warning");
       return;
     }
-    // Dokumen Upload: yang diekspor adalah BERKAS dokumen versi aktif apa
-    // adanya (layout asli), bukan screenshot preview template.
+    // Dokumen Upload: tanyakan dulu format unduhan (Word atau PDF) lewat
+    // pop-up — isi yang diunduh tetap BERKAS versi aktif apa adanya (layout
+    // asli), bukan screenshot preview template.
     if (isUploadedDocument(selectedContract)) {
-      window.location.href = `/api/contracts/${selectedContract.id}/document?version=current&download=1`;
+      const sourceFormat = selectedContract.currentDocument?.format as SourceDocFormat;
+      // Gambar/format lain tidak punya opsi Word maupun PDF sama sekali (tidak
+      // ada konversi yang berlaku) — pop-up di kasus ini hanya akan menampilkan
+      // dua tombol nonaktif tanpa jalan keluar. Unduh langsung saja seperti
+      // sebelumnya, sama seperti tombol "Download" di kartu dokumen.
+      if (sourceFormat !== "docx" && sourceFormat !== "pdf" && sourceFormat !== "doc") {
+        window.location.href = `/api/contracts/${selectedContract.id}/document?version=current&download=1`;
+        return;
+      }
+      // PDF dari .docx SELALU bisa diunduh (LibreOffice kalau ada, atau
+      // fallback mammoth+pdf-lib yg 100% gratis/open source kalau tidak) —
+      // officeToPdfExact hanya menentukan pesan info di pop-up, bukan
+      // mengaktifkan/menonaktifkan tombolnya.
+      let officeToPdfExact = false;
+      try {
+        const r = await fetch(`/api/contracts/${selectedContract.id}/document-versions`);
+        if (r.ok) officeToPdfExact = !!(await r.json()).capabilities?.officeToPdfExact;
+      } catch {
+        // Biarkan false — pop-up tetap menampilkan opsi PDF (fallback selalu
+        // tersedia utk .docx), hanya catatan "tata letak sederhana" yg tampil.
+      }
+      setDocDownloadPicker({ contractId: selectedContract.id, sourceFormat, officeToPdfAvailable: officeToPdfExact });
       return;
     }
     try {
@@ -22598,6 +22626,19 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {docDownloadPicker && (
+        <DocumentDownloadModal
+          open
+          onClose={() => setDocDownloadPicker(null)}
+          sourceFormat={docDownloadPicker.sourceFormat}
+          officeToPdfAvailable={docDownloadPicker.officeToPdfAvailable}
+          onPick={(format) => {
+            window.location.href = buildDocumentDownloadUrl(docDownloadPicker.contractId, "current", format);
+            setDocDownloadPicker(null);
+          }}
+        />
       )}
 
       {pdfShare && (

@@ -22,7 +22,7 @@ import {
   resolveDocumentSource, sniffFormat, extForFormat, cleanFileName, buildDocumentRef,
   legacyDocumentRef, documentVersionsOf, readStoredDocument, contentDisposition,
 } from "./contract-documents.js";
-import { convertDocToDocx, isOfficeConverterAvailable } from "./office-convert.js";
+import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
 import { pool as dcsPool } from "./db.js";
@@ -4267,7 +4267,11 @@ app.get("/api/contracts/:id/document-versions", requireAuth, (req: AuthedRequest
     documentSource: resolveDocumentSource(contract),
     currentVersion: currentDocumentVersionNumber(contract, versions),
     versions,
-    capabilities: { docConversion: isOfficeConverterAvailable(), pdfTextEdit: true, pdfToWord: true },
+    // officeToPdf: unduh .docx sbg PDF SELALU bisa (fallback mammoth+pdf-lib
+    // kalau LibreOffice belum ada). officeToPdfExact: true = hasilnya persis
+    // tata letak asli (LibreOffice), false = teks polos (fallback, tanpa
+    // tabel/gambar/format) — dipakai utk pesan info di pop-up unduhan.
+    capabilities: { docConversion: isOfficeConverterAvailable(), pdfTextEdit: true, pdfToWord: true, officeToPdf: true, officeToPdfExact: isOfficeConverterAvailable() },
   });
 });
 
@@ -4305,6 +4309,35 @@ app.get("/api/contracts/:id/document", requireAuth, async (req: AuthedRequest, r
       res.setHeader("Cache-Control", "private, no-store");
       res.setHeader("X-Converted-From", "doc");
       return res.send(out);
+    }
+    // ?format=pdf (bersama download=1) : unduh versi .docx yang sedang aktif
+    // sebagai PDF hasil konversi LibreOffice. TIDAK membuat versi baru & TIDAK
+    // mengubah berkas .docx yang tersimpan — murni format unduhan yang dipilih
+    // pengguna di pop-up "Download". Hanya berlaku utk sumber .docx; format
+    // lain (pdf/doc/image) mengabaikan parameter ini dan lanjut ke unduhan
+    // biasa di bawah, supaya perilaku lama tidak berubah.
+    if (download && req.query.format === "pdf" && fileRef.format === "docx") {
+      let pdfBuf: Buffer;
+      try {
+        pdfBuf = await convertedPdfFor(buf);
+      } catch (convErr: any) {
+        logger.error({ err: convErr, contractId: contract.id }, "Gagal mengonversi dokumen ke PDF");
+        return res.status(convErr?.status || 500).json({ error: convErr?.message || "Gagal mengonversi dokumen ke PDF." });
+      }
+      pushAudit(db, req, {
+        contractId: contract.id, contractNumber: contract.contractNumber,
+        action: "Download Document",
+        details: `${req.user!.name} mengunduh dokumen "${ver.file.fileName}" (versi ${ver.version}${ver.isOriginal ? " — original" : ""}) sebagai PDF (dikonversi dari Word).`,
+      });
+      saveDB(db);
+      const pdfName = ver.file.fileName.replace(/\.docx$/i, "") + ".pdf";
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Length", pdfBuf.length);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Document-Version", String(ver.version));
+      res.setHeader("X-Converted-To", "pdf");
+      res.setHeader("Content-Disposition", contentDisposition("attachment", pdfName));
+      return res.send(pdfBuf);
     }
     const wmSettings = withSettingsDefaults(rawSettingsFor(db, tenantOf(req)));
     if (download && fileRef.format === "pdf" && wmSettings.contractWatermark) {
@@ -4440,6 +4473,85 @@ async function convertedDocxFor(buf: Buffer): Promise<Buffer> {
   const out = await convertDocToDocx(buf);
   convertedCache.set(key, out);
   if (convertedCache.size > 20) convertedCache.delete(convertedCache.keys().next().value!);
+  return out;
+}
+
+// Karakter di luar Latin-1 tidak didukung StandardFonts pdf-lib (WinAnsi) dan
+// akan membuat drawText() melempar error — ganti dgn padanan ASCII/tanda "?"
+// supaya fallback di bawah tidak pernah gagal karena karakter aneh.
+function sanitizeForStandardFont(s: string): string {
+  return s
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[–—]/g, "-")
+    .replace(/…/g, "...")
+    .replace(/\t/g, "    ")
+    .replace(/[^\x00-\xFF]/g, "?");
+}
+
+// Fallback konversi .docx -> PDF TANPA LibreOffice (100% npm, sudah jadi
+// dependency proyek ini: mammoth + pdf-lib — tidak ada instalasi tambahan
+// apa pun di server/komputer). Isi teks lengkap diambil apa adanya, tapi tata
+// letak disederhanakan jadi teks polos berjajar (tanpa tabel, gambar, atau
+// format asli seperti bold/rata tengah). Dipakai otomatis saat LibreOffice
+// belum terpasang, supaya tombol "Download" -> PDF tetap selalu berfungsi.
+async function plainTextDocxToPdf(buf: Buffer): Promise<Buffer> {
+  const { value: rawText } = await mammoth.extractRawText({ buffer: buf });
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontSize = 11;
+  const lineHeight = fontSize * 1.45;
+  const pageWidth = 595.28; // A4 dalam point
+  const pageHeight = 841.89;
+  const margin = 56;
+  const maxWidth = pageWidth - margin * 2;
+
+  const lines: string[] = [];
+  for (const rawPara of rawText.split(/\r?\n/)) {
+    const para = sanitizeForStandardFont(rawPara);
+    if (!para.trim()) { lines.push(""); continue; }
+    let cur = "";
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      const test = cur ? `${cur} ${word}` : word;
+      if (cur && font.widthOfTextAtSize(test, fontSize) > maxWidth) {
+        lines.push(cur);
+        cur = word;
+      } else {
+        cur = test;
+      }
+    }
+    lines.push(cur);
+  }
+
+  let page = pdfDoc.addPage([pageWidth, pageHeight]);
+  let y = pageHeight - margin;
+  for (const line of lines) {
+    if (y < margin) {
+      page = pdfDoc.addPage([pageWidth, pageHeight]);
+      y = pageHeight - margin;
+    }
+    if (line) page.drawText(line, { x: margin, y, size: fontSize, font, color: rgb(0.12, 0.12, 0.12) });
+    y -= lineHeight;
+  }
+  return Buffer.from(await pdfDoc.save());
+}
+
+// Cache hasil konversi .docx -> PDF utk unduhan format PDF (per hash isi berkas).
+// Terpisah dari convertedCache (yang isinya .docx) supaya tidak tertukar.
+const convertedPdfCache = new Map<string, Buffer>();
+async function convertedPdfFor(buf: Buffer): Promise<Buffer> {
+  const key = sha256(buf);
+  const hit = convertedPdfCache.get(key);
+  if (hit) return hit;
+  // LibreOffice (bila terpasang) menghasilkan PDF yg identik dgn tata letak
+  // asli. Kalau belum terpasang, fallback mammoth+pdf-lib di atas dipakai
+  // otomatis supaya tombol PDF tetap selalu berfungsi — 100% gratis & open
+  // source, tanpa instalasi tambahan.
+  const out = isOfficeConverterAvailable()
+    ? await convertDocxToPdf(buf)
+    : await plainTextDocxToPdf(buf);
+  convertedPdfCache.set(key, out);
+  if (convertedPdfCache.size > 20) convertedPdfCache.delete(convertedPdfCache.keys().next().value!);
   return out;
 }
 

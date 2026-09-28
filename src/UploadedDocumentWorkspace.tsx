@@ -36,6 +36,7 @@ import {
   loadDocx, bindRenderedParagraphs, renderedChars, renderedAlign, renderedLineSpacing, applyPlan, serializeDocx,
   addTableRowAfter, removeTableRow, type ParagraphBinding, type DocxEditPlan, type NewParagraph,
 } from "./docx-patch";
+import DocumentDownloadModal, { buildDocumentDownloadUrl } from "./DocumentDownloadModal";
 
 type ToastFn = (message: string, type?: "success" | "info" | "warning") => void;
 type ConfirmFn = (body: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>;
@@ -52,7 +53,7 @@ interface Props {
 interface VersionsResponse {
   currentVersion: number;
   versions: ContractVersion[];
-  capabilities?: { docConversion: boolean; pdfTextEdit: boolean; pdfToWord?: boolean };
+  capabilities?: { docConversion: boolean; pdfTextEdit: boolean; pdfToWord?: boolean; officeToPdf?: boolean; officeToPdfExact?: boolean };
 }
 
 type BuildResult =
@@ -104,6 +105,7 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
   const [comment, setComment] = useState("");
   const [showHistory, setShowHistory] = useState(true);
   const [pendingEdit, setPendingEdit] = useState(false);
+  const [showDownloadPicker, setShowDownloadPicker] = useState(false);
   const revisionInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<EditorHandle>(null);
 
@@ -387,9 +389,20 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
             </button>
           )}
           {canDownload ? (
-            <a href={downloadHref} className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-slate-900 border-slate-800 text-slate-200 hover:border-indigo-500/50 flex items-center gap-1.5">
-              <Download className="w-3.5 h-3.5" /> Download
-            </a>
+            shownFile?.format === "docx" || shownFile?.format === "pdf" ? (
+              // .docx / .pdf: tanyakan dulu format unduhan (Word atau PDF) —
+              // isi tetap versi yang sedang ditampilkan, tidak ada versi baru.
+              <button type="button" onClick={() => setShowDownloadPicker(true)}
+                className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-slate-900 border-slate-800 text-slate-200 hover:border-indigo-500/50 flex items-center gap-1.5 cursor-pointer">
+                <Download className="w-3.5 h-3.5" /> Download
+              </button>
+            ) : (
+              // .doc / gambar: belum ada opsi konversi format -> unduh langsung
+              // seperti semula, supaya perilaku existing tidak berubah.
+              <a href={downloadHref} className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-slate-900 border-slate-800 text-slate-200 hover:border-indigo-500/50 flex items-center gap-1.5">
+                <Download className="w-3.5 h-3.5" /> Download
+              </a>
+            )
           ) : (
             <span title="Tersedia setelah approval matriks selesai (status FullyApproved ke atas) — kebijakan unduh yang sama dengan Export PDF."
               className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-slate-900 border-slate-850 text-slate-600 flex items-center gap-1.5 cursor-not-allowed">
@@ -468,6 +481,17 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
           </aside>
         )}
       </div>
+
+      <DocumentDownloadModal
+        open={showDownloadPicker}
+        onClose={() => setShowDownloadPicker(false)}
+        sourceFormat={shownFile?.format}
+        officeToPdfAvailable={!!caps?.officeToPdfExact}
+        onPick={(format) => {
+          window.location.href = buildDocumentDownloadUrl(contract.id, shownVersion, format);
+          setShowDownloadPicker(false);
+        }}
+      />
     </div>
   );
 }

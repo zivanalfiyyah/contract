@@ -10,7 +10,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
-import UploadedDocumentWorkspace from "./UploadedDocumentWorkspace";
+import UploadedDocumentWorkspace, { ContractDocumentReadOnly, ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
 import {
   FileText,
@@ -1063,6 +1063,25 @@ function ExternalReviewPage({ token }: { token: string }) {
     } catch { notify("Gagal mengirim komentar."); }
     finally { setBusy(false); }
   };
+  // Kontrak upload: berkas ditampilkan apa adanya (baca-saja), jadi komentar
+  // yang tersedia sementara adalah komentar UMUM untuk seluruh dokumen (tanpa
+  // sorotan kalimat) — clauseId khusus "__document__".
+  const submitGeneralComment = async () => {
+    if (data?.locked) { notify("Review ini sudah terkunci sejak Anda menyetujui (Setuju/OK). Hubungi pemilik dokumen untuk membuka akses kembali."); return; }
+    if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
+    if (!draftText.trim()) { notify("Tulis komentarnya."); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/external-review/${token}/comments`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, clauseId: "__document__", clauseTitle: "Dokumen", text: draftText, kind: "comment" }),
+      });
+      const j = await res.json();
+      if (!res.ok) { notify(j.error || "Gagal mengirim komentar."); }
+      else { setDraftText(""); notify("Komentar terkirim.", "success"); await load(); }
+    } catch { notify("Gagal mengirim komentar."); }
+    finally { setBusy(false); }
+  };
   const approve = async () => {
     if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
     setConfirmApprove(true);
@@ -1199,13 +1218,47 @@ function ExternalReviewPage({ token }: { token: string }) {
             </p>
           ) : (
             <p className="text-[11px] text-slate-500 mt-2">
-              <b>Sorot (block) kalimat</b> pada klausul di bawah → muncul tombol <b>✎ Komentar Baru</b> / <b>✂ Usulkan Coret</b>.
-              Komentar tampil sebagai kartu di margin kanan, tersambung garis ke kalimatnya. Bila sudah sesuai, klik <b>Setuju / OK</b>.
+              {c.documentSource === "upload" ? (
+                <>Baca dokumen di bawah, tulis <b>komentar</b> pada kolom komentar bila ada yang perlu direvisi. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
+              ) : (
+                <>
+                  <b>Sorot (block) kalimat</b> pada klausul di bawah → muncul tombol <b>✎ Komentar Baru</b> / <b>✂ Usulkan Coret</b>.
+                  Komentar tampil sebagai kartu di margin kanan, tersambung garis ke kalimatnya. Bila sudah sesuai, klik <b>Setuju / OK</b>.
+                </>
+              )}
             </p>
           )}
         </header>
 
         <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 sm:p-7">
+          {c.documentSource === "upload" ? (
+            <div className="space-y-5">
+              <p className="text-[11px] text-slate-500 truncate">
+                Berkas: <b className="text-slate-300">{c.documentName || "Dokumen"}</b>{c.documentVersion != null ? ` (versi ${c.documentVersion}, aktif)` : ""} — ditampilkan apa adanya, baca-saja.
+              </p>
+              <ReadOnlyDocumentView src={`/api/external-review/${token}/document`} format={c.documentFormat || "unsupported"} mimeType={c.documentMime} />
+              <div className="space-y-3">
+                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({allComments.filter((x) => !x.parentId).length})</h3>
+                {allComments.filter((x) => !x.parentId).length === 0 && (
+                  <div className="rounded-xl border border-dashed border-slate-800 p-3 text-[11px] text-slate-500">Belum ada komentar.</div>
+                )}
+                {allComments.filter((x) => !x.parentId).map((cm) => (
+                  <div key={cm.id} className="rounded-xl bg-slate-900 border border-slate-800 border-l-4 border-l-amber-400 p-3 space-y-1">
+                    <p className="text-[11px] font-bold text-slate-200">
+                      {cm.externalName || cm.userName}
+                      <span className="ml-2 font-normal text-slate-500">{new Date(cm.createdAt).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
+                    </p>
+                    <p className={`text-[12px] leading-relaxed whitespace-pre-wrap ${cm.resolved ? "text-slate-500 line-through" : "text-slate-300"}`}>{cm.text}</p>
+                  </div>
+                ))}
+                <textarea value={draftText} onChange={(e) => setDraftText(e.target.value)} rows={3} disabled={busy || data.locked}
+                  placeholder={data.locked ? "Review terkunci." : "Tulis komentar untuk dokumen ini…"}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
+                <button onClick={submitGeneralComment} disabled={busy || data.locked || !draftText.trim()}
+                  className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-bold rounded-lg cursor-pointer">Kirim Komentar</button>
+              </div>
+            </div>
+          ) : (
           <WordMarginReview
             clauses={clauseList}
             items={marginItems}
@@ -1219,6 +1272,7 @@ function ExternalReviewPage({ token }: { token: string }) {
               </div>
             }
           />
+          )}
         </div>
         <p className="text-center text-[10px] text-slate-600 py-4">Tinjauan aman berbasis token. Anda hanya dapat melihat &amp; mengomentari klausul dokumen ini.</p>
       </div>
@@ -1235,7 +1289,7 @@ function ExternalReviewPage({ token }: { token: string }) {
 function LegalExternalFormPage({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [meta, setMeta] = useState<{ tenantName: string; docTypeOptions: string[]; partnerSuggestions: string[]; picSuggestions: string[] } | null>(null);
+  const [meta, setMeta] = useState<{ tenantName: string; partnerSuggestions: string[]; picSuggestions: string[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const { notice, notify, dismissNotice } = useGuestNotice();
@@ -1277,7 +1331,7 @@ function LegalExternalFormPage({ token }: { token: string }) {
   const submit = async () => {
     if (!form.title.trim()) return notify("Judul Pekerjaan wajib diisi.");
     if (!form.partnerName.trim()) return notify("Partner/Pihak wajib diisi.");
-    if (!form.docType.trim()) return notify("Jenis Dokumen wajib dipilih.");
+    if (!form.docType.trim()) return notify("Jenis Dokumen wajib diisi.");
     if (!form.picName.trim()) return notify("PIC Pemberi Pekerjaan wajib diisi.");
     if (!form.deadline) return notify("Deadline wajib diisi.");
     setBusy(true);
@@ -1346,10 +1400,7 @@ function LegalExternalFormPage({ token }: { token: string }) {
             </div>
             <div className="space-y-1.5">
               <label className={labelCls}>Jenis Dokumen <span className="text-rose-500">*</span></label>
-              <select value={form.docType} onChange={set("docType")} className={inputCls}>
-                <option value="">Pilih jenis</option>
-                {meta?.docTypeOptions.map((d) => <option key={d} value={d}>{d}</option>)}
-              </select>
+              <input value={form.docType} onChange={set("docType")} placeholder='Contoh: "PKS", "NDA", "Addendum"' className={inputCls} />
             </div>
           </div>
 
@@ -2606,6 +2657,33 @@ function fmtDateTimeID(s?: string): string {
   try { return new Date(s).toLocaleString("id-ID", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return s; }
 }
 
+// Buka/unduh lampiran Pekerjaan Legal lewat endpoint server (bukan href mentah
+// ke /uploads). Href mentah jatuh ke fallback SPA kalau berkasnya tak ada di
+// disk, sehingga malah membuka halaman aplikasi (Monitoring Kontrak). Jendela
+// dibuka SINKRON dulu (anti popup-blocker), lalu diarahkan ke blob hasil fetch.
+async function openLegalJobDocument(
+  jobId: string, doc: { id: string; name: string }, mode: "view" | "download",
+  notify: (t: string, k?: "error" | "success") => void,
+) {
+  const w = mode === "view" ? window.open("", "_blank") : null;
+  try {
+    const res = await fetch(`/api/legal-jobs/${jobId}/documents/${doc.id}/file`);
+    if (!res.ok) {
+      let msg = "Gagal membuka berkas.";
+      try { msg = (await res.json()).error || msg; } catch { /* bukan JSON */ }
+      w?.close(); notify(msg); return;
+    }
+    const url = URL.createObjectURL(await res.blob());
+    if (w) { w.location.href = url; }
+    else {
+      const a = document.createElement("a");
+      a.href = url; a.download = doc.name;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+  } catch { w?.close(); notify("Gagal terhubung ke server."); }
+}
+
 // Halaman "Pekerjaan Legal" — tombol Tambah Pekerjaan Legal membuka modal
 // Bagikan Link Formulir (bukan form internal lagi); pekerjaan yang masuk
 // dari form eksternal direview lewat tabel "Pekerjaan Masuk" sebelum masuk
@@ -2720,7 +2798,14 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
                     <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
                     <td className="p-3">
                       {j.documents.length > 0 ? (
-                        <a href={j.documents[0].url} target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline text-[11.5px]">Lihat berkas</a>
+                        <div className="flex flex-col gap-0.5">
+                          {j.documents.map((d, di) => (
+                            <button key={d.id} type="button" onClick={() => openLegalJobDocument(j.id, d, "view", notify)}
+                              title={d.name} className="text-left text-indigo-400 hover:underline text-[11.5px] cursor-pointer max-w-[160px] truncate">
+                              {j.documents.length > 1 ? `Berkas ${di + 1}: ${d.name}` : "Lihat berkas"}
+                            </button>
+                          ))}
+                        </div>
                       ) : <span className="text-slate-600">—</span>}
                     </td>
                     <td className="p-3 text-slate-500">{fmtDateTimeID(j.createdAt)}</td>
@@ -3114,14 +3199,20 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
             <div className="space-y-2">
               {job.documents.length === 0 && <p className="text-xs text-slate-500 text-center py-4">Belum ada dokumen.</p>}
               {job.documents.map((d) => (
-                <a key={d.id} href={d.url} target="_blank" rel="noreferrer" className="flex items-center gap-2.5 p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl hover:border-slate-700">
-                  <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[12px] text-slate-200 truncate">{d.name}</p>
-                    <p className="text-[10.5px] text-slate-500">{d.uploadedBy} · {fmtDateTimeID(d.uploadedAt)}</p>
-                  </div>
-                  <Download className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                </a>
+                <div key={d.id} className="flex items-center gap-2.5 p-2.5 bg-slate-950/60 border border-slate-800 rounded-xl hover:border-slate-700">
+                  <button type="button" onClick={() => openLegalJobDocument(job.id, d, "view", notify)} title="Buka berkas"
+                    className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer">
+                    <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[12px] text-slate-200 truncate">{d.name}</p>
+                      <p className="text-[10.5px] text-slate-500">{d.uploadedBy} · {fmtDateTimeID(d.uploadedAt)}</p>
+                    </div>
+                  </button>
+                  <button type="button" onClick={() => openLegalJobDocument(job.id, d, "download", notify)} title="Unduh"
+                    className="p-1 text-slate-500 hover:text-slate-200 cursor-pointer shrink-0">
+                    <Download className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               ))}
               <button onClick={() => fileInputRef.current?.click()} disabled={busy}
                 className="w-full flex items-center justify-center gap-2 py-2 border-2 border-dashed border-slate-800 hover:border-indigo-500/50 rounded-xl text-[12px] text-slate-400 cursor-pointer">
@@ -4676,6 +4767,8 @@ export default function App() {
   const [pendingAnchor, setPendingAnchor] = useState<{ clauseId: string; clauseTitle: string; quote: string; start: number; end: number; kind: "comment" | "strike" } | null>(null);
   // Mode Tinjau gaya Word: dokumen penuh + kartu komentar di margin kanan.
   const [reviewModeOpen, setReviewModeOpen] = useState(false);
+  // Komentar umum (tanpa sorotan kalimat) di Mode Tinjau kontrak "Upload Dokumen".
+  const [docCommentText, setDocCommentText] = useState("");
   const [activeMarginId, setActiveMarginId] = useState<string | null>(null);
   const [marginDraft, setMarginDraft] = useState<(MarginDraftSeed & { start: number; end: number }) | null>(null);
   const [marginDraftText, setMarginDraftText] = useState("");
@@ -5083,6 +5176,13 @@ export default function App() {
       const data = await res.json();
       if (!data.success) { showToast(data.error || "Gagal membuat link review eksternal", "warning"); setShareLinkModal((m) => (m ? { ...m, busy: false } : m)); return; }
       setShareLinkModal((m) => (m ? { ...m, url: data.url, busy: false } : m));
+      // Sinkronkan state kontrak di client: tanpa ini polling komentar eksternal
+      // & tombol "Buka Akses Kembali" baru aktif setelah halaman di-refresh.
+      if (shareLinkModal.kind === "contract") {
+        const patch = { externalReviewToken: data.token, externalReviewExpiresAt: data.expiresAt ?? null };
+        setContracts((prev) => prev.map((c) => c.id === shareLinkModal.targetId ? { ...c, ...patch } : c));
+        setSelectedContract((prev: any) => prev && prev.id === shareLinkModal.targetId ? { ...prev, ...patch } : prev);
+      }
       try {
         await navigator.clipboard.writeText(data.url);
         showToast(`Link review eksternal disalin ke clipboard (berlaku ${days} hari).`, "success");
@@ -5223,6 +5323,29 @@ export default function App() {
       setMarginDraftText("");
       setActiveMarginId(data.comment.id);
       showToast(marginDraft.kind === "strike" ? "Usulan coret ditambahkan" : "Komentar ditambahkan", "success");
+    } catch {
+      showToast("Gagal menambahkan komentar", "warning");
+    } finally {
+      setMarginBusy(false);
+    }
+  };
+
+  // Kontrak upload: berkas tampil apa adanya (baca-saja), jadi komentarnya
+  // komentar UMUM untuk dokumen (clauseId "__document__", tanpa anchor).
+  const submitDocumentComment = async () => {
+    if (!selectedContract || !docCommentText.trim()) return;
+    setMarginBusy(true);
+    try {
+      const res = await fetch(`/api/contracts/${selectedContract.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clauseId: "__document__", clauseTitle: "Dokumen", text: docCommentText.trim(), kind: "comment" }),
+      });
+      if (!res.ok) { showToast("Gagal menambahkan komentar", "warning"); return; }
+      const data = await res.json();
+      setClauseComments((prev) => [...prev, data.comment]);
+      setDocCommentText("");
+      showToast("Komentar ditambahkan", "success");
     } catch {
       showToast("Gagal menambahkan komentar", "warning");
     } finally {
@@ -22570,7 +22693,7 @@ export default function App() {
       {/* Modal bagikan link review eksternal (menggantikan window.prompt) —
           dipakai bersama Kontrak & DCS lewat state shareLinkModal. */}
       {shareLinkModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-start">
               <div>
@@ -24020,6 +24143,9 @@ export default function App() {
           marginItems.push({ id: "__draft__", clauseId: marginDraft.clauseId, kind: marginDraft.kind, resolved: false, anchor: { quote: marginDraft.quote } });
         }
         const openCount = clauseComments.filter((c) => !c.parentId && !c.resolved).length;
+        // Kontrak "Upload Dokumen": Mode Tinjau menampilkan BERKAS asli versi aktif
+        // (bukan narasi/pasal template — clauses-nya memang kosong).
+        const isUploadReview = isUploadedDocument(selectedContract);
         const closeReview = () => { setReviewModeOpen(false); setMarginDraft(null); setMarginDraftText(""); setMarginReplyText(""); setActiveMarginId(null); setReAnchoringCommentId(null); };
 
         const renderInternalCard = (item: MarginItem, isActive: boolean) => {
@@ -24142,7 +24268,11 @@ export default function App() {
               <button onClick={closeReview} className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer px-2">✕</button>
             </div>
 
-            {reAnchoringCommentId ? (
+            {isUploadReview ? (
+              <div className="shrink-0 px-5 py-2 border-b border-slate-800/60 bg-slate-900/30 text-[10px] text-slate-500">
+                Dokumen ditampilkan <b className="text-slate-300">apa adanya</b> (baca-saja). Tulis <b className="text-slate-300">komentar umum</b> di kolom kanan; sorot &amp; markup per kalimat menyusul.
+              </div>
+            ) : reAnchoringCommentId ? (
               <div className="shrink-0 px-5 py-2 border-b border-indigo-500/30 bg-indigo-500/10 text-[11px] text-indigo-300 flex items-center gap-3 flex-wrap">
                 <span>✎ <b>Mode ubah sorotan aktif</b> — sorot kalimat baru pada dokumen untuk memindahkan highlight komentar ini.</span>
                 <button onClick={() => setReAnchoringCommentId(null)} className="text-[10px] px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer">Batal</button>
@@ -24157,7 +24287,7 @@ export default function App() {
             )}
 
             <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-8">
-              <div className="max-w-6xl mx-auto bg-slate-900/40 border border-slate-800 rounded-2xl p-5 sm:p-10">
+              <div className={`${isUploadReview ? "max-w-7xl" : "max-w-6xl"} mx-auto bg-slate-900/40 border border-slate-800 rounded-2xl p-5 sm:p-10`}>
                 <div className="text-center pb-5 mb-6 border-b border-slate-800">
                   <h4 className="font-bold text-slate-100 uppercase tracking-wide text-sm">
                     {selectedContractAddendumInfo
@@ -24167,6 +24297,32 @@ export default function App() {
                   <p className="text-xs text-slate-400 mt-1">{selectedContract.title}</p>
                   <p className="text-[11px] font-mono text-slate-500 mt-0.5">NOMOR: {selectedContract.contractNumber}</p>
                 </div>
+                {isUploadReview ? (
+                  <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
+                    <ContractDocumentReadOnly contractId={selectedContract.id} />
+                    <div className="space-y-3 lg:sticky lg:top-0">
+                      <h5 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({visible.length})</h5>
+                      {visible.length === 0 && (
+                        <div className="rounded-xl border border-dashed border-slate-800 p-3 text-[11px] text-slate-500 leading-relaxed">
+                          Belum ada komentar pada dokumen ini.
+                        </div>
+                      )}
+                      {marginItems.map((item) => (
+                        <div key={item.id} onClick={() => setActiveMarginId(item.id)}>{renderInternalCard(item, activeMarginId === item.id)}</div>
+                      ))}
+                      <textarea
+                        value={docCommentText}
+                        onChange={(e) => setDocCommentText(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitDocumentComment(); }}
+                        rows={3}
+                        placeholder="Tulis komentar untuk dokumen ini… (Ctrl+Enter kirim)"
+                        className="w-full px-2.5 py-2 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                      />
+                      <button onClick={submitDocumentComment} disabled={marginBusy || !docCommentText.trim()}
+                        className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-bold rounded-lg cursor-pointer">Kirim Komentar</button>
+                    </div>
+                  </div>
+                ) : (
                 <WordMarginReview
                   clauses={reviewClauses}
                   items={marginItems}
@@ -24180,6 +24336,7 @@ export default function App() {
                     </div>
                   }
                 />
+                )}
               </div>
             </div>
           </div>

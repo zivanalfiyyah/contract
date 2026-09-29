@@ -861,6 +861,12 @@ function uploadFileKey(originalname: string): string {
 // Serve locally-stored uploads statically (no-op for files actually persisted
 // to cloud storage — those are fetched straight from the bucket/CDN URL).
 app.use('/uploads', express.static(uploadDir));
+// Berkas yang TIDAK ada di disk (mis. disk platform bersifat sementara) jangan
+// jatuh ke fallback SPA (app.get("*all") -> index.html), karena itu membuat
+// link berkas malah membuka aplikasi (halaman default Monitoring Kontrak).
+app.use('/uploads', (_req, res) => {
+  res.status(404).json({ error: "Berkas tidak ditemukan di server." });
+});
 
 // ai, isGeminiConfigured, parseAiJson, aiErrorResponse now live in
 // ai-client.ts (extracted so dcs/routes.ts can use the same Gemini client
@@ -4258,6 +4264,28 @@ function currentDocumentVersionNumber(contract: Contract, versions: ContractVers
   return versions.length ? versions[versions.length - 1].version : 0;
 }
 
+// Berkas versi AKTIF utk Mode Tinjau / review eksternal. Kontrak upload
+// menyimpan clauses: [] (isinya BERKAS), jadi review menampilkan berkas asli
+// apa adanya (baca-saja) — bukan narasi/pasal template, bukan teks hasil ekstrak.
+// .doc lama ditampilkan lewat konversi ke .docx (bila LibreOffice tersedia).
+type ReviewViewFormat = "pdf" | "docx" | "image" | "unsupported";
+function currentUploadedFileForReview(db: any, contract: Contract): {
+  ref: StoredDocumentRef; version: number; viewFormat: ReviewViewFormat; asDocx: boolean;
+} | null {
+  const versions = uploadedDocumentVersions(db, contract);
+  const cur = currentDocumentVersionNumber(contract, versions);
+  const ver = versions.find((v) => v.version === cur) || versions[versions.length - 1];
+  if (!ver?.file) return null;
+  const f = String(ver.file.format);
+  let viewFormat: ReviewViewFormat = "unsupported";
+  let asDocx = false;
+  if (f === "pdf") viewFormat = "pdf";
+  else if (f === "docx") viewFormat = "docx";
+  else if (f === "image") viewFormat = "image";
+  else if (f === "doc" && isOfficeConverterAvailable()) { viewFormat = "docx"; asDocx = true; }
+  return { ref: ver.file, version: ver.version, viewFormat, asDocx };
+}
+
 app.get("/api/contracts/:id/document-versions", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
@@ -5995,7 +6023,14 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, (req: AuthedR
   if (contract.status === "Aktif" || contract.status === "Archived" || contract.status === "Terminated") {
     return res.status(409).json({ error: "Review eksternal hanya untuk kontrak yang masih dalam penyusunan/review (sebelum aktif)." });
   }
-  contract.externalReviewToken = randomBytes(24).toString("hex");
+  // Link yang masih berlaku dipakai ulang (jangan diputar tiap klik) supaya link
+  // yang sudah dikirim ke pihak eksternal tidak mati. Putar token = disable dulu.
+  const tokenStillValid = !!contract.externalReviewToken
+    && !(contract.externalReviewExpiresAt && new Date(contract.externalReviewExpiresAt) < new Date());
+  if (!tokenStillValid) {
+    contract.externalReviewToken = randomBytes(24).toString("hex");
+    contract.externalReviewLocked = false;
+  }
   const days = Number(req.body?.expiresInDays);
   contract.externalReviewExpiresAt = Number.isFinite(days) && days > 0
     ? new Date(Date.now() + days * 86400000).toISOString() : null;
@@ -6437,12 +6472,21 @@ app.get("/api/external-review/:token", apiLimiter, (req, res) => {
   // PALING AWAL — supaya pihak eksternal juga bisa menyorot & mengomentarinya
   // lewat mekanisme yang SAMA dengan klausul biasa (tak perlu UI terpisah).
   const preambleClause = { id: "__preamble__", title: "Narasi Pembuka & Para Pihak", order: -1, content: composeContractPreambleText(db, contract) };
+  // Kontrak upload: yang direview adalah BERKAS aslinya (lihat endpoint
+  // /document di bawah), jadi tidak ada narasi/pasal template di sini.
+  const isUpload = resolveDocumentSource(contract) === "upload";
+  const uploadedFile = isUpload ? currentUploadedFileForReview(loadDB(), contract) : null;
   // Hanya paparkan yang perlu untuk review — bukan seluruh objek kontrak.
   res.json({
     contract: {
       title: contract.title, contractNumber: contract.contractNumber,
       party1Name: contract.party1Name, party2Name: contract.party2Name,
-      clauses: [preambleClause, ...(contract.clauses || []).slice().sort((a, b) => a.order - b.order)],
+      documentSource: isUpload ? "upload" : "template",
+      documentFormat: uploadedFile?.viewFormat,
+      documentName: uploadedFile?.ref.fileName,
+      documentVersion: uploadedFile?.version,
+      documentMime: uploadedFile ? (uploadedFile.asDocx ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : uploadedFile.ref.mimeType) : undefined,
+      clauses: isUpload ? [] : [preambleClause, ...(contract.clauses || []).slice().sort((a, b) => a.order - b.order)],
     },
     comments,
     alreadyApproved: (contract.externalApprovals || []).length > 0,
@@ -6483,6 +6527,38 @@ app.post("/api/external-review/:token/comments", apiLimiter, (req, res) => {
   });
   saveDB(db);
   res.json({ success: true, comment });
+});
+
+// PUBLIK (tanpa auth, dijaga token) — berkas kontrak upload untuk direview tamu.
+// Hanya melayani versi AKTIF, inline & baca-saja (tanpa unduhan).
+app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => {
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (resolveDocumentSource(contract) !== "upload") {
+    return res.status(409).json({ error: "Kontrak ini dibuat dari template — tidak punya berkas dokumen upload." });
+  }
+  const db = loadDB();
+  const info = currentUploadedFileForReview(db, contract);
+  if (!info) return res.status(404).json({ error: "Berkas dokumen belum tersedia." });
+  if (info.viewFormat === "unsupported") {
+    return res.status(415).json({ error: "Format berkas ini belum bisa dipratinjau di halaman review." });
+  }
+  try {
+    let buf = await readStoredDocument(info.ref, uploadDir);
+    let mime = info.ref.mimeType || "application/octet-stream";
+    if (info.asDocx) {
+      buf = await convertedDocxFor(buf);
+      mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    }
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Content-Length", buf.length);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("Content-Disposition", contentDisposition("inline", info.ref.fileName));
+    res.send(buf);
+  } catch (err: any) {
+    logger.error({ err, contractId: contract.id }, "Gagal menyajikan berkas untuk review eksternal");
+    res.status(err?.status || 500).json({ error: err?.message || "Gagal membuka berkas dokumen." });
+  }
 });
 
 // PUBLIK — tamu eksternal klik "OK / Setuju" (klausul sudah sesuai). Sekali
@@ -6772,6 +6848,29 @@ app.post("/api/legal-jobs/:id/documents", requireAuth, uploadLegalDoc.single("fi
   }
 });
 
+// Buka / unduh berkas lampiran Pekerjaan Legal lewat server (bukan href mentah
+// ke /uploads): terautentikasi + tenant-scoped, jalan untuk disk lokal MAUPUN
+// cloud storage privat, dan kalau berkas hilang jawabannya JSON error yang
+// jelas (bukan halaman aplikasi). ?download=1 -> attachment, default inline.
+app.get("/api/legal-jobs/:id/documents/:docId/file", requireAuth, async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  const doc = (job.documents || []).find((d) => d.id === req.params.docId);
+  if (!doc) return res.status(404).json({ error: "Dokumen tidak ditemukan." });
+  try {
+    const buf = await readStoredDocument({ key: doc.key, url: doc.url } as StoredDocumentRef, uploadDir);
+    res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
+    res.setHeader("Content-Length", buf.length);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("Content-Disposition", contentDisposition(req.query.download === "1" ? "attachment" : "inline", doc.name));
+    res.send(buf);
+  } catch (err: any) {
+    logger.error({ err, jobId: job.id, docId: doc.id }, "Gagal membuka berkas Pekerjaan Legal");
+    res.status(err?.status || 500).json({ error: err?.message || "Gagal membuka berkas." });
+  }
+});
+
 // ----- Link formulir eksternal (Bagikan Link Formulir) -----
 
 function legalFormLinkFor(db: any, tid: string): LegalFormLink {
@@ -6828,15 +6927,11 @@ app.get("/api/legal-form/:token", apiLimiter, (req, res) => {
   if (!link) return res.status(404).json({ error: "Link formulir tidak valid atau sudah tidak berlaku." });
   const tenant = (db.tenants as any[]).find((t) => t.id === link.tenantId);
   const jobs = legalJobTenantList(db, link.tenantId);
-  // Jenis Dokumen memakai SUMBER YANG SAMA dengan Kontrak Eksternal
-  // (Konfigurasi > Master Data > Jenis Dokumen) — supaya admin cukup kelola
-  // satu daftar, bukan dua daftar terpisah yang gampang tidak sinkron.
-  const md = withSettingsDefaults(rawSettingsFor(db, link.tenantId)).masterData;
-  const docTypeNames = (md?.docTypes || []).map((d: any) => (typeof d === "string" ? d : d.name)).filter(Boolean);
+  // Jenis Dokumen di form ini teks bebas & TERPISAH dari master data Jenis
+  // Dokumen Kontrak (hanya untuk penamaan pekerjaan) — tidak ada relasi.
   const uniq = (arr: (string | undefined)[]) => Array.from(new Set(arr.filter(Boolean))) as string[];
   res.json({
     tenantName: tenant?.name || "Perusahaan",
-    docTypeOptions: uniq(docTypeNames),
     partnerSuggestions: uniq(jobs.map((j) => j.partnerName)),
     picSuggestions: uniq([...jobs.map((j) => j.picName), "Marketing", "Account Executive", "Business Development", "Operasional"]),
   });

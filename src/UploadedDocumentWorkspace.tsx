@@ -1280,3 +1280,98 @@ const PdfDocumentView = React.forwardRef<EditorHandle, { contractId: string; ver
     );
   },
 );
+
+// ---------------------------------------------------------------------------
+// Viewer BACA-SAJA — dipakai Mode Tinjau & halaman review eksternal untuk
+// kontrak "Upload Dokumen". Menampilkan berkas APA ADANYA (renderer yang sama
+// dgn workspace: PDF via pdf.js, Word via docx-preview) tanpa toolbar edit,
+// riwayat versi, atau unduhan — dan tidak mengubah apa pun pada berkas.
+// ---------------------------------------------------------------------------
+export type ReadOnlyDocFormat = "pdf" | "docx" | "image" | "unsupported";
+
+export function ReadOnlyDocumentView({ src, format, mimeType }: { src: string; format: ReadOnlyDocFormat; mimeType?: string }) {
+  const [buf, setBuf] = useState<ArrayBuffer | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const noop = useCallback(() => {}, []);
+
+  useEffect(() => {
+    if (format === "unsupported") { setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true); setError(null); setBuf(null);
+    fetch(src)
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Gagal membuka dokumen (HTTP ${r.status})`);
+        return r.arrayBuffer();
+      })
+      .then((b) => { if (!cancelled) setBuf(b); })
+      .catch((e) => { if (!cancelled) setError(e.message); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [src, format]);
+
+  return (
+    <div className="bg-slate-800/60 rounded-xl border border-slate-850 overflow-auto max-h-[78vh] min-h-[320px] relative" data-testid="document-viewer-readonly">
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Memuat dokumen…</div>
+      )}
+      {error && !loading && (
+        <div className="p-6 text-xs text-rose-300 flex items-start gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> {error}</div>
+      )}
+      {format === "unsupported" && (
+        <div className="p-8 text-center text-xs text-slate-300 space-y-2">
+          <FileText className="w-8 h-8 mx-auto text-slate-500" />
+          <p>Format berkas ini belum bisa dipratinjau di sini (mis. Word 97-2003 tanpa konverter di server).</p>
+        </div>
+      )}
+      {!loading && !error && buf && (
+        format === "pdf" ? <PdfDocumentView contractId="" version={0} data={buf} editMode={false} onDirty={noop} />
+        : format === "docx" ? <DocxDocumentView data={buf} editMode={false} onDirty={noop} />
+        : format === "image" ? <div className="p-4 flex justify-center"><ImageView data={buf} mime={mimeType || "image/png"} /></div>
+        : null
+      )}
+    </div>
+  );
+}
+
+/** Berkas versi AKTIF sebuah kontrak upload, baca-saja (untuk Mode Tinjau internal). */
+export function ContractDocumentReadOnly({ contractId }: { contractId: string }) {
+  const [info, setInfo] = useState<{ src: string; format: ReadOnlyDocFormat; mime?: string; name: string; version: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setInfo(null); setError(null);
+    fetch(`/api/contracts/${contractId}/document-versions`)
+      .then(async (r) => {
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || "Gagal memuat dokumen");
+        return d as VersionsResponse;
+      })
+      .then((d) => {
+        if (cancelled) return;
+        const v = d.versions.find((x) => x.version === d.currentVersion) || d.versions[d.versions.length - 1];
+        if (!v?.file) { setError("Berkas dokumen belum tersedia."); return; }
+        const f = v.file.format;
+        const asDocx = f === "doc" && !!d.capabilities?.docConversion;
+        const format: ReadOnlyDocFormat = f === "pdf" ? "pdf" : f === "docx" || asDocx ? "docx" : f === "image" ? "image" : "unsupported";
+        setInfo({
+          src: `/api/contracts/${contractId}/document?version=${v.version}${asDocx ? "&as=docx" : ""}`,
+          format, mime: v.file.mimeType, name: v.file.fileName, version: v.version,
+        });
+      })
+      .catch((e) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [contractId]);
+
+  if (error) return <div className="p-6 text-xs text-rose-300 bg-slate-900/60 border border-slate-800 rounded-xl flex items-start gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> {error}</div>;
+  if (!info) return <div className="p-10 text-xs text-slate-400 flex items-center justify-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Memuat dokumen…</div>;
+  return (
+    <div className="space-y-2">
+      <p className="text-[11px] text-slate-500 truncate">
+        Berkas: <b className="text-slate-300">{info.name}</b> (versi {info.version}, aktif) — ditampilkan apa adanya, baca-saja.
+      </p>
+      <ReadOnlyDocumentView src={info.src} format={info.format} mimeType={info.mime} />
+    </div>
+  );
+}

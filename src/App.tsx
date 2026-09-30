@@ -10,7 +10,8 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
-import UploadedDocumentWorkspace, { ContractDocumentReadOnly, ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
+import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
+import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
 import {
   FileText,
@@ -1022,6 +1023,10 @@ function ExternalReviewPage({ token }: { token: string }) {
   const [draftText, setDraftText] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
+  // Markup dokumen Word (.docx): usulan yang sedang ditulis tamu.
+  const [mkSeed, setMkSeed] = useState<MarkupSeed | null>(null);
+  const [mkText, setMkText] = useState("");
+  const [mkReplacement, setMkReplacement] = useState("");
   const { notice, notify, dismissNotice } = useGuestNotice();
 
   const load = async () => {
@@ -1080,6 +1085,32 @@ function ExternalReviewPage({ token }: { token: string }) {
       if (!res.ok) { notify(j.error || "Gagal mengirim komentar."); }
       else { setDraftText(""); notify("Komentar terkirim.", "success"); await load(); }
     } catch { notify("Gagal mengirim komentar."); }
+    finally { setBusy(false); }
+  };
+  const submitMarkup = async () => {
+    if (!mkSeed) return;
+    if (data?.locked) { notify("Review ini sudah terkunci sejak Anda menyetujui (Setuju/OK). Hubungi pemilik dokumen untuk membuka akses kembali."); return; }
+    if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
+    const repl = mkReplacement.replace(/[\r\n]+/g, " ").trim();
+    if (mkSeed.kind === "replace" && !repl) { notify("Isi teks pengganti."); return; }
+    const reason = mkText.trim();
+    const text = reason || (mkSeed.kind === "replace" ? `Usul ganti: "${mkSeed.quote}" → "${repl}"` : mkSeed.kind === "strike" ? `Usul hapus: "${mkSeed.quote}"` : "");
+    if (!text) { notify("Tulis komentarnya."); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/external-review/${token}/comments`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name, clauseId: "__document__", clauseTitle: "Dokumen", text, kind: mkSeed.kind,
+          anchor: { start: mkSeed.start, end: mkSeed.end, quote: mkSeed.quote },
+          docAnchor: { paraIndex: mkSeed.paraIndex },
+          ...(mkSeed.kind === "replace" ? { replacement: repl } : {}),
+        }),
+      });
+      const j = await res.json();
+      if (!res.ok) { notify(j.error || "Gagal mengirim markup."); }
+      else { setMkSeed(null); setMkText(""); setMkReplacement(""); notify("Terkirim.", "success"); await load(); }
+    } catch { notify("Gagal mengirim markup."); }
     finally { setBusy(false); }
   };
   const approve = async () => {
@@ -1219,7 +1250,9 @@ function ExternalReviewPage({ token }: { token: string }) {
           ) : (
             <p className="text-[11px] text-slate-500 mt-2">
               {c.documentSource === "upload" ? (
-                <>Baca dokumen di bawah, tulis <b>komentar</b> pada kolom komentar bila ada yang perlu direvisi. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
+                c.documentMarkup
+                  ? <><b>Sorot teks</b> pada dokumen di bawah → pilih <b>✎ Komentar</b>, <b>✂ Coret</b>, atau <b>⇄ Ganti</b> (usulan teks pengganti). Pemilik dokumen yang menentukan diterima atau tidaknya. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
+                  : <>Baca dokumen di bawah, tulis <b>komentar</b> pada kolom komentar bila ada yang perlu direvisi. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
               ) : (
                 <>
                   <b>Sorot (block) kalimat</b> pada klausul di bawah → muncul tombol <b>✎ Komentar Baru</b> / <b>✂ Usulkan Coret</b>.
@@ -1236,18 +1269,67 @@ function ExternalReviewPage({ token }: { token: string }) {
               <p className="text-[11px] text-slate-500 truncate">
                 Berkas: <b className="text-slate-300">{c.documentName || "Dokumen"}</b>{c.documentVersion != null ? ` (versi ${c.documentVersion}, aktif)` : ""} — ditampilkan apa adanya, baca-saja.
               </p>
-              <ReadOnlyDocumentView src={`/api/external-review/${token}/document`} format={c.documentFormat || "unsupported"} mimeType={c.documentMime} />
+              {c.documentMarkup ? (
+                <DocxMarkupView
+                  src={`/api/external-review/${token}/document`}
+                  items={allComments.filter((x) => !x.parentId && x.docAnchor && x.anchor).map((x) => ({
+                    id: x.id, kind: (x.kind || "comment") as MarkupItem["kind"], resolved: !!x.resolved, status: x.status,
+                    paraIndex: x.docAnchor.paraIndex, start: x.anchor.start, end: x.anchor.end, quote: x.anchor.quote, replacement: x.replacement,
+                  }))}
+                  activeId={activeId}
+                  onActiveChange={setActiveId}
+                  canMark={!data.locked}
+                  onStartDraft={(seed) => {
+                    if (data.locked) { notify("Review ini sudah terkunci sejak Anda menyetujui (Setuju/OK). Hubungi pemilik dokumen untuk membuka akses kembali."); return; }
+                    setMkSeed(seed); setMkText(""); setMkReplacement("");
+                  }}
+                  onNotify={(m) => notify(m)}
+                />
+              ) : (
+                <ReadOnlyDocumentView src={`/api/external-review/${token}/document`} format={c.documentFormat || "unsupported"} mimeType={c.documentMime} />
+              )}
+              {mkSeed && (
+                <div className={`rounded-xl bg-slate-900 border border-dashed p-3 space-y-2 border-l-4 ${mkSeed.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : mkSeed.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                    {mkSeed.kind === "comment" ? "✎ Komentar Baru" : mkSeed.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
+                  </p>
+                  <p className={`text-[12px] italic ${mkSeed.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{mkSeed.quote}"</p>
+                  {mkSeed.kind === "replace" && (
+                    <input autoFocus value={mkReplacement} onChange={(e) => setMkReplacement(e.target.value)} placeholder="Teks pengganti…"
+                      className="w-full px-3 py-2 bg-slate-950 border border-emerald-700/50 rounded-lg text-sm text-emerald-200 focus:outline-none focus:border-emerald-500" />
+                  )}
+                  <textarea autoFocus={mkSeed.kind !== "replace"} value={mkText} onChange={(e) => setMkText(e.target.value)} rows={3}
+                    placeholder={mkSeed.kind === "comment" ? "Tulis komentar…" : "Alasan (opsional)…"}
+                    className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+                  <div className="flex gap-2">
+                    <button onClick={submitMarkup} disabled={busy} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-bold rounded-lg cursor-pointer">Kirim</button>
+                    <button onClick={() => { setMkSeed(null); setMkText(""); setMkReplacement(""); }} className="px-3 py-2 text-slate-400 hover:text-slate-200 text-sm rounded-lg cursor-pointer">Batal</button>
+                  </div>
+                </div>
+              )}
               <div className="space-y-3">
                 <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({allComments.filter((x) => !x.parentId).length})</h3>
                 {allComments.filter((x) => !x.parentId).length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-800 p-3 text-[11px] text-slate-500">Belum ada komentar.</div>
                 )}
                 {allComments.filter((x) => !x.parentId).map((cm) => (
-                  <div key={cm.id} className="rounded-xl bg-slate-900 border border-slate-800 border-l-4 border-l-amber-400 p-3 space-y-1">
+                  <div key={cm.id} onClick={() => setActiveId(cm.id)}
+                    className={`rounded-xl bg-slate-900 border border-l-4 p-3 space-y-1 cursor-pointer ${cm.kind === "strike" || cm.kind === "replace" ? "border-l-rose-500" : "border-l-amber-400"} ${activeId === cm.id ? "border-indigo-500" : "border-slate-800"}`}>
                     <p className="text-[11px] font-bold text-slate-200">
                       {cm.externalName || cm.userName}
                       <span className="ml-2 font-normal text-slate-500">{new Date(cm.createdAt).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
                     </p>
+                    {cm.anchor?.quote && (
+                      <p className={`text-[11px] italic ${cm.kind === "strike" || cm.kind === "replace" ? "text-rose-300 line-through" : "text-amber-200"}`}>"{cm.anchor.quote}"</p>
+                    )}
+                    {cm.kind === "replace" && cm.replacement && (
+                      <p className="text-[11px] text-emerald-300 border-l-2 border-emerald-500 pl-2 underline decoration-emerald-500/60">→ "{cm.replacement}"</p>
+                    )}
+                    {cm.status && cm.status !== "pending" && (
+                      <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cm.status === "accepted" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+                        {cm.status === "accepted" ? "✓ Diterima" : "✕ Ditolak"}
+                      </span>
+                    )}
                     <p className={`text-[12px] leading-relaxed whitespace-pre-wrap ${cm.resolved ? "text-slate-500 line-through" : "text-slate-300"}`}>{cm.text}</p>
                   </div>
                 ))}
@@ -4769,6 +4851,11 @@ export default function App() {
   const [reviewModeOpen, setReviewModeOpen] = useState(false);
   // Komentar umum (tanpa sorotan kalimat) di Mode Tinjau kontrak "Upload Dokumen".
   const [docCommentText, setDocCommentText] = useState("");
+  // Markup dokumen upload (.docx): usulan yg sedang ditulis + pemicu muat-ulang dokumen.
+  const [docMarkupDraft, setDocMarkupDraft] = useState<MarkupSeed | null>(null);
+  const [docMarkupText, setDocMarkupText] = useState("");
+  const [docMarkupReplacement, setDocMarkupReplacement] = useState("");
+  const [docReloadKey, setDocReloadKey] = useState(0);
   const [activeMarginId, setActiveMarginId] = useState<string | null>(null);
   const [marginDraft, setMarginDraft] = useState<(MarginDraftSeed & { start: number; end: number }) | null>(null);
   const [marginDraftText, setMarginDraftText] = useState("");
@@ -5348,6 +5435,83 @@ export default function App() {
       showToast("Komentar ditambahkan", "success");
     } catch {
       showToast("Gagal menambahkan komentar", "warning");
+    } finally {
+      setMarginBusy(false);
+    }
+  };
+
+  // Kirim markup (komentar / coret / ganti) pada teks yang disorot di dokumen .docx.
+  const submitDocMarkup = async () => {
+    if (!selectedContract || !docMarkupDraft) return;
+    const d = docMarkupDraft;
+    const repl = docMarkupReplacement.replace(/[\r\n]+/g, " ").trim();
+    if (d.kind === "replace" && !repl) { showToast("Isi teks pengganti.", "warning"); return; }
+    const reason = docMarkupText.trim();
+    const text = reason || (d.kind === "replace" ? `Usul ganti: "${d.quote}" → "${repl}"` : d.kind === "strike" ? `Usul hapus: "${d.quote}"` : "");
+    if (!text) { showToast("Tulis komentarnya.", "warning"); return; }
+    setMarginBusy(true);
+    try {
+      const res = await fetch(`/api/contracts/${selectedContract.id}/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clauseId: "__document__", clauseTitle: "Dokumen", text, kind: d.kind,
+          anchor: { start: d.start, end: d.end, quote: d.quote },
+          docAnchor: { paraIndex: d.paraIndex },
+          ...(d.kind === "replace" ? { replacement: repl } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showToast(data.error || "Gagal menambahkan markup", "warning"); return; }
+      setClauseComments((prev) => [...prev, data.comment]);
+      setDocMarkupDraft(null); setDocMarkupText(""); setDocMarkupReplacement("");
+      setActiveMarginId(data.comment.id);
+      showToast(d.kind === "comment" ? "Komentar ditambahkan" : "Usulan ditambahkan", "success");
+    } catch {
+      showToast("Gagal menambahkan markup", "warning");
+    } finally {
+      setMarginBusy(false);
+    }
+  };
+
+  const putMarkupStatus = async (cmt: ClauseComment, status: "accepted" | "rejected") => {
+    if (!selectedContract) return false;
+    const res = await fetch(`/api/contracts/${selectedContract.id}/comments/${cmt.id}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { showToast(data.error || "Gagal menyimpan status usulan", "warning"); return false; }
+    setClauseComments((prev) => prev.map((c) => (c.id === cmt.id ? { ...c, ...data.comment } : c)));
+    return true;
+  };
+
+  // Terima usulan: terapkan ke berkas .docx sebagai VERSI BARU, lalu tandai diterima.
+  const handleAcceptMarkup = async (cmt: ClauseComment) => {
+    if (!selectedContract || !cmt.docAnchor || !cmt.anchor) return;
+    setMarginBusy(true);
+    try {
+      const note = cmt.kind === "replace"
+        ? `Terima usulan ${cmt.userName}: "${cmt.anchor.quote}" → "${cmt.replacement || ""}"`
+        : `Terima usulan hapus dari ${cmt.userName}: "${cmt.anchor.quote}"`;
+      const r = await acceptDocxMarkup(selectedContract.id, {
+        paraIndex: cmt.docAnchor.paraIndex, quote: cmt.anchor.quote, start: cmt.anchor.start,
+        replacement: cmt.kind === "replace" ? (cmt.replacement || "") : "",
+      }, note.slice(0, 480));
+      setDocReloadKey((k) => k + 1);
+      const saved = await putMarkupStatus(cmt, "accepted");
+      fetchInitialData();
+      showToast(saved ? `Usulan diterima — tersimpan sebagai Versi ${r.version}.` : `Dokumen sudah diperbarui (Versi ${r.version}), tetapi status usulan gagal disimpan.`, saved ? "success" : "warning");
+    } catch (e: any) {
+      showToast(e?.message || "Gagal menerapkan usulan", "warning");
+    } finally {
+      setMarginBusy(false);
+    }
+  };
+
+  const handleRejectMarkup = async (cmt: ClauseComment) => {
+    setMarginBusy(true);
+    try {
+      if (await putMarkupStatus(cmt, "rejected")) showToast("Usulan ditolak — dokumen tidak berubah.", "info");
     } finally {
       setMarginBusy(false);
     }
@@ -17513,6 +17677,7 @@ export default function App() {
                     Ini dipindah jadi kolom kanan (di bawah) atas permintaan
                     user, supaya preview & editor sebelahan. */}
                 {isUploadedDocument(selectedContract) ? (
+                  <React.Fragment key={docReloadKey}>
                   <UploadedDocumentWorkspace
                     contract={selectedContract}
                     canEdit={isContractEditable(selectedContract)}
@@ -17525,6 +17690,7 @@ export default function App() {
                     showToast={showToast}
                     askConfirm={askConfirm}
                   />
+                  </React.Fragment>
                 ) : (
                 <div className="xl:col-span-12 bg-slate-950 rounded-2xl border border-slate-800 p-6 space-y-6 shadow-2xl flex flex-col justify-between">
                   <div>
@@ -24146,7 +24312,15 @@ export default function App() {
         // Kontrak "Upload Dokumen": Mode Tinjau menampilkan BERKAS asli versi aktif
         // (bukan narasi/pasal template — clauses-nya memang kosong).
         const isUploadReview = isUploadedDocument(selectedContract);
-        const closeReview = () => { setReviewModeOpen(false); setMarginDraft(null); setMarginDraftText(""); setMarginReplyText(""); setActiveMarginId(null); setReAnchoringCommentId(null); };
+        // Menerima usulan = membuat versi dokumen baru: hanya Draft & peran yg boleh ubah dokumen.
+        const canApplyMarkup = selectedContract.status === "Draft" && ["admin", "staff", "legal", "manager"].includes(currentUser?.role);
+        const docMarkupItems: MarkupItem[] = visible
+          .filter((c) => c.docAnchor && c.anchor)
+          .map((c) => ({
+            id: c.id, kind: (c.kind || "comment") as MarkupItem["kind"], resolved: c.resolved, status: c.status,
+            paraIndex: c.docAnchor!.paraIndex, start: c.anchor!.start, end: c.anchor!.end, quote: c.anchor!.quote, replacement: c.replacement,
+          }));
+        const closeReview = () => { setDocMarkupDraft(null); setDocMarkupText(""); setDocMarkupReplacement(""); setReviewModeOpen(false); setMarginDraft(null); setMarginDraftText(""); setMarginReplyText(""); setActiveMarginId(null); setReAnchoringCommentId(null); };
 
         const renderInternalCard = (item: MarginItem, isActive: boolean) => {
           if (item.id === "__draft__") {
@@ -24177,8 +24351,11 @@ export default function App() {
           if (!cmt) return null;
           const replies = clauseComments.filter((c) => c.parentId === cmt.id);
           const canManage = currentUser?.id === cmt.userId || ["admin", "legal"].includes(currentUser?.role);
+          const isMarkupProposal = cmt.kind === "strike" || cmt.kind === "replace";
+          const isPendingMarkup = !!cmt.docAnchor && isMarkupProposal && cmt.status === "pending";
+          const canDecideMarkup = ["admin", "staff", "legal", "manager"].includes(currentUser?.role);
           return (
-            <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${cmt.kind === "strike" ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
+            <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${isMarkupProposal ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
               <div className="flex items-center gap-1.5">
                 <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${cmt.external ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-300"}`}>
                   {String(cmt.userName || "?").charAt(0).toUpperCase()}
@@ -24192,7 +24369,15 @@ export default function App() {
               </div>
               <p className="text-[9px] text-slate-500">{new Date(cmt.createdAt).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
               {cmt.anchor?.quote && (
-                <p className={`text-[10px] italic border-l-2 pl-2 ${cmt.kind === "strike" ? "border-rose-500 text-rose-300 line-through" : "border-amber-400 text-amber-200"}`}>"{cmt.anchor.quote}"</p>
+                <p className={`text-[10px] italic border-l-2 pl-2 ${isMarkupProposal ? "border-rose-500 text-rose-300 line-through" : "border-amber-400 text-amber-200"}`}>"{cmt.anchor.quote}"</p>
+              )}
+              {cmt.kind === "replace" && cmt.replacement && (
+                <p className="text-[10px] text-emerald-300 border-l-2 border-emerald-500 pl-2 underline decoration-emerald-500/60">→ "{cmt.replacement}"</p>
+              )}
+              {cmt.status && cmt.status !== "pending" && (
+                <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cmt.status === "accepted" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+                  {cmt.status === "accepted" ? "✓ Diterima — sudah diterapkan" : "✕ Ditolak"}
+                </span>
               )}
               <p className={`text-[11px] leading-relaxed whitespace-pre-wrap ${cmt.resolved ? "text-slate-500 line-through" : "text-slate-300"}`}>{cmt.text}</p>
               {replies.map((rp) => (
@@ -24202,14 +24387,30 @@ export default function App() {
                 </div>
               ))}
               <div className="flex items-center gap-3 pt-1 flex-wrap">
+                {isPendingMarkup && (
+                  <>
+                    <button
+                      disabled={!canApplyMarkup || marginBusy}
+                      onClick={(e) => { e.stopPropagation(); handleAcceptMarkup(cmt); }}
+                      title={canApplyMarkup ? "Terapkan usulan ini ke dokumen sebagai versi baru (original tetap utuh)." : "Menerima usulan mengubah dokumen — hanya bisa saat kontrak berstatus Draft, oleh staf yang berwenang."}
+                      className="text-[10px] font-bold text-emerald-300 hover:text-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+                    >✓ Terima</button>
+                    <button
+                      disabled={!canDecideMarkup || marginBusy}
+                      onClick={(e) => { e.stopPropagation(); handleRejectMarkup(cmt); }}
+                      title="Tolak usulan — dokumen tidak berubah."
+                      className="text-[10px] font-bold text-rose-300 hover:text-rose-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+                    >✕ Tolak</button>
+                  </>
+                )}
                 <button
                   onClick={(e) => { e.stopPropagation(); handleResolveComment(cmt); }}
-                  className={`text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition ${cmt.resolved ? "text-slate-500 hover:text-slate-300" : "text-emerald-400 hover:text-emerald-300"}`}
+                  className={`${isPendingMarkup ? "hidden " : ""}text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition ${cmt.resolved ? "text-slate-500 hover:text-slate-300" : "text-emerald-400 hover:text-emerald-300"}`}
                 >
                   <CheckCircle className="w-3 h-3" />
                   {cmt.resolved ? "Buka lagi" : "Selesai"}
                 </button>
-                {canManage && cmt.anchor?.quote && !cmt.resolved && (
+                {canManage && cmt.anchor?.quote && !cmt.resolved && !cmt.docAnchor && (
                   <button
                     onClick={(e) => { e.stopPropagation(); setReAnchoringCommentId(cmt.id); showToast("Sorot kalimat baru pada dokumen untuk memindahkan komentar ini.", "info"); }}
                     title="Sorot kalimat lain pada dokumen untuk memindahkan highlight komentar ini ke sana."
@@ -24270,7 +24471,7 @@ export default function App() {
 
             {isUploadReview ? (
               <div className="shrink-0 px-5 py-2 border-b border-slate-800/60 bg-slate-900/30 text-[10px] text-slate-500">
-                Dokumen ditampilkan <b className="text-slate-300">apa adanya</b> (baca-saja). Tulis <b className="text-slate-300">komentar umum</b> di kolom kanan; sorot &amp; markup per kalimat menyusul.
+                Dokumen ditampilkan <b className="text-slate-300">apa adanya</b>. Pada dokumen Word, <b className="text-slate-300">sorot teks</b> → ✎ Komentar / ✂ Coret / ⇄ Ganti; usulan baru mengubah dokumen setelah <b className="text-slate-300">Diterima</b>. Komentar umum ada di kolom kanan.
               </div>
             ) : reAnchoringCommentId ? (
               <div className="shrink-0 px-5 py-2 border-b border-indigo-500/30 bg-indigo-500/10 text-[11px] text-indigo-300 flex items-center gap-3 flex-wrap">
@@ -24299,9 +24500,47 @@ export default function App() {
                 </div>
                 {isUploadReview ? (
                   <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
-                    <ContractDocumentReadOnly contractId={selectedContract.id} />
+                    <ContractDocumentMarkup
+                      contractId={selectedContract.id}
+                      reloadKey={docReloadKey}
+                      items={docMarkupItems}
+                      activeId={activeMarginId}
+                      onActiveChange={setActiveMarginId}
+                      onStartDraft={(seed) => { setDocMarkupDraft(seed); setDocMarkupText(""); setDocMarkupReplacement(""); }}
+                      onNotify={(m) => showToast(m, "info")}
+                    />
                     <div className="space-y-3 lg:sticky lg:top-0">
                       <h5 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({visible.length})</h5>
+                      {docMarkupDraft && (
+                        <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${docMarkupDraft.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : docMarkupDraft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
+                            {docMarkupDraft.kind === "comment" ? "✎ Komentar Baru" : docMarkupDraft.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
+                          </p>
+                          <p className={`text-[11px] italic ${docMarkupDraft.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{docMarkupDraft.quote}"</p>
+                          {docMarkupDraft.kind === "replace" && (
+                            <input
+                              autoFocus
+                              value={docMarkupReplacement}
+                              onChange={(e) => setDocMarkupReplacement(e.target.value)}
+                              placeholder="Teks pengganti…"
+                              className="w-full px-2 py-1.5 bg-slate-950 border border-emerald-700/50 rounded-lg text-xs text-emerald-200 focus:outline-none focus:border-emerald-500"
+                            />
+                          )}
+                          <textarea
+                            autoFocus={docMarkupDraft.kind !== "replace"}
+                            value={docMarkupText}
+                            onChange={(e) => setDocMarkupText(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitDocMarkup(); }}
+                            rows={3}
+                            placeholder={docMarkupDraft.kind === "comment" ? "Tulis komentar… (Ctrl+Enter kirim)" : "Alasan (opsional)… (Ctrl+Enter kirim)"}
+                            className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                          />
+                          <div className="flex gap-2">
+                            <button onClick={submitDocMarkup} disabled={marginBusy} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-bold rounded-lg cursor-pointer">Kirim</button>
+                            <button onClick={() => { setDocMarkupDraft(null); setDocMarkupText(""); setDocMarkupReplacement(""); }} className="px-2 py-1 text-slate-400 hover:text-slate-200 text-[11px] rounded-lg cursor-pointer">Batal</button>
+                          </div>
+                        </div>
+                      )}
                       {visible.length === 0 && (
                         <div className="rounded-xl border border-dashed border-slate-800 p-3 text-[11px] text-slate-500 leading-relaxed">
                           Belum ada komentar pada dokumen ini.

@@ -711,7 +711,15 @@ export interface ClauseComment {
   // Kosong = komentar tingkat-klausul (bukan pada rentang tertentu).
   anchor?: { start: number; end: number; quote: string };
   // "strike" = usulan coret (kalimat minta dihapus/direvisi pembuat); default "comment".
-  kind?: "comment" | "strike";
+  // "replace" = usulan GANTI teks (coret teks lama + teks pengganti, spt Track Changes Word).
+  kind?: "comment" | "strike" | "replace";
+  // Markup pada dokumen upload (.docx): teks pengganti untuk kind "replace".
+  replacement?: string;
+  // Markup pada dokumen upload (.docx): indeks paragraf XML tempat anchor berada.
+  docAnchor?: { paraIndex: number };
+  // Status usulan (strike/replace pada dokumen upload). "accepted" = sudah
+  // diterapkan ke dokumen sebagai versi baru; "rejected" = ditolak, dokumen utuh.
+  status?: "pending" | "accepted" | "rejected";
   // Komentator EKSTERNAL (pihak kedua tanpa akun) via token link. Saat true,
   // userId = "external", userName = externalName yang diisi tamu.
   external?: boolean;

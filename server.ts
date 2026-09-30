@@ -5876,6 +5876,22 @@ app.get("/api/contracts/:id/comments", requireAuth, (req: AuthedRequest, res) =>
   res.json(comments);
 });
 
+// Markup dokumen upload (Track Changes ala Word): kind comment|strike|replace,
+// teks pengganti, dan indeks paragraf XML. Dipakai POST internal & eksternal.
+function parseMarkupFields(body: any): { kind: "comment" | "strike" | "replace"; replacement?: string; docAnchor?: { paraIndex: number }; status?: "pending"; error?: string } {
+  const rawKind = body?.kind;
+  const kind: "comment" | "strike" | "replace" = rawKind === "replace" ? "replace" : rawKind === "strike" ? "strike" : "comment";
+  const pi = body?.docAnchor?.paraIndex;
+  const docAnchor = Number.isInteger(pi) && pi >= 0 ? { paraIndex: pi as number } : undefined;
+  if (kind === "replace") {
+    const replacement = String(body?.replacement ?? "").slice(0, 2000);
+    if (!replacement.trim()) return { kind, error: "Teks pengganti wajib diisi untuk usulan ganti." };
+    if (!docAnchor) return { kind, error: "Usulan ganti hanya untuk teks yang dipilih pada dokumen." };
+    return { kind, replacement, docAnchor, status: "pending" };
+  }
+  return { kind, ...(docAnchor ? { docAnchor, ...(kind === "strike" ? { status: "pending" as const } : {}) } : {}) };
+}
+
 // POST /api/contracts/:id/comments — tambah komentar baru
 app.post("/api/contracts/:id/comments", requireAuth, async (req: AuthedRequest, res) => {
   const db = loadDB();
@@ -5883,8 +5899,10 @@ app.post("/api/contracts/:id/comments", requireAuth, async (req: AuthedRequest, 
   const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
 
-  const { clauseId, clauseTitle, text, parentId, mentions, anchor, kind } = req.body;
+  const { clauseId, clauseTitle, text, parentId, mentions, anchor } = req.body;
   if (!clauseId || !text?.trim()) return res.status(400).json({ error: "clauseId dan text wajib diisi" });
+  const markup = parseMarkupFields(req.body);
+  if (markup.error) return res.status(400).json({ error: markup.error });
 
   const u = req.user!;
   const comment: ClauseComment = {
@@ -5903,7 +5921,10 @@ app.post("/api/contracts/:id/comments", requireAuth, async (req: AuthedRequest, 
     parentId: parentId || undefined,
     ...(anchor && typeof anchor.start === "number" && typeof anchor.end === "number"
       ? { anchor: { start: anchor.start, end: anchor.end, quote: String(anchor.quote || "").slice(0, 500) } } : {}),
-    kind: kind === "strike" ? "strike" : "comment",
+    kind: markup.kind,
+    ...(markup.replacement !== undefined ? { replacement: markup.replacement } : {}),
+    ...(markup.docAnchor ? { docAnchor: markup.docAnchor } : {}),
+    ...(markup.status ? { status: markup.status } : {}),
   };
 
   if (!db.clauseComments) db.clauseComments = [];
@@ -5970,6 +5991,15 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   }
   if (typeof req.body.resolved === "boolean") {
     comment.resolved = req.body.resolved;
+  }
+  // Status usulan markup dokumen upload: terima/tolak mengubah dokumen (versi
+  // baru), jadi dibatasi ke peran yang boleh mengubah dokumen kontrak.
+  if (req.body.status !== undefined) {
+    if (!["pending", "accepted", "rejected"].includes(req.body.status)) return res.status(400).json({ error: "Status tidak valid." });
+    if (!["admin", "staff", "legal", "manager"].includes(req.user!.role)) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
+    if (comment.kind !== "strike" && comment.kind !== "replace") return res.status(400).json({ error: "Hanya usulan coret/ganti yang punya status." });
+    comment.status = req.body.status;
+    comment.resolved = req.body.status !== "pending";
   }
   // Ubah sorotan/highlight komentar (mis. penulis salah menyorot kalimat
   // saat pertama membuat) — sama seperti edit teks, hanya pemilik/admin/legal.
@@ -6483,6 +6513,8 @@ app.get("/api/external-review/:token", apiLimiter, (req, res) => {
       party1Name: contract.party1Name, party2Name: contract.party2Name,
       documentSource: isUpload ? "upload" : "template",
       documentFormat: uploadedFile?.viewFormat,
+      // Markup per-teks hanya utk .docx ASLI (bukan .doc hasil konversi): usulan yg diterima harus bisa ditulis ke berkasnya.
+      documentMarkup: uploadedFile ? uploadedFile.ref.format === "docx" : false,
       documentName: uploadedFile?.ref.fileName,
       documentVersion: uploadedFile?.version,
       documentMime: uploadedFile ? (uploadedFile.asDocx ? "application/vnd.openxmlformats-officedocument.wordprocessingml.document" : uploadedFile.ref.mimeType) : undefined,
@@ -6502,10 +6534,12 @@ app.post("/api/external-review/:token/comments", apiLimiter, (req, res) => {
   if (contract.externalReviewLocked) {
     return res.status(403).json({ error: "Review ini sudah terkunci sejak Anda menyetujui (Setuju/OK). Hubungi pemilik dokumen untuk membuka akses kembali." });
   }
-  const { clauseId, clauseTitle, text, anchor, kind, name } = req.body || {};
+  const { clauseId, clauseTitle, text, anchor, name } = req.body || {};
   if (!clauseId || !text?.trim() || !String(name || "").trim()) {
     return res.status(400).json({ error: "Nama, klausul, dan komentar wajib diisi." });
   }
+  const markup = parseMarkupFields(req.body);
+  if (markup.error) return res.status(400).json({ error: markup.error });
   const db = loadDB();
   const comment: ClauseComment = {
     id: "cmt-ext-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
@@ -6516,7 +6550,10 @@ app.post("/api/external-review/:token/comments", apiLimiter, (req, res) => {
     external: true, externalName: String(name).trim().slice(0, 80),
     ...(anchor && typeof anchor.start === "number" && typeof anchor.end === "number"
       ? { anchor: { start: anchor.start, end: anchor.end, quote: String(anchor.quote || "").slice(0, 500) } } : {}),
-    kind: kind === "strike" ? "strike" : "comment",
+    kind: markup.kind,
+    ...(markup.replacement !== undefined ? { replacement: markup.replacement } : {}),
+    ...(markup.docAnchor ? { docAnchor: markup.docAnchor } : {}),
+    ...(markup.status ? { status: markup.status } : {}),
   };
   if (!db.clauseComments) db.clauseComments = [];
   db.clauseComments.unshift(comment);

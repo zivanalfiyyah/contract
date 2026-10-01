@@ -25,6 +25,9 @@ import {
   Settings,
   CheckCircle,
   Clock,
+  CheckCircle2,
+  SlidersHorizontal,
+  ArrowUpDown,
   ShieldAlert,
   Sparkles,
   RefreshCw,
@@ -57,6 +60,8 @@ import {
   Languages,
   FolderOpen,
   Scale,
+  Gavel,
+  ScrollText,
   Pencil,
   Workflow,
   ClipboardList,
@@ -555,17 +560,35 @@ function sortRows<T>(rows: T[], sort: SortState, accessors: Record<string, (r: T
     return String(va).localeCompare(String(vb), "id", { numeric: true }) * mult;
   });
 }
-function SortableTh({ label, colKey, sort, onSort, className = "", align = "left" }: {
-  label: string; colKey: string; sort: SortState; onSort: (k: string) => void; className?: string; align?: "left" | "right" | "center";
+// Format berkas dokumen sebuah kontrak: dari berkas unggahan (Word/PDF/gambar)
+// bila ada, kalau tidak "PDF" bila punya master PDF, selain itu "Digital".
+type DocKind = "PDF" | "Word" | "Gambar" | "Berkas" | "Digital";
+function contractDocKind(c: Contract): DocKind {
+  const ref = c.currentDocument || c.originalDocument;
+  if (ref) {
+    if (ref.format === "pdf") return "PDF";
+    if (ref.format === "docx" || ref.format === "doc") return "Word";
+    if (ref.format === "image") return "Gambar";
+    return "Berkas";
+  }
+  return c.masterPdfUrl ? "PDF" : "Digital";
+}
+function fileKindFromName(name?: string): "PDF" | "Word" | "Gambar" | "Berkas" | "" {
+  if (!name) return "";
+  const ext = name.split(".").pop()?.toLowerCase() || "";
+  if (ext === "pdf") return "PDF";
+  if (ext === "doc" || ext === "docx") return "Word";
+  if (["jpg", "jpeg", "png"].includes(ext)) return "Gambar";
+  return "Berkas";
+}
+
+// Kepala kolom polos: pengurutan per kolom DIHILANGKAN (diurutkan lewat tombol
+// "Urutkan" Terbaru/Terlama pada data keseluruhan). Props sort/onSort dipertahankan
+// agar pemanggil lama tidak perlu diubah.
+function SortableTh({ label, className = "" }: {
+  label: string; colKey?: string; sort?: SortState; onSort?: (k: string) => void; className?: string; align?: "left" | "right" | "center";
 }) {
-  const active = sort.key === colKey;
-  return (
-    <th className={`cursor-pointer select-none hover:text-slate-200 transition ${className}`} onClick={() => onSort(colKey)} title="Klik untuk urutkan naik/turun">
-      <span className={`inline-flex items-center gap-1 ${align === "right" ? "justify-end w-full" : align === "center" ? "justify-center w-full" : ""}`}>
-        {label}<span className={active ? "text-indigo-400" : "text-slate-600"}>{active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}</span>
-      </span>
-    </th>
-  );
+  return <th className={`text-left ${className}`}>{label}</th>;
 }
 
 // Substitusi {{variabel}} jadi teks polos — dipakai saat klausul perlu dirender
@@ -2771,17 +2794,18 @@ const CONTRACT_STATUS_LABEL_ID: Record<string, string> = {
   Finalisasi: "Finalisasi", ProsesTTD: "Proses TTD",
 };
 const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
-  Aktif: "bg-emerald-500/15 text-emerald-400 border-emerald-500/25",
-  TidakAktif: "bg-orange-500/15 text-orange-400 border-orange-500/25",
-  Draft: "bg-amber-500/15 text-amber-400 border-amber-500/25",
-  OnReview: "bg-indigo-500/15 text-indigo-400 border-indigo-500/25",
-  FullyApproved: "bg-teal-500/15 text-teal-400 border-teal-500/25",
-  Archived: "bg-purple-500/15 text-purple-400 border-purple-500/25",
-  Terminated: "bg-rose-500/15 text-rose-400 border-rose-500/25",
-  ReviewInternalEksternal: "bg-sky-500/15 text-sky-400 border-sky-500/25",
-  RevisiNegosiasi: "bg-fuchsia-500/15 text-fuchsia-400 border-fuchsia-500/25",
-  Finalisasi: "bg-indigo-500/15 text-indigo-400 border-indigo-500/25",
-  ProsesTTD: "bg-teal-500/15 text-teal-400 border-teal-500/25",
+  // Pastel biru/oranye senada dashboard — biru = berjalan baik, oranye = perlu perhatian.
+  Aktif: "bg-mist text-indigo-400 border-transparent",
+  TidakAktif: "bg-slate-800 text-slate-400 border-transparent",
+  Draft: "bg-slate-800 text-slate-300 border-transparent",
+  OnReview: "bg-peach text-brand-orange border-transparent",
+  FullyApproved: "bg-mist text-indigo-400 border-transparent",
+  Archived: "bg-slate-800 text-slate-400 border-transparent",
+  Terminated: "bg-peach text-brand-orange border-transparent",
+  ReviewInternalEksternal: "bg-peach text-brand-orange border-transparent",
+  RevisiNegosiasi: "bg-peach text-brand-orange border-transparent",
+  Finalisasi: "bg-mist text-indigo-400 border-transparent",
+  ProsesTTD: "bg-mist text-indigo-400 border-transparent",
 };
 // Bentuk LegalJob yang dikembalikan API (lihat withLinkedContract di
 // server.ts) — nempel field `linkedContract` di atas LegalJob biasa, dihitung
@@ -3572,18 +3596,47 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
   );
 }
 
-// Grafik batang mini di kartu statistik: batang pucat, batang terakhir disorot.
-function MiniBars({ values }: { values: number[] }) {
+// Grafik batang mini di kartu statistik. `mixed` = batang berselang biru/oranye
+// pucat (seperti referensi); selain itu batang pucat dengan batang terakhir disorot.
+function MiniBars({ values, labels, mixed }: { values: number[]; labels?: string[]; mixed?: boolean }) {
   const max = Math.max(1, ...values);
   return (
-    <div className="flex items-end gap-1 h-11 shrink-0" aria-hidden="true">
+    <div className="flex items-end gap-1.5 shrink-0" aria-hidden="true">
       {values.map((v, i) => (
-        <span
-          key={i}
-          className={`w-2 rounded-sm ${i === values.length - 1 ? "bg-soft-blue" : "bg-mist"}`}
-          style={{ height: `${Math.max(12, Math.round((v / max) * 100))}%` }}
-        />
+        <div key={i} className="flex flex-col items-center gap-1">
+          <div className="h-12 flex items-end">
+            <span
+              className={`w-2.5 rounded-full ${
+                mixed ? (i % 2 === 0 ? "bg-soft-blue" : "bg-peach-strong") : i === values.length - 1 ? "bg-soft-blue" : "bg-mist"
+              }`}
+              style={{ height: `${Math.max(14, Math.round((v / max) * 100))}%` }}
+            />
+          </div>
+          {labels && <span className="text-[8px] text-slate-500 leading-none">{labels[i]}</span>}
+        </div>
       ))}
+    </div>
+  );
+}
+
+// Garis mini bertitik (kartu statistik) — tanpa library.
+function MiniLine({ values, labels }: { values: number[]; labels?: string[] }) {
+  const max = Math.max(1, ...values);
+  const W = 80, H = 44, n = values.length;
+  const pts = values.map((v, i) => [n === 1 ? W / 2 : (i / (n - 1)) * W, H - 4 - (v / max) * (H - 10)]);
+  return (
+    <div className="shrink-0" aria-hidden="true">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="overflow-visible">
+        <polyline points={pts.map((p) => p.join(",")).join(" ")} fill="none" stroke="var(--color-soft-blue)" strokeWidth="1.5" strokeLinejoin="round" />
+        {pts.map((p, i) => (
+          <circle key={i} cx={p[0]} cy={p[1]} r="2.5" fill={i === n - 1 ? "var(--color-brand-orange)" : "var(--color-peach-strong)"} />
+        ))}
+      </svg>
+      {labels && (
+        <div className="flex justify-between mt-1">
+          {(labels.length > 4 ? [labels[0], labels[labels.length - 1]] : labels).map((l, i) => <span key={i} className="text-[8px] text-slate-500 leading-none">{l}</span>)}
+        </div>
+      )}
     </div>
   );
 }
@@ -3591,26 +3644,297 @@ function MiniBars({ values }: { values: number[] }) {
 // Cincin proporsi (donut) tanpa library: segmen berurutan, angka di tengah.
 function StatusRing({ segments, center, sub }: { segments: { value: number; color: string }[]; center: string; sub: string }) {
   const total = segments.reduce((a, b) => a + b.value, 0);
-  const R = 46, C = 2 * Math.PI * R;
+  const R = 44, C = 2 * Math.PI * R;
   let offset = 0;
   return (
-    <div className="relative w-40 h-40">
+    <div className="relative w-36 h-36">
       <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
-        <circle cx="60" cy="60" r={R} fill="none" stroke="var(--color-slate-900)" strokeWidth="12" />
+        <circle cx="60" cy="60" r={R} fill="none" stroke="var(--color-slate-950)" strokeWidth="14" />
         {total > 0 && segments.map((sg, i) => {
           const len = (sg.value / total) * C;
           const el = sg.value > 0 ? (
-            <circle key={i} cx="60" cy="60" r={R} fill="none" stroke={sg.color} strokeWidth="12"
-              strokeDasharray={`${Math.max(0, len - 2)} ${C}`} strokeDashoffset={-offset} />
+            <circle key={i} cx="60" cy="60" r={R} fill="none" stroke={sg.color} strokeWidth="14" strokeLinecap="round"
+              strokeDasharray={`${Math.max(0, len - 8)} ${C}`} strokeDashoffset={-offset - 4} />
           ) : null;
           offset += len;
           return el;
         })}
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-[28px] leading-none font-semibold text-slate-100 tabular">{center}</span>
+        <span className="text-[24px] leading-none font-medium text-slate-100 tabular">{center}</span>
         <span className="text-[11px] text-slate-500 mt-1">{sub}</span>
       </div>
+    </div>
+  );
+}
+
+// Area yang bisa digulir dengan tinggi terkunci oleh induknya + efek memudar (biru) di tepi
+// bawah selama masih ada isi di bawah. Tinggi dikunci lewat style langsung agar tidak
+// bergantung pada class Tailwind.
+function FadeScroll({ children, className = "", maxHeight, hideScrollbar }: { children: any; className?: string; maxHeight?: string; hideScrollbar?: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  const check = () => {
+    const el = ref.current;
+    if (!el) return;
+    setMore(el.scrollHeight - el.scrollTop - el.clientHeight > 4);
+  };
+  useEffect(() => {
+    check();
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    Array.from(el.children).forEach((c: any) => ro.observe(c));
+    return () => ro.disconnect();
+  });
+  return (
+    <div style={{ position: "relative", minHeight: 0, ...(maxHeight ? {} : { flex: "1 1 0%" }) }}>
+      <div
+        ref={ref}
+        onScroll={check}
+        className={`${className} ${hideScrollbar ? "no-scrollbar" : ""}`}
+        style={{
+          overflowY: "auto",
+          ...(maxHeight ? { maxHeight } : { height: "100%" }),
+          ...(more ? { WebkitMaskImage: "linear-gradient(to bottom, #000 calc(100% - 36px), transparent 100%)", maskImage: "linear-gradient(to bottom, #000 calc(100% - 36px), transparent 100%)" } : {}),
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Cocokkan media query (dipakai untuk sidebar desktop).
+function useMediaQuery(query: string) {
+  const [m, setM] = useState(() => typeof window !== "undefined" && window.matchMedia(query).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(query);
+    const h = () => setM(mq.matches);
+    mq.addEventListener("change", h);
+    h();
+    return () => mq.removeEventListener("change", h);
+  }, [query]);
+  return m;
+}
+
+// Batang lebar berwarna oranye pucat (untuk kartu Sharing Fee), batang terakhir disorot.
+function WideBars({ values, labels }: { values: number[]; labels?: string[] }) {
+  const max = Math.max(1, ...values);
+  return (
+    <div className="flex items-end gap-2" aria-hidden="true">
+      {values.map((v, i) => (
+        <div key={i} className="flex-1 flex flex-col items-center gap-1.5">
+          <div className="h-14 w-full flex items-end justify-center">
+            <span
+              className={`w-3.5 rounded-full ${i === values.length - 1 ? "bg-brand-orange" : "bg-peach-strong"}`}
+              style={{ height: `${Math.max(10, Math.round((v / max) * 100))}%`, opacity: v === 0 ? 0.35 : 1 }}
+            />
+          </div>
+          {labels && <span className="text-[9px] text-slate-500 leading-none">{labels[i]}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Pagination ringkas di kaki kartu (hanya muncul bila data melebihi satu halaman).
+function DashPager({ page, total, pageSize, onChange }: { page: number; total: number; pageSize: number; onChange: (p: number) => void }) {
+  const pages = Math.ceil(total / pageSize);
+  if (pages <= 1) return null;
+  const from = (page - 1) * pageSize + 1;
+  const to = Math.min(total, page * pageSize);
+  return (
+    <div className="flex items-center justify-between pt-3 border-t border-slate-800 text-[11px] text-slate-500">
+      <span className="tabular">{from}–{to} dari {total}</span>
+      <div className="flex items-center gap-1">
+        <button disabled={page <= 1} onClick={() => onChange(page - 1)} className="w-7 h-7 rounded-full bg-slate-950 hover:bg-slate-850 flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:cursor-default" aria-label="Halaman sebelumnya">
+          <ChevronLeft className="w-3.5 h-3.5" />
+        </button>
+        <span className="px-2 tabular">{page}/{pages}</span>
+        <button disabled={page >= pages} onClick={() => onChange(page + 1)} className="w-7 h-7 rounded-full bg-slate-950 hover:bg-slate-850 flex items-center justify-center cursor-pointer disabled:opacity-40 disabled:cursor-default" aria-label="Halaman berikutnya">
+          <ChevronRight className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Kepala kartu dashboard yang seragam: lingkaran ikon + judul + keterangan + aksi kanan.
+function DashCardHeader({ Icon, title, subtitle, right }: { Icon: any; title: string; subtitle?: string; right?: any }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex items-center gap-3 min-w-0">
+        <span className="w-10 h-10 rounded-full bg-peach-strong flex items-center justify-center shrink-0">
+          <Icon className="w-[17px] h-[17px] text-slate-100" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-[16px] font-medium text-slate-100 leading-snug">{title}</h3>
+          {subtitle && <p className="text-[11px] text-slate-500 leading-snug mt-0.5">{subtitle}</p>}
+        </div>
+      </div>
+      {right}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Drawer "Filter Kontrak" (Monitoring Kontrak & Kontrak Karyawan). Panel kiri +
+// overlay; semua isian bekerja pada salinan sementara (draft) dan baru
+// berlaku saat "Terapkan Filter" ditekan. Hanya memuat filter atas data yang
+// BENAR-BENAR ada di kontrak (tidak ada kolom fiktif).
+// ---------------------------------------------------------------------------
+type MonitorExtra = {
+  title: string; number: string; party: string; party1: string; docType: string; party2Type: string;
+  startFrom: string; startTo: string; endFrom: string; endTo: string;
+  statuses: string[]; docKinds: string[]; minVal: string; maxVal: string;
+};
+type MonitorHealthKey = "" | "expired" | "critical" | "warning" | "healthy";
+type MonitorDraft = MonitorExtra & {
+  keyword: string; category: string; health: MonitorHealthKey; scope: "all" | "aktif" | "nonaktif";
+};
+const EMPTY_MONITOR_EXTRA: MonitorExtra = {
+  title: "", number: "", party: "", party1: "", docType: "", party2Type: "",
+  startFrom: "", startTo: "", endFrom: "", endTo: "", statuses: [], docKinds: [], minVal: "", maxVal: "",
+};
+function countMonitorFilters(d: MonitorDraft): number {
+  let n = 0;
+  if (d.category !== "Semua") n++;
+  if (d.health) n++;
+  if (d.scope !== "all") n++;
+  n += d.statuses.length + d.docKinds.length;
+  (["title", "number", "party", "party1", "docType", "party2Type", "startFrom", "startTo", "endFrom", "endTo", "minVal", "maxVal"] as const)
+    .forEach((k) => { if (String(d[k]).trim()) n++; });
+  return n;
+}
+const DrawerSection = ({ title, children, last }: { title: string; children: any; last?: boolean }) => (
+  <div className={`pb-5 mb-5 ${last ? "" : "border-b border-slate-800"}`}>
+    <div className="text-[13px] font-bold text-slate-200 mb-3">{title}</div>
+    {children}
+  </div>
+);
+const DrawerCheck = ({ on, text, onClick }: { key?: string; on: boolean; text: string; onClick: () => void }) => (
+  <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer min-h-[27px]">
+    <input type="checkbox" checked={on} onChange={onClick} className="w-4 h-4 accent-[var(--color-soft-blue)] cursor-pointer" /> {text}
+  </label>
+);
+
+function MonitorFilterDrawer({ draft, setDraft, onApply, onReset, onClose, categories, statusOptions, docTypes, party2Types }: {
+  draft: MonitorDraft; setDraft: (fn: (d: MonitorDraft) => MonitorDraft) => void;
+  onApply: () => void; onReset: () => void; onClose: () => void;
+  categories: string[]; statusOptions: { value: string; label: string }[]; docTypes: string[]; party2Types: string[];
+}) {
+  const set = <K extends keyof MonitorDraft>(k: K, v: MonitorDraft[K]) => setDraft((d) => ({ ...d, [k]: v }));
+  const toggle = (k: "statuses" | "docKinds", v: string) =>
+    setDraft((d) => ({ ...d, [k]: d[k].includes(v) ? d[k].filter((x) => x !== v) : [...d[k], v] }));
+  const input = "w-full h-10 px-3 rounded-xl bg-slate-950 text-xs text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-indigo-500 focus:bg-slate-900 transition";
+  const label = "block text-[11px] font-semibold text-slate-400 mb-1.5";
+  const pill = (on: boolean) => `px-3 py-1.5 rounded-full text-[11px] font-semibold cursor-pointer transition ${on ? "bg-mist text-indigo-400" : "bg-slate-950 text-slate-400 hover:text-slate-200"}`;
+  return (
+    <div className="fixed inset-0 z-[60] bg-slate-950/40 backdrop-blur-[2px]" onClick={onClose}>
+      <aside
+        role="dialog" aria-label="Filter Kontrak"
+        className="drawer-in absolute left-3 top-3 bottom-3 w-[min(430px,calc(100vw-1.5rem))] bg-slate-900 rounded-[28px] flex flex-col overflow-hidden"
+        style={{ boxShadow: "var(--shadow-soft)" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 pt-5 pb-4 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-bold text-slate-100">Filter Kontrak</h2>
+            <p className="text-xs text-slate-400 mt-1 leading-relaxed">Cari data lebih spesifik berdasarkan informasi yang tersedia di tabel.</p>
+          </div>
+          <button onClick={onClose} aria-label="Tutup" className="w-9 h-9 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 text-lg leading-none cursor-pointer shrink-0">×</button>
+        </div>
+        <div className="px-6 pb-2 overflow-y-auto flex-1">
+          <DrawerSection title="Identitas kontrak">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div><label className={label}>Judul / Nama Kontrak</label><input className={input} value={draft.title} onChange={(e) => set("title", e.target.value)} placeholder="Contoh: Perjanjian Vendor" /></div>
+              <div><label className={label}>Nomor Kontrak</label><input className={input} value={draft.number} onChange={(e) => set("number", e.target.value)} placeholder="Contoh: 001/PKS/VII/2026" /></div>
+              <div>
+                <label className={label}>Kategori</label>
+                <select className={input} value={draft.category} onChange={(e) => set("category", e.target.value)}>
+                  <option value="Semua">Semua Kategori</option>
+                  {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <div><label className={label}>Pihak Kedua</label><input className={input} value={draft.party} onChange={(e) => set("party", e.target.value)} placeholder="Nama perusahaan / orang" /></div>
+            </div>
+          </DrawerSection>
+
+          <DrawerSection title="Periode kontrak">
+            <label className={label}>Tanggal Mulai</label>
+            <div className="flex items-center gap-2 mb-3">
+              <input type="date" className={input} value={draft.startFrom} onChange={(e) => set("startFrom", e.target.value)} />
+              <span className="text-[11px] text-slate-500">s/d</span>
+              <input type="date" className={input} value={draft.startTo} onChange={(e) => set("startTo", e.target.value)} />
+            </div>
+            <label className={label}>Tanggal Berakhir</label>
+            <div className="flex items-center gap-2">
+              <input type="date" className={input} value={draft.endFrom} onChange={(e) => set("endFrom", e.target.value)} />
+              <span className="text-[11px] text-slate-500">s/d</span>
+              <input type="date" className={input} value={draft.endTo} onChange={(e) => set("endTo", e.target.value)} />
+            </div>
+          </DrawerSection>
+
+          <DrawerSection title="Sisa waktu kontrak">
+            <div className="flex flex-wrap gap-2">
+              {([["expired", "Sudah lewat"], ["critical", "≤ 30 hari"], ["warning", "31–90 hari"], ["healthy", "> 90 hari"]] as [MonitorHealthKey, string][]).map(([k, t]) => (
+                <button key={k} type="button" className={pill(draft.health === k)} onClick={() => set("health", draft.health === k ? "" : k)}>{t}</button>
+              ))}
+            </div>
+          </DrawerSection>
+
+          <DrawerSection title="Status & aktivitas">
+            <label className={label}>Status Kontrak</label>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1 mb-4">
+              {statusOptions.map((o) => <DrawerCheck key={o.value} on={draft.statuses.includes(o.value)} text={o.label} onClick={() => toggle("statuses", o.value)} />)}
+            </div>
+            <label className={label}>Status Aktivasi</label>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={pill(draft.scope === "aktif")} onClick={() => set("scope", draft.scope === "aktif" ? "all" : "aktif")}>Aktif</button>
+              <button type="button" className={pill(draft.scope === "nonaktif")} onClick={() => set("scope", draft.scope === "nonaktif" ? "all" : "nonaktif")}>Tidak Aktif</button>
+            </div>
+          </DrawerSection>
+
+          <DrawerSection title="Dokumen">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+              <DrawerCheck on={draft.docKinds.includes("PDF")} text="PDF" onClick={() => toggle("docKinds", "PDF")} />
+              <DrawerCheck on={draft.docKinds.includes("Word")} text="Word (.doc / .docx)" onClick={() => toggle("docKinds", "Word")} />
+              <DrawerCheck on={draft.docKinds.includes("Gambar")} text="Gambar / scan" onClick={() => toggle("docKinds", "Gambar")} />
+              <DrawerCheck on={draft.docKinds.includes("Digital")} text="Digital (disusun di sistem)" onClick={() => toggle("docKinds", "Digital")} />
+            </div>
+          </DrawerSection>
+
+          <DrawerSection title="Pencarian berdasarkan kolom lain" last>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div><label className={label}>Pihak Pertama</label><input className={input} value={draft.party1} onChange={(e) => set("party1", e.target.value)} placeholder="Nama pihak pertama" /></div>
+              <div>
+                <label className={label}>Jenis Dokumen</label>
+                <select className={input} value={draft.docType} onChange={(e) => set("docType", e.target.value)}>
+                  <option value="">Semua Jenis</option>
+                  {docTypes.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className={label}>Tipe Pihak Kedua</label>
+                <select className={input} value={draft.party2Type} onChange={(e) => set("party2Type", e.target.value)}>
+                  <option value="">Semua Tipe</option>
+                  {party2Types.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </div>
+              <div />
+              <div><label className={label}>Nilai kontrak min (Rp)</label><input type="number" min="0" className={input} value={draft.minVal} onChange={(e) => set("minVal", e.target.value)} placeholder="0" /></div>
+              <div><label className={label}>Nilai kontrak maks (Rp)</label><input type="number" min="0" className={input} value={draft.maxVal} onChange={(e) => set("maxVal", e.target.value)} placeholder="Tanpa batas" /></div>
+            </div>
+          </DrawerSection>
+        </div>
+        <div className="px-6 py-4 flex gap-3 bg-slate-900">
+          <button onClick={onReset} className="h-11 w-28 rounded-full bg-slate-950 text-slate-300 text-xs font-bold hover:text-slate-100 cursor-pointer">Reset Filter</button>
+          <button onClick={onApply} className="h-11 flex-1 rounded-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold cursor-pointer">Terapkan Filter</button>
+        </div>
+      </aside>
     </div>
   );
 }
@@ -3634,6 +3958,13 @@ export default function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
+  // Popup notifikasi (ikon lonceng di navbar) + tab Semua/Belum dibaca.
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifTab, setNotifTab] = useState<"all" | "unread">("all");
+  // Halaman daftar di kartu dashboard (10 item per halaman).
+  const [apprPage, setApprPage] = useState(1);
+  const isDesktop = useMediaQuery("(min-width: 768px)");
+  const [expPage, setExpPage] = useState(1);
 
   // Sidebar bisa disembunyikan/dimunculkan lewat tombol di navbar.
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -3947,7 +4278,12 @@ export default function App() {
   // Filter cepat via klik kartu ringkasan (Lewat/≤30/31-90/Aman) — "" = semua.
   const [monitorHealth, setMonitorHealth] = useState<"" | "expired" | "critical" | "warning" | "healthy">("");
   const [monitorPage, setMonitorPage] = useState(1);
-  const [contractSort, setContractSort] = useState<SortState>({ key: "sisa", dir: "asc" });
+  // Filter lanjutan (drawer): terapan = monitorExtra; draft = salinan sementara saat drawer terbuka.
+  const [monitorExtra, setMonitorExtra] = useState<MonitorExtra>(EMPTY_MONITOR_EXTRA);
+  const [monitorFilterOpen, setMonitorFilterOpen] = useState(false);
+  const [monitorSortOpen, setMonitorSortOpen] = useState(false);
+  const [monitorDraft, setMonitorDraft] = useState<MonitorDraft>({ ...EMPTY_MONITOR_EXTRA, keyword: "", category: "Semua", health: "", scope: "all" });
+  const [contractSort, setContractSort] = useState<SortState>({ key: "dibuat", dir: "desc" });
   // Audit trail table — search + sortable columns.
   const [auditSearch, setAuditSearch] = useState("");
   const [auditPage, setAuditPage] = useState(1);
@@ -6376,7 +6712,7 @@ export default function App() {
       return;
     }
     if (newContractForm.creationMode === "upload" && !newContractForm.masterPdfFile) {
-      showToast("Harap unggah master kontrak PDF", "warning");
+      showToast("Harap unggah berkas kontrak (PDF atau Word)", "warning");
       return;
     }
 
@@ -11198,7 +11534,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-shell md:p-3 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen text-slate-100 flex flex-col font-sans">
       {/* Kontrol gambar mengambang ala Canva — global, lepas dari alur
           dokumen manapun (lihat komentar di definisi komponennya). */}
       <ImageSelectionOverlay />
@@ -11226,41 +11562,615 @@ export default function App() {
         );
       })()}
 
-      {/* Top Header */}
-      <header className="bg-slate-900 md:rounded-t-[16px] px-6 py-4 flex items-center justify-between sticky top-0 z-40">
-        <div className="flex items-center gap-3 min-w-0">
-          {/* Fallback toggle buat mobile — di desktop dipindah jadi handle
-              di pembatas sidebar (lihat dekat <aside>). */}
-          <button
-            onClick={() => setSidebarOpen((o) => !o)}
-            className="md:hidden p-2 rounded-lg hover:bg-slate-800/40 transition cursor-pointer text-slate-400 hover:text-slate-100 shrink-0"
-            title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
-            aria-label="Tampilkan/sembunyikan sidebar"
+
+      {/* Main Body */}
+      <div className="flex-1 flex flex-col md:flex-row">
+        {sidebarOpen && (
+        <aside
+          className="w-auto md:w-64 px-5 py-6 shrink-0 flex flex-col gap-4 rounded-[28px] bg-slate-900 card-soft"
+          style={isDesktop ? { position: "sticky", top: 16, alignSelf: "flex-start", height: "calc(100vh - 2rem)", maxHeight: "calc(100vh - 2rem)", overflow: "hidden", margin: "16px 0 16px 16px" } : { margin: 16 }}
+        >
+          <div className="flex flex-col flex-1 min-h-0 gap-2">
+            <div className="flex items-center gap-2.5 px-1 pb-3 shrink-0">
+              <div className="w-9 h-9 rounded-full bg-soft-blue flex items-center justify-center shrink-0">
+                <FileText className="text-white w-[18px] h-[18px]" strokeWidth={2.25} />
+              </div>
+              <div className="min-w-0">
+                <h1 className="font-medium text-[18px] leading-tight text-slate-100 truncate">Smart CLM</h1>
+                <p className="text-[10px] text-slate-500 truncate">{currentTenant?.name || "Enterprise"}</p>
+              </div>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="hidden md:flex ml-auto w-9 h-9 items-center justify-center rounded-full bg-slate-950 hover:bg-slate-850 text-slate-400 hover:text-slate-100 transition cursor-pointer shrink-0"
+                title="Ciutkan sidebar"
+                aria-label="Ciutkan sidebar"
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
+            </div>
+
+            <FadeScroll className="space-y-4 -mx-1 pl-1 pr-2">
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2">
+                MENU UTAMA
+              </p>
+
+              {canSee("dashboard") && (
+              <button
+                onClick={() => {
+                  setActiveTab("dashboard");
+                  setSelectedContract(null);
+                }}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "dashboard"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                Dashboard
+              </button>
+              )}
+
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5">
+                Legal
+              </p>
+              {canSee("dashboard-legal") && (
+              <button
+                onClick={() => { setActiveTab("dashboard-legal"); setSelectedContract(null); }}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "dashboard-legal"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <LayoutDashboard className="w-4 h-4" />
+                Dashboard Legal
+              </button>
+              )}
+              {canSee("pekerjaan-legal") && (
+              <button
+                onClick={() => { setActiveTab("pekerjaan-legal"); setSelectedContract(null); }}
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "pekerjaan-legal"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <ClipboardList className="w-4 h-4" />
+                Pekerjaan Legal
+              </button>
+              )}
+
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
+                Dokumen Eksternal &middot; Kontrak
+              </p>
+              {canSee("monitoring") && (
+              <button
+                onClick={() => {
+                  setActiveTab("monitoring");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "monitoring"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Bell className="w-4 h-4" />
+                  <span>Monitoring Kontrak</span>
+                </div>
+                {(() => {
+                  const now = new Date();
+                  const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
+                  const expiringCount = contracts.filter((c) => {
+                    if (isEmp(c) || c.status === "Terminated" || c.status === "Archived") return false;
+                    const days = Math.ceil((new Date(c.endDate).getTime() - now.getTime()) / 86400000);
+                    return days <= (c.reminderDaysBefore || 30) && days > -3650;
+                  }).length;
+                  return expiringCount > 0 ? (
+                    <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                      {expiringCount}
+                    </span>
+                  ) : null;
+                })()}
+              </button>
+              )}
+
+              {canSee("kontrak-karyawan") && (
+              <button
+                onClick={() => {
+                  setActiveTab("kontrak-karyawan");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "kontrak-karyawan"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Users className="w-4 h-4" />
+                  <span>Kontrak Karyawan</span>
+                </div>
+                {(() => {
+                  const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
+                  const cnt = contracts.filter(isEmp).length;
+                  return cnt > 0 ? (
+                    <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold">{cnt}</span>
+                  ) : null;
+                })()}
+              </button>
+              )}
+
+              {canSee("clauses") && (
+              <button
+                onClick={() => {
+                  setActiveTab("clauses");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "clauses"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Sliders className="w-4 h-4" />
+                Library Klausul & Tpl
+              </button>
+              )}
+
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="SOP, Instruksi Kerja, Memo, Kebijakan — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem, tidak perlu meterai.">
+                Dokumen Internal &middot; DCS
+              </p>
+              {canSee("internal-docs") && (
+              <button
+                onClick={() => {
+                  setActiveTab("internal-docs");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "internal-docs"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Workflow className="w-4 h-4" />
+                Dokumen Internal (DCS)
+              </button>
+              )}
+
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Gabungan dokumen dari kedua jalur — menampilkan kontrak eksternal maupun dokumen DCS bersama-sama.">
+                Arsip &amp; Daftar &middot; Gabungan
+              </p>
+              {canSee("arsip") && (
+              <button
+                onClick={() => {
+                  setActiveTab("arsip");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "arsip"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+                title="Dokumen tersusun per folder & subfolder — untuk menelusuri berdasarkan pengelompokan."
+              >
+                <FolderOpen className="w-4 h-4" />
+                Arsip per Folder
+              </button>
+              )}
+
+              {canSee("all-docs") && (
+              <button
+                onClick={() => {
+                  setActiveTab("all-docs");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "all-docs"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+                title="Satu tabel datar berisi semua kontrak & dokumen DCS — untuk aksi massal, penyaringan, dan ekspor CSV."
+              >
+                <CheckSquare className="w-4 h-4" />
+                Tabel Semua Dokumen
+              </button>
+              )}
+
+              {canSee("konfigurasi") && (
+              <button
+                onClick={() => {
+                  setActiveTab("konfigurasi");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "konfigurasi"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Sliders className="w-4 h-4" />
+                Konfigurasi & Master Data
+              </button>
+              )}
+
+              {canSee("audits") && (
+              <button
+                onClick={() => {
+                  setActiveTab("audits");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "audits"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Settings className="w-4 h-4" />
+                Audit Trail
+              </button>
+              )}
+
+              {canSee("audit-kontrak-dcs") && (
+              <button
+                onClick={() => {
+                  setActiveTab("audit-kontrak-dcs");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "audit-kontrak-dcs"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+                title="Audit Trail yang sama, disaring khusus Kontrak Eksternal, Kontrak Karyawan, dan Dokumen DCS."
+              >
+                <Layers className="w-4 h-4" />
+                Audit Kontrak &amp; DCS
+              </button>
+              )}
+
+              {canSee("kalender-legal") && (
+              <button
+                onClick={() => {
+                  setActiveTab("kalender-legal");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "kalender-legal"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <CalendarDays className="w-4 h-4" />
+                Kalender Legal
+              </button>
+              )}
+
+              {canSee("retensi-arsip") && (
+              <button
+                onClick={() => {
+                  setActiveTab("retensi-arsip");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "retensi-arsip"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Archive className="w-4 h-4" />
+                Retensi Arsip
+              </button>
+              )}
+
+              {canSee("performa-vendor") && (
+              <button
+                onClick={() => {
+                  setActiveTab("performa-vendor");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "performa-vendor"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Star className="w-4 h-4" />
+                Performa Vendor
+              </button>
+              )}
+
+            </div>
+
+            {canSee("ai-tools") && (
+            <div className="pt-2">
+              <button
+                onClick={() => setShowToolsMenu(!showToolsMenu)}
+                className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-[10px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-300 transition cursor-pointer"
+              >
+                <span>AI Tools Hukum</span>
+                <ChevronRight
+                  className={`w-3.5 h-3.5 transition-transform ${showToolsMenu ? "rotate-90" : ""}`}
+                />
+              </button>
+
+              {showToolsMenu && (
+                <div className="space-y-1 animate-fadeIn">
+                  <button
+                    onClick={() => {
+                      setActiveTab("pusat-peraturan");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "pusat-peraturan"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <Scale className="w-4 h-4" />
+                    Pusat Peraturan
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("putusan-pengadilan");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "putusan-pengadilan"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <FolderOpen className="w-4 h-4" />
+                    Putusan Pengadilan
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("opini-hukum");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "opini-hukum"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <MessageSquare className="w-4 h-4" />
+                    Opini Hukum
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("terjemah-dokumen");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "terjemah-dokumen"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <Languages className="w-4 h-4" />
+                    Terjemah Teks Lepas
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("review-dokumen");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "review-dokumen"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <Search className="w-4 h-4" />
+                    Audit Risiko Naskah
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("bandingkan-dokumen");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "bandingkan-dokumen"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <ArrowLeftRight className="w-4 h-4" />
+                    Bandingkan 2 Dokumen
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("buat-draft-ai");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "buat-draft-ai"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    Buat Naskah Draft AI
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("tabular");
+                      setSelectedContract(null);
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "tabular"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <LayoutDashboard className="w-4 h-4" />
+                    Analisis Tabular
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setActiveTab("analytics");
+                      setSelectedContract(null);
+                      fetchAnalytics();
+                    }}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                      activeTab === "analytics"
+                        ? "bg-soft-blue text-white"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    }`}
+                  >
+                    <LineChart className="w-4 h-4" />
+                    Analytics & Risk
+                  </button>
+                </div>
+              )}
+            </div>
+            )}
+            </FadeScroll>
+          </div>
+
+          <div className="space-y-3 pt-3 shrink-0 border-t border-slate-800">
+            <div className="relative group px-1">
+            <button className="w-full flex items-center gap-3 py-1 transition cursor-pointer">
+              <div className="w-11 h-11 rounded-full bg-indigo-600 flex items-center justify-center text-white font-semibold text-sm shrink-0">
+                {(currentUser.name || "U").trim().charAt(0).toUpperCase()}
+              </div>
+              <div className="text-left leading-tight flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-100 truncate">{currentUser.name}</p>
+                <p className="text-[10.5px] text-slate-500">
+                  {({ super_admin: "Super Admin", admin: "Admin", legal: "Legal", manager: "Manager", staff: "Staff", viewer: "Viewer" } as any)[currentUser.role] || currentUser.role}
+                </p>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            </button>
+            <div className="absolute left-0 bottom-[calc(100%-6px)] w-full min-w-[13rem] bg-slate-900 card-soft rounded-[20px] py-1.5 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition z-50">
+              <button
+                onClick={() => setIsChangingPassword(true)}
+                className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+              >
+                <Settings className="w-3.5 h-3.5" /> Ganti Kata Sandi
+              </button>
+              {/* Diletakkan di menu akun, bukan di Konfigurasi: orang yang mau
+                  cuti harus bisa menunjuk penggantinya sendiri tanpa menunggu
+                  admin — itu inti masalah "approver cuti, dokumen mandek". */}
+              <button
+                onClick={() => setShowDelegationModal(true)}
+                className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+              >
+                <Users className="w-3.5 h-3.5" /> Delegasi Persetujuan
+                {myDelegation?.active && <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/25 text-violet-800 font-bold">AKTIF</span>}
+              </button>
+              <button
+                onClick={() => { setTwoFaPhase("status"); setTwoFaError(""); setShow2faModal(true); }}
+                className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+              >
+                <ShieldAlert className="w-3.5 h-3.5" /> Verifikasi Dua Langkah (2FA)
+                {currentUser?.totpEnabled && <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-800 font-bold">AKTIF</span>}
+              </button>
+              <button
+                onClick={handleLogout}
+                className="w-full text-left px-3 py-2 text-xs text-rose-400 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" /> Keluar
+              </button>
+            </div>
+            </div>
+          </div>
+                </aside>
+        )}
+        {/* Sidebar tersembunyi → tersisa rel ikon sempit (logo + ikon menu), bukan hilang total. */}
+        {!sidebarOpen && (
+          <aside
+            className="hidden md:flex flex-col items-center w-[76px] shrink-0 rounded-[28px] bg-slate-900 card-soft py-6 gap-2"
+            style={{ position: "sticky", top: 16, alignSelf: "flex-start", height: "calc(100vh - 2rem)", maxHeight: "calc(100vh - 2rem)", overflow: "hidden", margin: "16px 0 16px 16px" }}
           >
-            {sidebarOpen ? <PanelLeftClose className="w-[18px] h-[18px]" /> : <PanelLeftOpen className="w-[18px] h-[18px]" />}
-          </button>
+            <div className="w-10 h-10 rounded-full bg-soft-blue flex items-center justify-center shrink-0" title="Smart CLM">
+              <FileText className="text-white w-[18px] h-[18px]" strokeWidth={2.25} />
+            </div>
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="w-11 h-11 rounded-[14px] flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-slate-950 transition cursor-pointer shrink-0"
+              title="Perluas sidebar"
+              aria-label="Perluas sidebar"
+            >
+              <PanelLeftOpen className="w-[18px] h-[18px]" />
+            </button>
+            <div className="w-8 h-px bg-slate-800 shrink-0" />
+            <nav className="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar flex flex-col items-center gap-1.5 py-1">
+              {MENU_ITEMS.filter((m) => canSee(m.id)).map((m) => {
+                const RailIcon: any = ({
+                  dashboard: LayoutDashboard, "dashboard-legal": Scale, "pekerjaan-legal": ClipboardList, monitoring: FileCheck,
+                  "kontrak-karyawan": Users, clauses: Layers, "internal-docs": FileText, arsip: FolderOpen, "all-docs": Rows3,
+                  konfigurasi: Sliders, audits: History, "audit-kontrak-dcs": ScanText, "kalender-legal": CalendarDays,
+                  "retensi-arsip": Archive, "performa-vendor": Building2, "ai-tools": Sparkles,
+                } as Record<string, any>)[m.id] || FileText;
+                const active = activeTab === m.id;
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => goToNavbarFeature(m.id)}
+                    className={`w-11 h-11 rounded-[14px] flex items-center justify-center transition cursor-pointer shrink-0 ${active ? "bg-soft-blue text-white" : "text-slate-400 hover:text-slate-100 hover:bg-slate-950"}`}
+                    title={m.label}
+                    aria-label={m.label}
+                  >
+                    <RailIcon className="w-[18px] h-[18px]" />
+                  </button>
+                );
+              })}
+            </nav>
+            <div className="w-8 h-px bg-slate-800 shrink-0" />
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="w-10 h-10 rounded-full bg-indigo-600 flex items-center justify-center text-white font-semibold text-sm shrink-0 cursor-pointer"
+              title={currentUser.name}
+              aria-label="Buka sidebar"
+            >
+              {(currentUser.name || "U").trim().charAt(0).toUpperCase()}
+            </button>
+          </aside>
+        )}
 
-          <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
-            <FileText className="text-white w-[18px] h-[18px]" strokeWidth={2.25} />
+        {/* Center Dynamic Content Area */}
+        <div className="flex-1 min-w-0 flex flex-col">
+        <header className="px-6 md:px-8 pt-6 pb-2 flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex items-start gap-3 min-w-0">
+            <button
+              onClick={() => setSidebarOpen((o) => !o)}
+              className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft text-slate-400 hover:text-slate-100 transition cursor-pointer shrink-0"
+              title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
+              aria-label="Tampilkan/sembunyikan sidebar"
+            >
+              {sidebarOpen ? <PanelLeftClose className="w-[18px] h-[18px]" /> : <PanelLeftOpen className="w-[18px] h-[18px]" />}
+            </button>
+            {activeTab === "dashboard" && !selectedContract && (
+              <div className="min-w-0">
+                <h2 className="text-[26px] leading-tight font-medium text-slate-100 truncate">
+                  Selamat datang kembali, {(currentUser.name || "").split(" ")[0]}!
+                </h2>
+                <p className="text-[11px] text-slate-500">
+                  {criticalExpiryContracts.length > 0
+                    ? `Ada ${criticalExpiryContracts.length} kontrak yang segera berakhir.`
+                    : "Tidak ada kontrak yang mendekati masa berakhir."}
+                </p>
+              </div>
+            )}
           </div>
-          <div className="hidden sm:block shrink-0">
-            <h1 className="font-semibold text-[15px] leading-tight text-slate-100 tracking-tight">
-              Smart CLM Enterprise
-            </h1>
-            <p className="text-[11px] text-slate-500">
-              General Affair &amp; Legal · {currentTenant?.name || "…"}
-            </p>
-          </div>
 
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Search bar — ikon di ujung kanan, dalam tombol berwarna (aksen indigo).
-              Dropdown-nya nyari 2 hal sekaligus: fitur/halaman (MENU_ITEMS) dan
-              kontrak yang cocok — supaya bener-bener "search semua fitur", bukan
-              cuma tabel dokumen. */}
+          <div className="flex items-center gap-3">
           <div className="relative hidden md:block">
-            <div className="flex items-center gap-2 bg-slate-950 rounded-lg pl-3 pr-4 py-2.5 w-56 lg:w-80 transition">
+            <div className="flex items-center gap-2 bg-slate-900 card-soft rounded-full pl-4 pr-5 py-3 w-56 lg:w-72 transition">
               <button
                 onClick={submitNavbarSearch}
                 className="shrink-0 text-slate-500 hover:text-slate-100 transition cursor-pointer"
@@ -11288,7 +12198,7 @@ export default function App() {
             </div>
 
             {navbarSearchFocused && navbarSearch.trim().length > 0 && (
-              <div className="absolute left-0 right-0 top-full mt-2 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl py-2 max-h-96 overflow-y-auto z-50">
+              <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 card-soft rounded-[20px] py-2 max-h-96 overflow-y-auto z-50">
                 {navbarFeatureResults.length > 0 && (
                   <div className="px-2 pb-1.5">
                     <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Fitur &amp; Halaman</p>
@@ -11345,558 +12255,173 @@ export default function App() {
             )}
           </div>
 
-          {/* Dark / light theme toggle */}
+          {/* Mode terang/gelap — tombol bulat, sama bentuknya dengan lonceng. */}
           <button
             onClick={toggleTheme}
-            className="p-2.5 rounded-lg bg-slate-950 hover:bg-slate-800 transition cursor-pointer shrink-0"
+            className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft hover:bg-slate-850 transition cursor-pointer shrink-0"
             title={theme === "dark" ? "Ganti ke mode terang" : "Ganti ke mode gelap"}
             aria-label="Ganti tema"
           >
-            {theme === "dark" ? (
-              <Sun className="w-4 h-4 text-amber-400" />
-            ) : (
-              <Moon className="w-4 h-4 text-slate-400" />
-            )}
+            {theme === "dark" ? <Sun className="w-[18px] h-[18px] text-amber-400" /> : <Moon className="w-[18px] h-[18px] text-slate-400" />}
           </button>
 
-          {/* Notifikasi — badge menumpuk di sudut ikon, gaya bulat. */}
-          <div className="relative group">
+          {/* Notifikasi — klik lonceng membuka popup (bukan lagi kartu di dashboard). */}
+          <div className="relative">
             <button
-              onClick={handleMarkNotificationsRead}
-              className="relative p-2.5 rounded-lg bg-slate-950 hover:bg-slate-800 transition cursor-pointer"
-              title="Tandai semua telah dibaca"
+              onClick={() => setNotifOpen((o) => !o)}
+              className="relative w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft hover:bg-slate-850 transition cursor-pointer"
+              title="Notifikasi"
+              aria-label="Notifikasi"
+              aria-expanded={notifOpen}
             >
               <Bell className="w-[18px] h-[18px] text-slate-300" />
               {notifications.filter((n) => !n.read).length > 0 && (
-                <span className="absolute -top-1 -right-1 bg-brand-orange text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full font-bold">
+                <span className="absolute -top-0.5 -right-0.5 bg-brand-orange text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full font-bold">
                   {notifications.filter((n) => !n.read).length}
                 </span>
               )}
             </button>
+
+            {notifOpen && (() => {
+              const unreadCount = notifications.filter((n) => !n.read).length;
+              const list = notifTab === "unread" ? notifications.filter((n) => !n.read) : notifications;
+              const ago = (iso: string) => {
+                const m = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+                if (!Number.isFinite(m)) return "";
+                if (m < 1) return "baru saja";
+                if (m < 60) return `${m} mnt lalu`;
+                const h = Math.floor(m / 60);
+                if (h < 24) return `${h} jam lalu`;
+                return `${Math.floor(h / 24)} hari lalu`;
+              };
+              const openNotif = (n: any) => {
+                if (n.contractId) {
+                  const c = contracts.find((con) => con.id === n.contractId);
+                  if (c) { setNotifOpen(false); handleOpenWorkspace(c); }
+                } else if (n.dcsDocumentId) {
+                  const d = dcsDocs.find((doc) => doc.id === n.dcsDocumentId);
+                  if (d) {
+                    setNotifOpen(false);
+                    setActiveTab("internal-docs");
+                    setDcsSelectedId(d.id);
+                    setDcsSelectedVersionId(d.versions[0]?.id || null);
+                  }
+                }
+              };
+              return (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
+                  <div className="absolute right-0 top-[calc(100%+12px)] w-[400px] max-w-[92vw] bg-slate-900 card-soft rounded-[28px] overflow-hidden z-50 animate-fadeIn">
+                    <div className="flex items-center justify-between gap-3 px-6 pt-5 pb-4">
+                      <h3 className="text-[17px] font-semibold text-slate-100">Notifikasi</h3>
+                      <div className="flex items-center gap-1 p-1 rounded-full bg-slate-950">
+                        {([["all", "Semua"], ["unread", `Belum dibaca${unreadCount ? ` (${unreadCount})` : ""}`]] as const).map(([k, label]) => (
+                          <button
+                            key={k}
+                            onClick={() => setNotifTab(k)}
+                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition cursor-pointer ${notifTab === k ? "bg-slate-900 card-soft text-slate-100" : "text-slate-500 hover:text-slate-100"}`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <FadeScroll maxHeight="60vh" className="border-t border-slate-800">
+                      {list.length === 0 ? (
+                        <p className="text-[13px] text-slate-500 text-center py-12">
+                          {notifTab === "unread" ? "Semua notifikasi sudah dibaca." : "Tidak ada notifikasi sistem."}
+                        </p>
+                      ) : (
+                        list.slice(0, 20).map((n) => {
+                          const tone = n.type === "success" ? "bg-mist" : n.type === "danger" ? "bg-peach" : "bg-slate-950";
+                          const BadgeIcon = n.type === "success" ? CheckCircle : n.type === "danger" ? ShieldAlert : Bell;
+                          const badgeTone = n.type === "success" ? "bg-soft-blue" : n.type === "danger" ? "bg-brand-orange" : "bg-slate-500";
+                          return (
+                            <button
+                              key={n.id}
+                              onClick={() => openNotif(n)}
+                              className="w-full text-left flex items-start gap-3.5 px-6 py-4 border-b border-slate-800 last:border-0 hover:bg-slate-950 transition cursor-pointer"
+                            >
+                              <span className="relative shrink-0">
+                                <span className={`w-11 h-11 rounded-full flex items-center justify-center ${tone}`}>
+                                  <Bell className="w-[18px] h-[18px] text-slate-100" />
+                                </span>
+                                <span className={`absolute -bottom-0.5 -right-0.5 w-[18px] h-[18px] rounded-full flex items-center justify-center ring-2 ring-slate-900 ${badgeTone}`}>
+                                  <BadgeIcon className="w-2.5 h-2.5 text-white" />
+                                </span>
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <span className="flex items-baseline gap-2">
+                                  <span className="text-[13px] font-semibold text-slate-100 truncate">{n.title}</span>
+                                  <span className="text-[11px] text-slate-500 shrink-0">{ago(n.createdAt)}</span>
+                                </span>
+                                <span className="block text-[12px] text-slate-500 leading-snug mt-0.5 line-clamp-2">{n.message}</span>
+                              </span>
+                              {!n.read && <span className="w-2 h-2 rounded-full bg-soft-blue shrink-0 mt-2" />}
+                            </button>
+                          );
+                        })
+                      )}
+                    </FadeScroll>
+                    <div className="px-6 py-3 border-t border-slate-800 flex items-center justify-between">
+                      <span className="text-[11px] text-slate-500">{unreadCount} belum dibaca</span>
+                      <button
+                        onClick={handleMarkNotificationsRead}
+                        disabled={unreadCount === 0}
+                        className="px-4 py-2 rounded-full bg-slate-950 hover:bg-slate-850 text-xs font-medium text-slate-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                      >
+                        Tandai semua dibaca
+                      </button>
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
-          <div className="relative group">
-            <button className="flex items-center gap-2.5 pl-1 pr-3 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 transition cursor-pointer">
-              <div className="w-8 h-8 rounded-md bg-indigo-600 flex items-center justify-center text-white font-bold text-xs shrink-0">
-                {(currentUser.name || "U").trim().charAt(0).toUpperCase()}
-              </div>
-              <div className="hidden sm:block text-left leading-tight">
-                <p className="text-xs font-bold text-slate-100">{currentUser.name}</p>
-                <p className="text-[10.5px] text-slate-500">
-                  {({ super_admin: "Super Admin", admin: "Admin", legal: "Legal", manager: "Manager", staff: "Staff", viewer: "Viewer" } as any)[currentUser.role] || currentUser.role}
-                </p>
-              </div>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            </button>
-            <div className="absolute right-0 top-full mt-1 w-48 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl py-1.5 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition z-50">
-              <button
-                onClick={() => setIsChangingPassword(true)}
-                className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-              >
-                <Settings className="w-3.5 h-3.5" /> Ganti Kata Sandi
-              </button>
-              {/* Diletakkan di menu akun, bukan di Konfigurasi: orang yang mau
-                  cuti harus bisa menunjuk penggantinya sendiri tanpa menunggu
-                  admin — itu inti masalah "approver cuti, dokumen mandek". */}
-              <button
-                onClick={() => setShowDelegationModal(true)}
-                className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-              >
-                <Users className="w-3.5 h-3.5" /> Delegasi Persetujuan
-                {myDelegation?.active && <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-violet-500/25 text-violet-800 font-bold">AKTIF</span>}
-              </button>
-              <button
-                onClick={() => { setTwoFaPhase("status"); setTwoFaError(""); setShow2faModal(true); }}
-                className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-              >
-                <ShieldAlert className="w-3.5 h-3.5" /> Verifikasi Dua Langkah (2FA)
-                {currentUser?.totpEnabled && <span className="ml-auto text-[9px] px-1.5 py-0.5 rounded-full bg-emerald-500/25 text-emerald-800 font-bold">AKTIF</span>}
-              </button>
-              <button
-                onClick={handleLogout}
-                className="w-full text-left px-3 py-2 text-xs text-rose-400 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-              >
-                <ExternalLink className="w-3.5 h-3.5" /> Keluar
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Body */}
-      <div className="flex-1 flex flex-col md:flex-row bg-slate-900 md:rounded-b-[16px]">
-        {/* Handle pembatas sidebar — nempel di garis batas sidebar/konten,
-            posisi fixed di tengah layar biar tetap kelihatan walau discroll.
-            Cuma di desktop (mobile tetap pakai tombol di navbar). */}
-        <button
-          onClick={() => setSidebarOpen((o) => !o)}
-          className={`hidden md:flex items-center justify-center fixed top-1/2 -translate-y-1/2 z-30 w-5 h-14 rounded-r-lg bg-slate-900/90 border border-l-0 border-slate-800 hover:bg-slate-800 hover:w-6 transition-all cursor-pointer text-slate-400 hover:text-slate-100 ${
-            sidebarOpen ? "left-[16.75rem]" : "left-3"
-          }`}
-          title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
-          aria-label="Tampilkan/sembunyikan sidebar"
-        >
-          {sidebarOpen ? <ChevronLeft className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-        </button>
-
-        {sidebarOpen && (
-        <aside className="w-full md:w-64 bg-slate-900 p-4 space-y-4 shrink-0 flex flex-col justify-between animate-fadeIn">
-          <div className="space-y-4">
-            <div>
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2">
-                MENU UTAMA
-              </p>
-
-              {canSee("dashboard") && (
-              <button
-                onClick={() => {
-                  setActiveTab("dashboard");
-                  setSelectedContract(null);
-                }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "dashboard"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                Dashboard
-              </button>
-              )}
-
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5">
-                Legal
-              </p>
-              {canSee("dashboard-legal") && (
-              <button
-                onClick={() => { setActiveTab("dashboard-legal"); setSelectedContract(null); }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "dashboard-legal"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <LayoutDashboard className="w-4 h-4" />
-                Dashboard Legal
-              </button>
-              )}
-              {canSee("pekerjaan-legal") && (
-              <button
-                onClick={() => { setActiveTab("pekerjaan-legal"); setSelectedContract(null); }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "pekerjaan-legal"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <ClipboardList className="w-4 h-4" />
-                Pekerjaan Legal
-              </button>
-              )}
-
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
-                Dokumen Eksternal &middot; Kontrak
-              </p>
-              {canSee("monitoring") && (
-              <button
-                onClick={() => {
-                  setActiveTab("monitoring");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "monitoring"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Bell className="w-4 h-4" />
-                  <span>Monitoring Kontrak</span>
-                </div>
-                {(() => {
-                  const now = new Date();
-                  const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
-                  const expiringCount = contracts.filter((c) => {
-                    if (isEmp(c) || c.status === "Terminated" || c.status === "Archived") return false;
-                    const days = Math.ceil((new Date(c.endDate).getTime() - now.getTime()) / 86400000);
-                    return days <= (c.reminderDaysBefore || 30) && days > -3650;
-                  }).length;
-                  return expiringCount > 0 ? (
-                    <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold">
-                      {expiringCount}
-                    </span>
-                  ) : null;
-                })()}
-              </button>
-              )}
-
-              {canSee("kontrak-karyawan") && (
-              <button
-                onClick={() => {
-                  setActiveTab("kontrak-karyawan");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "kontrak-karyawan"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <div className="flex items-center gap-3">
-                  <Users className="w-4 h-4" />
-                  <span>Kontrak Karyawan</span>
-                </div>
-                {(() => {
-                  const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
-                  const cnt = contracts.filter(isEmp).length;
-                  return cnt > 0 ? (
-                    <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold">{cnt}</span>
-                  ) : null;
-                })()}
-              </button>
-              )}
-
-              {canSee("clauses") && (
-              <button
-                onClick={() => {
-                  setActiveTab("clauses");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "clauses"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Sliders className="w-4 h-4" />
-                Library Klausul & Tpl
-              </button>
-              )}
-
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="SOP, Instruksi Kerja, Memo, Kebijakan — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem, tidak perlu meterai.">
-                Dokumen Internal &middot; DCS
-              </p>
-              {canSee("internal-docs") && (
-              <button
-                onClick={() => {
-                  setActiveTab("internal-docs");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "internal-docs"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Workflow className="w-4 h-4" />
-                Dokumen Internal (DCS)
-              </button>
-              )}
-
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Gabungan dokumen dari kedua jalur — menampilkan kontrak eksternal maupun dokumen DCS bersama-sama.">
-                Arsip &amp; Daftar &middot; Gabungan
-              </p>
-              {canSee("arsip") && (
-              <button
-                onClick={() => {
-                  setActiveTab("arsip");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "arsip"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-                title="Dokumen tersusun per folder & subfolder — untuk menelusuri berdasarkan pengelompokan."
-              >
-                <FolderOpen className="w-4 h-4" />
-                Arsip per Folder
-              </button>
-              )}
-
-              {canSee("all-docs") && (
-              <button
-                onClick={() => {
-                  setActiveTab("all-docs");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "all-docs"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-                title="Satu tabel datar berisi semua kontrak & dokumen DCS — untuk aksi massal, penyaringan, dan ekspor CSV."
-              >
-                <CheckSquare className="w-4 h-4" />
-                Tabel Semua Dokumen
-              </button>
-              )}
-
-              {canSee("konfigurasi") && (
-              <button
-                onClick={() => {
-                  setActiveTab("konfigurasi");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "konfigurasi"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Sliders className="w-4 h-4" />
-                Konfigurasi & Master Data
-              </button>
-              )}
-
-              {canSee("audits") && (
-              <button
-                onClick={() => {
-                  setActiveTab("audits");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "audits"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Settings className="w-4 h-4" />
-                Audit Trail
-              </button>
-              )}
-
-              {canSee("audit-kontrak-dcs") && (
-              <button
-                onClick={() => {
-                  setActiveTab("audit-kontrak-dcs");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "audit-kontrak-dcs"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-                title="Audit Trail yang sama, disaring khusus Kontrak Eksternal, Kontrak Karyawan, dan Dokumen DCS."
-              >
-                <Layers className="w-4 h-4" />
-                Audit Kontrak &amp; DCS
-              </button>
-              )}
-
-              {canSee("kalender-legal") && (
-              <button
-                onClick={() => {
-                  setActiveTab("kalender-legal");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "kalender-legal"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <CalendarDays className="w-4 h-4" />
-                Kalender Legal
-              </button>
-              )}
-
-              {canSee("retensi-arsip") && (
-              <button
-                onClick={() => {
-                  setActiveTab("retensi-arsip");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "retensi-arsip"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Archive className="w-4 h-4" />
-                Retensi Arsip
-              </button>
-              )}
-
-              {canSee("performa-vendor") && (
-              <button
-                onClick={() => {
-                  setActiveTab("performa-vendor");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                  activeTab === "performa-vendor"
-                    ? "bg-soft-blue text-white font-semibold"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Star className="w-4 h-4" />
-                Performa Vendor
-              </button>
-              )}
-
-            </div>
-
-            {canSee("ai-tools") && (
-            <div className="pt-2">
-              <button
-                onClick={() => setShowToolsMenu(!showToolsMenu)}
-                className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-[10px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-300 transition cursor-pointer"
-              >
-                <span>AI Tools Hukum</span>
-                <ChevronRight
-                  className={`w-3.5 h-3.5 transition-transform ${showToolsMenu ? "rotate-90" : ""}`}
-                />
-              </button>
-
-              {showToolsMenu && (
-                <div className="space-y-1 animate-fadeIn">
+            {activeTab === "dashboard" && !selectedContract && (
+              <>
+                <button
+                  onClick={() => { setActiveTab("analytics"); fetchAnalytics(); }}
+                  className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft hover:bg-slate-850 transition cursor-pointer text-slate-300"
+                  title="Analytics & Risk"
+                  aria-label="Analytics & Risk"
+                >
+                  <LineChart className="w-[18px] h-[18px]" />
+                </button>
+                <button
+                  onClick={() => { setIsCreating(true); setActiveTab("monitoring"); }}
+                  className="hidden sm:flex items-center gap-2 px-5 h-11 bg-soft-blue hover:opacity-90 text-white rounded-full text-[13px] font-medium transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  Request kontrak baru
+                </button>
+              </>
+            )}
+            {activeTab === "clauses" && (
                   <button
                     onClick={() => {
-                      setActiveTab("pusat-peraturan");
-                      setSelectedContract(null);
+                      setIsAddingClause(true);
+                      setEditingClauseId(null);
+                      setNewClauseForm({
+                        title: "",
+                        content: "",
+                        category: "General",
+                        tags: "",
+                        isMandatory: false,
+                        isProtected: false,
+                      });
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "pusat-peraturan"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
+                    className="flex items-center gap-2 px-5 h-11 bg-soft-blue hover:opacity-90 text-white rounded-full text-[13px] font-medium transition cursor-pointer"
                   >
-                    <Scale className="w-4 h-4" />
-                    Pusat Peraturan
+                    <Plus className="w-4 h-4" />
+                    Tambah Klausul Master
                   </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("putusan-pengadilan");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "putusan-pengadilan"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <FolderOpen className="w-4 h-4" />
-                    Putusan Pengadilan
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("opini-hukum");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "opini-hukum"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <MessageSquare className="w-4 h-4" />
-                    Opini Hukum
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("terjemah-dokumen");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "terjemah-dokumen"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <Languages className="w-4 h-4" />
-                    Terjemah Teks Lepas
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("review-dokumen");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "review-dokumen"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <Search className="w-4 h-4" />
-                    Audit Risiko Naskah
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("bandingkan-dokumen");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "bandingkan-dokumen"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <ArrowLeftRight className="w-4 h-4" />
-                    Bandingkan 2 Dokumen
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("buat-draft-ai");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "buat-draft-ai"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    Buat Naskah Draft AI
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("tabular");
-                      setSelectedContract(null);
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "tabular"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <LayoutDashboard className="w-4 h-4" />
-                    Analisis Tabular
-                  </button>
-
-                  <button
-                    onClick={() => {
-                      setActiveTab("analytics");
-                      setSelectedContract(null);
-                      fetchAnalytics();
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                      activeTab === "analytics"
-                        ? "bg-soft-blue text-white font-semibold"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                    }`}
-                  >
-                    <LineChart className="w-4 h-4" />
-                    Analytics & Risk
-                  </button>
-                </div>
-              )}
-            </div>
             )}
           </div>
+        </header>
 
-                </aside>
-        )}
-
-        {/* Center Dynamic Content Area */}
-        <main className="flex-1 p-6 overflow-y-auto">
+        <main className="flex-1 px-6 md:px-8 pb-8 pt-4 overflow-y-auto">
           {/* VIEW: PUSAT PERATURAN */}
           {activeTab === "pusat-peraturan" && !selectedContract && (
             <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs">
@@ -13418,6 +13943,7 @@ export default function App() {
             const t = new Date(today.getFullYear(), today.getMonth() - (5 - i), 1);
             return { y: t.getFullYear(), m: t.getMonth() };
           });
+          const monthLabels = monthKeys.map((k) => new Date(k.y, k.m, 1).toLocaleDateString("id-ID", { month: "short" }));
           const perMonth = (list: any[], val: (c: any) => number) =>
             monthKeys.map((k) => list.reduce((sum, c) => {
               const t = parseD(c.startDate);
@@ -13427,12 +13953,6 @@ export default function App() {
           const draftList = contracts.filter((c) => c.status === "Draft");
           const weeklyExpiry = [0, 1, 2, 3].map((w) =>
             aktifList.filter((c) => { const dl = getDaysRemaining(c.endDate); return dl >= w * 7 && dl < (w + 1) * 7 + (w === 3 ? 2 : 0); }).length);
-          const statCards = [
-            { label: "Kontrak Aktif", value: `${aktifList.length}`, unit: "kontrak", Icon: CheckCircle, bars: perMonth(aktifList, () => 1) },
-            { label: "Draft Kontrak", value: `${draftContractsCount}`, unit: "draft", Icon: Clock, bars: perMonth(draftList, () => 1) },
-            { label: "Segera Berakhir · 30 hari", value: `${criticalExpiryContracts.length}`, unit: "kontrak", Icon: ShieldAlert, bars: weeklyExpiry },
-            { label: "Portfolio Value (GA)", value: `Rp ${totalValueActive.toLocaleString("id-ID")}`, unit: "", Icon: Building2, bars: perMonth(aktifList, (c) => Number(c.contractValue) || 0) },
-          ];
           const otherCount = Math.max(0, contracts.length - aktifList.length - draftList.length);
           const aktifPct = contracts.length ? Math.round((aktifList.length / contracts.length) * 100) : 0;
           const nextExp = aktifList
@@ -13444,573 +13964,414 @@ export default function App() {
             if (!st || !en || en <= st) return 0;
             return Math.min(100, Math.max(0, Math.round(((today.getTime() - st.getTime()) / (en.getTime() - st.getTime())) * 100)));
           })();
+          const recent = [...contracts]
+            .sort((x: any, y: any) => String(y.updatedAt || y.createdAt || y.startDate || "").localeCompare(String(x.updatedAt || x.createdAt || x.startDate || "")))
+            .slice(0, 4);
+          const valueFull = `Rp ${totalValueActive.toLocaleString("id-ID")}`;
+          // Ringkas agar muat sejajar dengan grafik: 3,6 M / 877 jt (nilai lengkap di tooltip).
+          const valueText = totalValueActive >= 1e12
+            ? `Rp ${(totalValueActive / 1e12).toLocaleString("id-ID", { maximumFractionDigits: 1 })} T`
+            : totalValueActive >= 1e9
+              ? `Rp ${(totalValueActive / 1e9).toLocaleString("id-ID", { maximumFractionDigits: 1 })} M`
+              : totalValueActive >= 1e6
+                ? `Rp ${Math.round(totalValueActive / 1e6).toLocaleString("id-ID")} jt`
+                : valueFull;
+          const CARD = "rounded-[28px] bg-slate-900 card-soft p-5";
 
-          return (
-            <div className="space-y-4">
-              {/* Sapaan + aksi */}
-              <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-                <div className="space-y-1">
-                  <h2 className="text-[26px] leading-tight font-semibold text-slate-100">
-                    Selamat datang, {(currentUser.name || "").split(" ")[0]}!
-                  </h2>
-                  <p className="text-[12px] text-slate-500">
-                    {criticalExpiryContracts.length > 0
-                      ? `Ada ${criticalExpiryContracts.length} kontrak yang segera berakhir.`
-                      : "Tidak ada kontrak yang mendekati masa berakhir."}
-                  </p>
+
+          const hasAppr = myApprovalQueue.length > 0;
+          const catLabel = (cat: string) => cat === "Employment" ? "Karyawan / PKWT" : cat === "Vendor" ? "Vendor / Supplier Jasa" : cat;
+          const PAGE = 10;
+          const apprPages = Math.max(1, Math.ceil(myApprovalQueue.length / PAGE));
+          const apprPg = Math.min(apprPage, apprPages);
+          const apprItems = myApprovalQueue.slice((apprPg - 1) * PAGE, apprPg * PAGE);
+          const expPages = Math.max(1, Math.ceil(criticalExpiryContracts.length / PAGE));
+          const expPg = Math.min(expPage, expPages);
+          const expItems = criticalExpiryContracts.slice((expPg - 1) * PAGE, expPg * PAGE);
+
+          const apprCard = (
+            <div className={`${CARD} flex flex-col gap-3`} style={{ height: 340, overflow: "hidden" }}>
+              <DashCardHeader
+                Icon={UserCheck}
+                title="Perlu Persetujuan Saya"
+                subtitle="Berjalan berurutan — hanya giliran teratas yang bisa diputuskan."
+                right={myApprovalCount > 0 ? <span className="text-[11px] font-semibold px-3 py-1 rounded-full bg-peach text-brand-orange tabular-nums">{myApprovalCount}</span> : null}
+              />
+              {slaBreachCount > 0 && (
+                <p className="text-[11px] text-rose-500 font-medium">{slaBreachCount} sudah lewat batas {slaDays} hari.</p>
+              )}
+              {apprItems.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center border-t border-slate-800 text-center">
+                  <CheckCircle className="w-6 h-6 text-indigo-400 mb-2" />
+                  <p className="text-[13px] text-slate-500">Tidak ada dokumen yang menunggu persetujuan Anda.</p>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <button
-                    onClick={() => { setActiveTab("analytics"); fetchAnalytics(); }}
-                    className="flex items-center gap-2 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-[13px] font-semibold transition cursor-pointer"
-                  >
-                    <LineChart className="w-4 h-4" />
-                    Analytics &amp; Risk
-                  </button>
-                  <button
-                    onClick={() => { setIsCreating(true); setActiveTab("monitoring"); }}
-                    className="flex items-center gap-2 px-3.5 py-2 bg-soft-blue hover:opacity-90 text-white rounded-lg text-[13px] font-semibold transition cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Request kontrak baru
-                  </button>
+              ) : (
+              <FadeScroll className="border-t border-slate-800 pr-1">
+                {apprItems.map(({ contract: c, step, isMine, asDelegate, totalSteps, waitingSince }) => {
+                  const hari = Math.max(0, Math.floor((Date.now() - new Date(waitingSince).getTime()) / 86400000));
+                  const lama = Number.isFinite(hari) ? (hari === 0 ? "hari ini" : `${hari} hari`) : "—";
+                  const lewatSla = slaDays > 0 && hari >= slaDays;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => handleOpenWorkspace(c)}
+                      className="w-full text-left flex items-center gap-3 py-3 border-b border-slate-800 last:border-0 hover:bg-slate-950 transition cursor-pointer"
+                    >
+                      <span className="w-9 h-9 rounded-full bg-mist flex items-center justify-center shrink-0">
+                        <UserCheck className="w-4 h-4 text-slate-100" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] font-medium text-slate-100 truncate">{c.title}</p>
+                        <p className="text-[11px] text-slate-500 truncate">
+                          <span className="font-mono">{c.contractNumber}</span>
+                          {" · "}langkah {step.order} dari {totalSteps}
+                          {c.approvalSubmittedByName ? ` · diajukan ${c.approvalSubmittedByName}` : ""}
+                        </p>
+                      </div>
+                      <div className="shrink-0 text-right">
+                        {isMine ? (
+                          <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-peach text-brand-orange uppercase">Giliran Anda</span>
+                        ) : asDelegate ? (
+                          <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-violet-500/25 text-violet-800 uppercase" title={`${step.approverName} sedang berhalangan dan menunjuk Anda sebagai pengganti. Keputusan tetap tercatat atas nama ${step.approverName}.`}>
+                            Pengganti · {step.approverName}
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-slate-700/40 text-slate-300 uppercase" title={`Giliran ${step.approverName} — Anda bisa memutuskan sebagai override admin.`}>
+                            Override · {step.approverName}
+                          </span>
+                        )}
+                        <p className={`text-[10px] mt-1 tabular-nums ${lewatSla ? "text-rose-500 font-semibold" : "text-slate-500"}`}
+                           title={slaDays > 0 ? `Batas wajar ${slaDays} hari per langkah (diatur di Konfigurasi).` : undefined}>
+                          {hari === 0 ? "masuk hari ini" : `menunggu ${lama}`}
+                          {lewatSla ? ` · lewat batas ${slaDays}h` : ""}
+                        </p>
+                      </div>
+                    </button>
+                  );
+                })}
+              </FadeScroll>
+              )}
+              <DashPager page={apprPg} total={myApprovalQueue.length} pageSize={PAGE} onChange={setApprPage} />
+              {myApprovalQueue.length > PAGE && (
+                <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("OnReview"); }} className="text-[11px] text-indigo-400 hover:underline font-medium cursor-pointer text-left">
+                  Buka semua di Monitoring →
+                </button>
+              )}
+            </div>
+          );
+
+          const expiryCard = (
+            <div className={`${CARD} flex flex-col gap-3`} style={{ height: 400, overflow: "hidden" }}>
+              <DashCardHeader
+                Icon={ShieldAlert}
+                title="Peringatan Kadaluwarsa Kontrak & Mesin Perpanjangan"
+                subtitle="Kontrak aktif yang mendekati masa berakhir"
+                right={<span className="text-[11px] font-semibold px-3 py-1 rounded-full bg-peach text-brand-orange tabular-nums whitespace-nowrap">{criticalExpiryContracts.length} kontrak</span>}
+              />
+              {criticalExpiryContracts.length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center border-t border-slate-800 text-center">
+                  <CheckCircle className="w-6 h-6 text-indigo-400 mb-2" />
+                  <p className="text-[13px] text-slate-500">Tidak ada kontrak yang akan kedaluwarsa dalam waktu dekat.</p>
+                </div>
+              ) : (
+                <FadeScroll className="border-t border-slate-800 pr-1">
+                  {expItems.map((c) => {
+                    const daysLeft = getDaysRemaining(c.endDate);
+                    return (
+                      <div key={c.id} className="flex items-center gap-3 py-3 border-b border-slate-800 last:border-0">
+                        <span className="w-9 h-9 rounded-full bg-peach flex items-center justify-center shrink-0">
+                          <Calendar className="w-4 h-4 text-brand-orange" />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[13px] font-medium text-slate-100 truncate">{c.title}</p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            <span className="font-mono">{c.contractNumber}</span> · {c.category} · {c.party2Name}
+                          </p>
+                          <p className="text-[11px] text-brand-orange font-medium">Berakhir {c.endDate} ({daysLeft} hari lagi)</p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button onClick={() => handleOpenWorkspace(c)} className="px-3.5 py-1.5 rounded-full bg-slate-950 hover:bg-slate-850 text-xs font-medium text-slate-200 transition cursor-pointer">Tinjau</button>
+                          <button onClick={() => handleOpenRenewModal(c)} className="px-3.5 py-1.5 rounded-full bg-soft-blue hover:opacity-90 text-xs font-medium text-white transition cursor-pointer flex items-center gap-1">
+                            <RefreshCw className="w-3 h-3" /> Perpanjang
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </FadeScroll>
+              )}
+              <DashPager page={expPg} total={criticalExpiryContracts.length} pageSize={PAGE} onChange={setExpPage} />
+            </div>
+          );
+
+          const nominalByMonth = perMonth(aktifList, (c: any) =>
+            (c.sharingFeeItems || []).filter((it: any) => it.feeType === "nominal").reduce((sm: number, it: any) => sm + (Number(it.value) || 0), 0));
+          const pctShare = aktifList.length ? Math.round((sharingFeeStats.pctContracts / aktifList.length) * 100) : 0;
+          const shareCard = sharingFeeStats.hasAny ? (
+            <div className={`${CARD} flex flex-col gap-4`} style={{ height: 400, overflow: "hidden" }}>
+              <DashCardHeader
+                Icon={Percent}
+                title="Sharing Fee Kontrak Aktif"
+                subtitle="Nominal & persentase dipisah — satuannya berbeda"
+              />
+              <div className="border-t border-slate-800 pt-4 flex-1 min-h-0 flex flex-col">
+                <p className="text-[12px] text-slate-500">Nominal (pasti)</p>
+                <p className="text-[26px] leading-tight font-medium text-slate-100 tabular mt-0.5">Rp {sharingFeeStats.nominalSum.toLocaleString("id-ID")}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {sharingFeeStats.nominalContracts > 0 ? `dari ${sharingFeeStats.nominalContracts} kontrak · per bulan mulai kontrak` : "belum ada fee nominal"}
+                </p>
+                <div className="mt-auto pt-3">
+                  <WideBars values={nominalByMonth} labels={monthLabels} />
                 </div>
               </div>
+              <div className="border-t border-slate-800 pt-4 shrink-0">
+                <div className="flex items-end justify-between gap-3">
+                  <div>
+                    <p className="text-[12px] text-slate-500">Berbasis Persentase (terpisah)</p>
+                    <p className="text-[26px] leading-tight font-medium text-slate-100 tabular mt-0.5">
+                      {sharingFeeStats.pctContracts} <span className="text-sm font-normal text-slate-500">kontrak</span>
+                    </p>
+                  </div>
+                  <span className="text-[11px] font-semibold px-3 py-1 rounded-full bg-peach text-brand-orange tabular-nums">{pctShare}% kontrak aktif</span>
+                </div>
+                <div className="mt-3 h-2.5 rounded-full bg-slate-950 overflow-hidden">
+                  <div className="h-full rounded-full bg-peach-strong" style={{ width: `${pctShare}%` }} />
+                </div>
+                <p className="text-[11px] text-slate-500 mt-2 flex items-start gap-1.5">
+                  <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                  Persentase tidak dijumlahkan ke total rupiah — hanya jumlah kontrak.
+                </p>
+              </div>
+            </div>
+          ) : null;
 
+          const catCard = (
+            <div className={`${CARD} h-full flex flex-col gap-4`}>
+              <DashCardHeader Icon={Layers} title="Distribusi Kontrak Berdasarkan Kategori" subtitle={`${contracts.length} kontrak total`} />
+              <div className="flex-1 flex flex-col justify-around gap-3">
+                {["Employment", "Vendor", "NDA", "MOU", "Rental"].map((cat) => {
+                  const count = contracts.filter((c) => c.category === cat).length;
+                  const percentage = contracts.length ? Math.round((count / contracts.length) * 100) : 0;
+                  return (
+                    <div key={cat} className="space-y-1.5">
+                      <div className="flex justify-between text-xs">
+                        <span className="text-slate-300 font-medium">{catLabel(cat)}</span>
+                        <span className="text-slate-500 tabular">{count} kontrak · {percentage}%</span>
+                      </div>
+                      <div className="w-full bg-slate-950 rounded-full h-2.5">
+                        <div
+                          className={`h-2.5 rounded-full ${cat === "Employment" ? "bg-soft-blue" : cat === "Vendor" ? "bg-peach-strong" : cat === "NDA" ? "bg-mist-strong" : "bg-slate-650"}`}
+                          style={{ width: `${percentage}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+
+          const auditCard = (
+            <div className={`${CARD} flex flex-col gap-3`} style={{ height: 340, overflow: "hidden" }}>
+              <DashCardHeader Icon={History} title="Produktivitas Pengguna & Log Audit Aktivitas" subtitle="10 aktivitas terbaru" />
+              <FadeScroll className="border-t border-slate-800 pr-1">
+                {audits.length === 0 && <p className="text-[13px] text-slate-500 text-center py-6">Belum ada aktivitas.</p>}
+                {audits.slice(0, 10).map((audit) => (
+                  <div key={audit.id} className="flex items-start gap-3 py-3 border-b border-slate-800 last:border-0">
+                    <span className="w-9 h-9 rounded-full bg-mist flex items-center justify-center text-xs font-semibold text-slate-100 shrink-0">
+                      {(audit.userName || "?").trim().charAt(0).toUpperCase()}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline justify-between gap-2">
+                        <p className="text-[13px] font-semibold text-slate-100 truncate">{audit.userName} <span className="text-[10px] font-normal text-indigo-400">{audit.userRole}</span></p>
+                        <span className="text-[10px] text-slate-500 shrink-0">{new Date(audit.timestamp).toLocaleDateString()}</span>
+                      </div>
+                      <p className="text-[12px] text-slate-500 leading-snug line-clamp-2">
+                        {audit.action} • {audit.details}
+                        {audit.contractNumber ? <span className="font-mono text-[10px]"> · {audit.contractNumber}</span> : null}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </FadeScroll>
+              <button
+                onClick={() => setActiveTab("audits")}
+                className="w-full py-2.5 bg-slate-950 hover:bg-slate-850 rounded-full text-xs font-medium flex items-center justify-center gap-1 text-indigo-400 transition cursor-pointer"
+              >
+                Buka Seluruh Audit Trail <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+          );
+
+          return (
+            <div className="space-y-5">
               {/* Kartu statistik + grafik mini */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {statCards.map((sc, i) => (
-                  <div key={i} className="rounded-[14px] bg-slate-950 p-5">
-                    <p className="text-[13px] text-slate-500">{sc.label}</p>
-                    <div className="flex items-end justify-between gap-3 mt-3">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
-                          <sc.Icon className="w-4 h-4 text-slate-900" />
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
+                {[
+                  { label: "Kontrak Aktif", value: `${aktifList.length}`, unit: "kontrak", Icon: CheckCircle, chart: <MiniBars values={perMonth(aktifList, () => 1)} labels={monthLabels} mixed /> },
+                  { label: "Draft Kontrak", value: `${draftContractsCount}`, unit: "draft", Icon: Clock, chart: <MiniBars values={perMonth(draftList, () => 1)} labels={monthLabels} /> },
+                  { label: "Segera Berakhir · 30 hari", value: `${criticalExpiryContracts.length}`, unit: "kontrak", Icon: ShieldAlert, chart: <MiniLine values={weeklyExpiry} labels={["M1", "M2", "M3", "M4"]} /> },
+                  { label: "Portfolio Value (GA)", value: valueText, full: valueFull, unit: "", Icon: Building2, chart: <MiniLine values={perMonth(aktifList, (c) => Number(c.contractValue) || 0)} labels={monthLabels} /> },
+                ].map((sc, i) => (
+                  <div key={i} className={CARD}>
+                    <p className="text-[15px] text-slate-100">{sc.label}</p>
+                    <div className="flex items-end justify-between gap-3 mt-4">
+                      <div className="flex items-center gap-3">
+                        <span className="w-11 h-11 rounded-full bg-peach-strong flex items-center justify-center shrink-0">
+                          <sc.Icon className="w-[18px] h-[18px] text-slate-100" />
                         </span>
                         <div className="min-w-0">
-                          <p className={`${sc.value.length > 9 ? "text-[17px]" : "text-[28px]"} leading-none font-semibold tabular text-slate-100 truncate`}>{sc.value}</p>
+                          <p className={`${sc.value.length > 6 ? "text-[20px]" : "text-[34px]"} leading-none font-medium tabular text-slate-100 whitespace-nowrap`} title={(sc as any).full}>{sc.value}</p>
                           {sc.unit && <p className="text-[11px] text-slate-500 mt-1">{sc.unit}</p>}
                         </div>
                       </div>
-                      <MiniBars values={sc.bars} />
+                      {sc.chart}
                     </div>
                   </div>
                 ))}
               </div>
 
-              {/* Antrean keputusan SAYA — hanya muncul kalau memang ada.
-                  Sebelum ini approver tak punya satu pun tempat untuk melihat
-                  giliran dirinya; harus menyisir Monitoring manual. */}
-              {myApprovalQueue.length > 0 && (
-                <div className="rounded-[14px] bg-peach p-5 space-y-3">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <p className="text-[15px] font-semibold text-slate-100 flex items-center gap-2">
-                      <ShieldAlert className="w-4 h-4 text-brand-orange" />
-                      Perlu Persetujuan Saya
-                      {/* amber-200/300 nyaris tak terbaca di tema terang —
-                          pakai amber tua untuk teks di atas latar amber pucat. */}
-                      {myApprovalCount > 0 && (
-                        <span className="ml-1 px-2 py-0.5 rounded-md bg-slate-900 text-brand-orange text-[11px] font-bold tabular-nums">{myApprovalCount}</span>
-                      )}
-                    </p>
-                    <span className="text-[10px] text-slate-500">
-                      {slaBreachCount > 0
-                        ? <span className="text-rose-600 font-semibold">{slaBreachCount} sudah lewat batas {slaDays} hari.{" "}</span>
-                        : null}
-                      Persetujuan berjalan berurutan — hanya giliran teratas yang bisa diputuskan.
-                    </span>
-                  </div>
-                  <div className="space-y-1.5">
-                    {myApprovalQueue.slice(0, 6).map(({ contract: c, step, isMine, asDelegate, totalSteps, waitingSince }) => {
-                      const hari = Math.max(0, Math.floor((Date.now() - new Date(waitingSince).getTime()) / 86400000));
-                      const lama = Number.isFinite(hari) ? (hari === 0 ? "hari ini" : `${hari} hari`) : "—";
-                      const lewatSla = slaDays > 0 && hari >= slaDays;
-                      return (
-                        <button
-                          key={c.id}
-                          onClick={() => handleOpenWorkspace(c)}
-                          className="w-full text-left p-3 rounded-xl bg-slate-900 hover:bg-slate-850 transition cursor-pointer flex items-center gap-3"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[13px] font-semibold text-slate-100 truncate">{c.title}</p>
-                            <p className="text-[11px] text-slate-500 truncate">
-                              <span className="font-mono">{c.contractNumber}</span>
-                              {" · "}langkah {step.order} dari {totalSteps}
-                              {c.approvalSubmittedByName ? ` · diajukan ${c.approvalSubmittedByName}` : ""}
-                            </p>
-                          </div>
-                          <div className="shrink-0 text-right">
-                            {isMine ? (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-slate-900 text-brand-orange uppercase">Giliran Anda</span>
-                            ) : asDelegate ? (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-violet-500/25 text-violet-800 uppercase" title={`${step.approverName} sedang berhalangan dan menunjuk Anda sebagai pengganti. Keputusan tetap tercatat atas nama ${step.approverName}.`}>
-                                Pengganti · {step.approverName}
-                              </span>
-                            ) : (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-slate-700/40 text-slate-300 uppercase" title={`Giliran ${step.approverName} — Anda bisa memutuskan sebagai override admin.`}>
-                                Override · {step.approverName}
-                              </span>
-                            )}
-                            <p className={`text-[10px] mt-1 tabular-nums ${lewatSla ? "text-rose-500 font-semibold" : "text-slate-500"}`}
-                               title={slaDays > 0 ? `Batas wajar ${slaDays} hari per langkah (diatur di Konfigurasi).` : undefined}>
-                              {hari === 0 ? "masuk hari ini" : `menunggu ${lama}`}
-                              {lewatSla ? ` · lewat batas ${slaDays}h` : ""}
-                            </p>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {myApprovalQueue.length > 6 && (
-                    <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("OnReview"); }} className="text-[12px] text-indigo-400 hover:underline font-semibold cursor-pointer">
-                      Lihat semua {myApprovalQueue.length} dokumen di Monitoring →
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Kartu Sharing Fee — nominal (rupiah pasti) DIPISAH dari persentase
-                  (tidak dijumlah sbg rupiah; hanya estimasi utk yg nilai kontraknya
-                  diketahui). Muncul hanya kalau ada kontrak ber-sharing-fee. */}
-              {sharingFeeStats.hasAny && (
-                <div className="rounded-[14px] bg-slate-950 p-5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <p className="text-[15px] font-semibold text-slate-100 flex items-center gap-2">
-                      <Percent className="w-4 h-4 text-brand-orange" /> Sharing Fee Kontrak Aktif
-                    </p>
-                    <span className="text-[10px] text-slate-600" title="Persentase tidak dijumlah bersama rupiah karena satuannya beda — ditampilkan terpisah.">Nominal & persentase dipisah</span>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {/* Nominal — rupiah pasti, boleh dijumlah */}
-                    <div className="p-4 bg-slate-900 rounded-xl">
-                      <p className="text-[12px] text-slate-400">Nominal (pasti)</p>
-                      <p className="text-[22px] leading-tight font-semibold text-slate-100 tabular-nums mt-1">
-                        Rp {sharingFeeStats.nominalSum.toLocaleString("id-ID")}
-                      </p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        {sharingFeeStats.nominalContracts > 0 ? `dari ${sharingFeeStats.nominalContracts} kontrak` : "belum ada fee nominal"}
-                      </p>
-                    </div>
-                    {/* Persentase — TIDAK dijumlah sbg rupiah; estimasi terpisah */}
-                    <div className="p-4 bg-slate-900 rounded-xl">
-                      <p className="text-[12px] text-slate-400">Berbasis Persentase (terpisah)</p>
-                      <p className="text-[22px] leading-tight font-semibold text-slate-100 tabular-nums mt-1">
-                        {sharingFeeStats.pctContracts} <span className="text-sm font-medium text-slate-400">kontrak</span>
-                      </p>
-                      <p className="text-[11px] text-slate-500 mt-0.5">
-                        {sharingFeeStats.pctContracts > 0 ? "kontrak aktif dengan fee persentase" : "belum ada fee persentase"}
-                      </p>
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-slate-600 flex items-start gap-1.5">
-                    <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5 text-slate-500" />
-                    Fee persentase tidak dijumlahkan ke dalam total rupiah — satuannya berbeda, sehingga hanya ditampilkan sebagai jumlah kontrak.
-                  </p>
-                </div>
-              )}
-
-              {/* Baris 3: berakhir berikutnya · status · kategori */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <div className="lg:col-span-4 rounded-[14px] bg-slate-950 p-5 space-y-4 flex flex-col">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-[15px]">Berakhir Berikutnya</h3>
-                    {nextExp && <span className="text-[11px] text-slate-500">{nextExp.contractNumber}</span>}
-                  </div>
-                  {!nextExp ? (
-                    <p className="text-sm text-slate-500 py-8 text-center">Tidak ada kontrak aktif yang akan berakhir.</p>
-                  ) : (
-                    <>
-                      <div className="rounded-xl bg-mist p-4 space-y-3">
-                        <p className="text-[15px] font-semibold text-slate-100 leading-snug">{nextExp.title}</p>
-                        <p className="text-[12px] text-slate-500">{nextExp.party2Name || "—"}</p>
-                        <div className="h-1.5 rounded-sm bg-slate-900 overflow-hidden">
-                          <div className="h-full bg-soft-blue" style={{ width: `${nextProgress}%` }} />
+              {/* Baris 1: detail · info · kategori (tinggi sama) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+                <div className="lg:col-span-3">
+                  <div className={`${CARD} h-full flex flex-col gap-4`}>
+                    <DashCardHeader Icon={FileText} title="Detail Kontrak" subtitle={nextExp ? `${nextExp.category} · berakhir berikutnya` : "Belum ada kontrak aktif"} />
+                    {!nextExp ? (
+                      <p className="text-sm text-slate-500 py-6 text-center">Tidak ada kontrak aktif yang akan berakhir.</p>
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { v: `${getDaysRemaining(nextExp.endDate)} hr`, l: "sisa" },
+                            { v: nextExp.contractValue > 0 ? `${(nextExp.contractValue / 1_000_000).toLocaleString("id-ID", { maximumFractionDigits: 1 })} jt` : "—", l: "nilai" },
+                            { v: `${nextProgress}%`, l: "berjalan" },
+                          ].map((t) => (
+                            <div key={t.l} className="rounded-[16px] bg-slate-950 px-2 py-2.5 text-center min-w-0">
+                              <p className="text-[12px] font-semibold text-slate-100 truncate tabular">{t.v}</p>
+                              <p className="text-[9px] text-slate-500">{t.l}</p>
+                            </div>
+                          ))}
                         </div>
-                        <div className="flex justify-between text-[11px] text-slate-500 tabular">
-                          <span>{nextExp.startDate}</span>
-                          <span>{nextExp.endDate}</span>
+                        <div>
+                          <p className="text-[12px] text-slate-500 mb-2">Pihak kedua</p>
+                          <div className="flex items-center gap-3">
+                            <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center text-sm font-semibold text-slate-100 shrink-0">
+                              {(nextExp.party2Name || "?").trim().charAt(0).toUpperCase()}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[13px] font-medium text-slate-100 truncate">{nextExp.party2Name || "—"}</p>
+                              <p className="text-[11px] text-slate-500 truncate">{nextExp.contractNumber}</p>
+                            </div>
+                            <button
+                              onClick={() => handleOpenWorkspace(nextExp)}
+                              className="w-10 h-10 rounded-full bg-soft-blue text-white flex items-center justify-center shrink-0 hover:opacity-90 transition cursor-pointer"
+                              title="Tinjau kontrak"
+                              aria-label="Tinjau kontrak"
+                            >
+                              <ArrowRight className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="mt-auto">
+                          <div className="flex justify-between text-[11px] text-slate-500 mb-2"><span>Masa berlaku</span><span className="tabular">{nextProgress}%</span></div>
+                          <div className="h-2.5 rounded-full bg-slate-950 overflow-hidden"><div className="h-full rounded-full bg-peach-strong" style={{ width: `${nextProgress}%` }} /></div>
+                          <div className="flex justify-between text-[10px] text-slate-500 mt-1.5 tabular"><span>{nextExp.startDate}</span><span>{nextExp.endDate}</span></div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="lg:col-span-5">
+                  <div className="rounded-[28px] card-sky card-soft p-5 space-y-4 h-full">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[20px] font-medium text-slate-100">Info Kontrak</h3>
+                      <button onClick={() => { setActiveTab("monitoring"); setSelectedContract(null); }} className="text-[12px] text-slate-500 hover:text-slate-100 cursor-pointer">Lihat semua &gt;</button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="rounded-[22px] bg-mist-strong p-4 flex flex-col justify-between min-h-[170px]">
+                        <div className="flex items-start justify-between gap-2 text-[15px] font-medium text-slate-100">
+                          <span className="truncate max-w-[45%]">{nextExp ? (nextExp.party1Name || "Pihak 1") : "—"}</span>
+                          <span className="truncate max-w-[45%] text-right">{nextExp ? (nextExp.party2Name || "Pihak 2") : "—"}</span>
+                        </div>
+                        <div className="flex justify-center my-2"><FileText className="w-9 h-9 text-slate-100/80" strokeWidth={1.5} /></div>
+                        <div>
+                          <div className="relative h-1 rounded-full bg-white/60">
+                            <span className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white" style={{ left: `calc(${nextProgress}% - 6px)` }} />
+                          </div>
+                          <div className="flex justify-between text-[10px] text-slate-500 mt-2 tabular">
+                            <span>{nextExp?.startDate || "—"}</span>
+                            <span>{nextExp?.endDate || "—"}</span>
+                          </div>
                         </div>
                       </div>
-                      <div className="grid grid-cols-3 gap-2">
-                        {[
-                          { l: "Sisa", v: `${getDaysRemaining(nextExp.endDate)} hari` },
-                          { l: "Kategori", v: nextExp.category },
-                          { l: "Nilai", v: nextExp.contractValue > 0 ? `Rp ${nextExp.contractValue.toLocaleString("id-ID")}` : "—" },
-                        ].map((t) => (
-                          <div key={t.l} className="rounded-xl bg-slate-900 px-2.5 py-2 min-w-0">
-                            <p className="text-[11px] text-slate-500 truncate">{t.l}</p>
-                            <p className="text-[12px] font-semibold text-slate-100 truncate tabular">{t.v}</p>
-                          </div>
+                      <div className="rounded-[22px] bg-slate-900/70 p-4 space-y-2.5">
+                        <p className="text-[17px] font-medium text-slate-100 truncate">{nextExp ? `#${nextExp.contractNumber}` : "Kontrak Terbaru"}</p>
+                        {recent.length === 0 ? (
+                          <p className="text-[12px] text-slate-500">Belum ada kontrak.</p>
+                        ) : recent.map((c, i) => (
+                          <button key={c.id} onClick={() => handleOpenWorkspace(c)} className="w-full flex items-center gap-2 text-left cursor-pointer group">
+                            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${i === 0 ? "bg-soft-blue" : "border border-slate-650"}`} />
+                            <span className={`text-[11px] truncate flex-1 ${i === 0 ? "text-slate-100 font-medium" : "text-slate-500"} group-hover:text-slate-100`}>{c.title}</span>
+                            <span className="text-[10px] text-slate-500 tabular shrink-0">{String(c.updatedAt || c.createdAt || c.startDate || "").slice(5, 10)}</span>
+                          </button>
                         ))}
                       </div>
-                      <div className="flex gap-2 mt-auto">
-                        <button onClick={() => handleOpenWorkspace(nextExp)} className="flex-1 py-2 rounded-lg bg-slate-900 hover:bg-slate-850 text-xs font-semibold text-slate-200 transition cursor-pointer">Tinjau</button>
-                        <button onClick={() => handleOpenRenewModal(nextExp)} className="flex-1 py-2 rounded-lg bg-soft-blue hover:opacity-90 text-xs font-semibold text-white transition cursor-pointer flex items-center justify-center gap-1">
+                    </div>
+                    <div className="rounded-full bg-slate-900 px-4 py-3 flex items-center gap-3 text-[13px]">
+                      <span className="w-5 h-5 rounded-full border-[3px] border-mist border-t-soft-blue shrink-0" />
+                      <span className="text-slate-100">{aktifPct}% Kontrak Aktif</span>
+                      <span className="w-px h-4 bg-slate-800" />
+                      <span className="text-slate-500 flex-1">{criticalExpiryContracts.length} segera berakhir</span>
+                      {nextExp && (
+                        <button onClick={() => handleOpenRenewModal(nextExp)} className="text-[12px] font-semibold text-indigo-400 hover:underline cursor-pointer flex items-center gap-1">
                           <RefreshCw className="w-3 h-3" /> Perpanjang
                         </button>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="lg:col-span-4 rounded-[14px] bg-slate-950 p-5 flex flex-col">
-                  <h3 className="font-semibold text-[15px]">Status Kontrak</h3>
-                  <div className="flex-1 flex items-center justify-center py-3">
-                    <StatusRing
-                      segments={[
-                        { value: aktifList.length, color: "var(--color-soft-blue)" },
-                        { value: draftList.length, color: "var(--color-brand-orange)" },
-                        { value: otherCount, color: "var(--color-slate-700)" },
-                      ]}
-                      center={`${aktifPct}%`}
-                      sub="aktif"
-                    />
-                  </div>
-                  <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 flex-wrap">
-                    <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm bg-soft-blue" />Aktif {aktifList.length}</span>
-                    <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm bg-brand-orange" />Draft {draftList.length}</span>
-                    <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm bg-slate-700" />Lainnya {otherCount}</span>
-                  </div>
-                </div>
-
-                <div className="lg:col-span-4">
-                  {/* Contract Category Chart Simulator */}
-                <div className="bg-slate-950 rounded-[14px] p-5 h-full">
-                  <h3 className="font-semibold text-[15px] mb-4">
-                    Distribusi Kontrak Berdasarkan Kategori
-                  </h3>
-
-                  <div className="space-y-4">
-                    {["Employment", "Vendor", "NDA", "MOU", "Rental"].map(
-                      (cat) => {
-                        const count = contracts.filter(
-                          (c) => c.category === cat,
-                        ).length;
-                        const percentage = contracts.length
-                          ? Math.round((count / contracts.length) * 100)
-                          : 0;
-                        return (
-                          <div key={cat} className="space-y-1">
-                            <div className="flex justify-between text-xs font-semibold">
-                              <span>
-                                {cat === "Employment"
-                                  ? "Karyawan / PKWT"
-                                  : cat === "Vendor"
-                                    ? "Vendor / Supplier Jasa"
-                                    : cat}
-                              </span>
-                              <span className="text-indigo-400">
-                                {count} Kontrak ({percentage}%)
-                              </span>
-                            </div>
-                            <div className="w-full bg-slate-800 rounded-md h-2">
-                              <div
-                                className={`h-2 rounded-md ${
-                                  cat === "Employment"
-                                    ? "bg-indigo-600"
-                                    : cat === "Vendor"
-                                      ? "bg-brand-orange"
-                                      : cat === "NDA"
-                                        ? "bg-indigo-300"
-                                        : "bg-slate-600"
-                                }`}
-                                style={{ width: `${percentage}%` }}
-                              ></div>
-                            </div>
-                          </div>
-                        );
-                      },
-                    )}
-                  </div>
-                </div>
-                </div>
-              </div>
-
-              {/* Baris 4: kontrak terbaru · notifikasi */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <div className="lg:col-span-8">
-                  {/* Kontrak Terbaru */}
-              <div className="rounded-[14px] bg-slate-950 p-5 h-full">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="font-semibold text-[15px]">Kontrak Terbaru</h3>
-                  <button
-                    onClick={() => { setActiveTab("monitoring"); setSelectedContract(null); }}
-                    className="text-[13px] font-semibold text-indigo-400 hover:underline cursor-pointer"
-                  >
-                    Lihat semua →
-                  </button>
-                </div>
-                {contracts.length === 0 ? (
-                  <p className="text-sm text-slate-500 text-center py-8">Belum ada kontrak.</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-[13px]">
-                      <thead>
-                        <tr className="text-left text-[12px] text-slate-500 border-b border-slate-900">
-                          <th className="font-medium py-2 pr-3">Judul kontrak</th>
-                          <th className="font-medium py-2 pr-3">Pihak kedua</th>
-                          <th className="font-medium py-2 pr-3">Berakhir</th>
-                          <th className="font-medium py-2 pr-3 text-right">Nilai</th>
-                          <th className="font-medium py-2">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[...contracts]
-                          .sort((x: any, y: any) => String(y.updatedAt || y.createdAt || y.startDate || "").localeCompare(String(x.updatedAt || x.createdAt || x.startDate || "")))
-                          .slice(0, 6)
-                          .map((c) => (
-                            <tr
-                              key={c.id}
-                              onClick={() => handleOpenWorkspace(c)}
-                              className="border-b border-slate-900 last:border-0 hover:bg-slate-900 cursor-pointer"
-                            >
-                              <td className="py-3 pr-3">
-                                <p className="font-semibold text-slate-100 truncate max-w-[260px]">{c.title}</p>
-                                <p className="text-[11px] text-slate-500 font-mono">{c.contractNumber}</p>
-                              </td>
-                              <td className="py-3 pr-3 text-slate-300">{c.party2Name || "—"}</td>
-                              <td className="py-3 pr-3 text-slate-300 whitespace-nowrap">{c.endDate || "—"}</td>
-                              <td className="py-3 pr-3 text-right tabular whitespace-nowrap text-slate-300">
-                                {c.contractValue > 0 ? `Rp ${c.contractValue.toLocaleString("id-ID")}` : "—"}
-                              </td>
-                              <td className="py-3">
-                                <span
-                                  className={`inline-block px-2.5 py-0.5 rounded-md text-[11px] font-semibold ${
-                                    c.status === "Aktif"
-                                      ? "bg-indigo-500/15 text-indigo-400"
-                                      : c.status === "Draft"
-                                        ? "bg-peach text-brand-orange"
-                                        : "bg-slate-900 text-slate-400"
-                                  }`}
-                                >
-                                  {c.unifiedStatus || c.status}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-                </div>
-                <div className="lg:col-span-4">
-                  {/* Right: Notifications Feed */}
-                <div className="bg-slate-950 rounded-[14px] p-5 flex flex-col justify-between h-full">
-                  <div>
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="font-semibold text-[15px] flex items-center gap-2">
-                        <Bell className="text-brand-orange w-4 h-4" />
-                        Log Notifikasi Real-time
-                      </h3>
-                      <button
-                        onClick={handleMarkNotificationsRead}
-                        className="text-xs text-indigo-400 hover:underline"
-                      >
-                        Tandai dibaca
-                      </button>
-                    </div>
-
-                    <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
-                      {notifications.length === 0 ? (
-                        <p className="text-xs text-slate-500 text-center py-6">
-                          Tidak ada notifikasi sistem.
-                        </p>
-                      ) : (
-                        notifications.slice(0, 5).map((n) => (
-                          <div
-                            key={n.id}
-                            onClick={() => {
-                              if (n.contractId) {
-                                const c = contracts.find(
-                                  (con) => con.id === n.contractId,
-                                );
-                                if (c) handleOpenWorkspace(c);
-                              } else if (n.dcsDocumentId) {
-                                const d = dcsDocs.find((doc) => doc.id === n.dcsDocumentId);
-                                if (d) {
-                                  setActiveTab("internal-docs");
-                                  setDcsSelectedId(d.id);
-                                  setDcsSelectedVersionId(d.versions[0]?.id || null);
-                                }
-                              }
-                            }}
-                            className={`p-2.5 rounded-xl border transition cursor-pointer text-xs ${
-                              n.read
-                                ? "bg-slate-900 border-transparent text-slate-400"
-                                : "bg-peach border-transparent text-slate-100"
-                            }`}
-                          >
-                            <div className="flex items-center justify-between mb-1">
-                              <span
-                                className={`font-semibold px-1.5 py-0.5 rounded text-[9px] uppercase ${
-                                  n.type === "success"
-                                    ? "bg-indigo-500/15 text-indigo-400"
-                                    : n.type === "danger"
-                                      ? "bg-rose-500/15 text-rose-400"
-                                      : "bg-slate-800 text-brand-orange"
-                                }`}
-                              >
-                                {n.type}
-                              </span>
-                              <span className="text-[10px] text-slate-500">
-                                {new Date(n.createdAt).toLocaleTimeString()}
-                              </span>
-                            </div>
-                            <p className="font-semibold text-slate-200">
-                              {n.title}
-                            </p>
-                            <p className="text-slate-400 leading-normal mt-0.5">
-                              {n.message}
-                            </p>
-                          </div>
-                        ))
                       )}
                     </div>
                   </div>
-
-                  <div className="pt-4 mt-4 text-center">
-                    <p className="text-[10px] text-slate-500">
-                      Real-time status synced via server webhooks
-                    </p>
-                  </div>
                 </div>
+                <div className="lg:col-span-4">
+                  {catCard}
                 </div>
               </div>
 
-              {/* Baris 5: peringatan kadaluwarsa · audit */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                <div className="lg:col-span-8">
-                  {/* Left: Urgent Renewal & Expiry Alerts */}
-                <div className="bg-slate-950 rounded-[14px] p-5 space-y-4 h-full">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-[15px] flex items-center gap-2">
-                      <ShieldAlert className="text-brand-orange w-4 h-4" />
-                      Peringatan Kadaluwarsa Kontrak & Mesin Perpanjangan
-                    </h3>
-                    <span className="text-xs text-brand-orange font-semibold bg-peach px-2.5 py-0.5 rounded-md">
-                      Critical
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {criticalExpiryContracts.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 bg-slate-900 rounded-xl">
-                        Tidak ada kontrak yang akan kedaluwarsa dalam waktu
-                        dekat.
-                      </div>
-                    ) : (
-                      criticalExpiryContracts.map((c) => {
-                        const daysLeft = getDaysRemaining(c.endDate);
-                        return (
-                          <div
-                            key={c.id}
-                            className="p-4 bg-slate-900 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                          >
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-bold text-indigo-400">
-                                  {c.contractNumber}
-                                </span>
-                                <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-semibold uppercase">
-                                  {c.category}
-                                </span>
-                              </div>
-                              <h4 className="font-bold text-sm text-slate-100">
-                                {c.title}
-                              </h4>
-                              <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                                <Users className="w-3.5 h-3.5" />
-                                Pihak Kedua:{" "}
-                                <strong className="text-slate-300">
-                                  {c.party2Name}
-                                </strong>
-                              </p>
-                              <p className="text-xs text-rose-400 font-semibold flex items-center gap-1">
-                                <Calendar className="w-3.5 h-3.5" />
-                                Berakhir {c.endDate} ({daysLeft} hari lagi)
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleOpenWorkspace(c)}
-                                className="px-3 py-1.5 bg-slate-950 text-xs font-semibold rounded-lg hover:bg-slate-850 text-slate-200 transition"
-                              >
-                                Tinjau
-                              </button>
-                              <button
-                                onClick={() => handleOpenRenewModal(c)}
-                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-xs font-bold text-white rounded-lg transition flex items-center gap-1"
-                              >
-                                <RefreshCw className="w-3 h-3" />
-                                Perpanjang
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
+              {/* Baris 2: status · persetujuan · audit (semua tinggi tetap) */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                <div className="lg:col-span-3">
+                  <div className={`${CARD} flex flex-col`} style={{ height: 340, overflow: "hidden" }}>
+                    <DashCardHeader Icon={PieChart} title="Status Kontrak" subtitle={`${contracts.length} kontrak total`} />
+                    <div className="flex items-center justify-center py-3 flex-1">
+                      <StatusRing
+                        segments={[
+                          { value: aktifList.length, color: "var(--color-soft-blue)" },
+                          { value: draftList.length, color: "var(--color-peach-strong)" },
+                          { value: otherCount, color: "var(--color-slate-700)" },
+                        ]}
+                        center={`${aktifPct}%`}
+                        sub="kontrak aktif"
+                      />
+                    </div>
+                    <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 flex-wrap">
+                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-soft-blue" />Aktif {aktifList.length}</span>
+                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-peach-strong" />Draft {draftList.length}</span>
+                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-slate-700" />Lainnya {otherCount}</span>
+                    </div>
                   </div>
                 </div>
-                </div>
-                <div className="lg:col-span-4">
-                  {/* User Productivity and Audit Trail Summary */}
-                <div className="bg-slate-950 rounded-[14px] p-5 space-y-4 h-full">
-                  <h3 className="font-semibold text-[15px]">
-                    Produktivitas Pengguna & Log Audit Aktivitas
-                  </h3>
+                <div className="lg:col-span-5">{apprCard}</div>
+                <div className="lg:col-span-4">{auditCard}</div>
+              </div>
 
-                  <div className="space-y-3 max-h-56 overflow-y-auto">
-                    {audits.slice(0, 4).map((audit) => (
-                      <div
-                        key={audit.id}
-                        className="p-3 bg-slate-900 rounded-xl text-xs flex items-start gap-3"
-                      >
-                        <div className="p-1.5 rounded-lg bg-peach text-brand-orange">
-                          <User className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="flex-1 space-y-0.5">
-                          <div className="flex items-center justify-between">
-                            <strong className="text-slate-200">
-                              {audit.userName}
-                            </strong>
-                            <span className="text-[10px] text-slate-500">
-                              {new Date(audit.timestamp).toLocaleDateString()}
-                            </span>
-                          </div>
-                          <p className="text-[10px] text-indigo-400 font-semibold">
-                            {audit.userRole}
-                          </p>
-                          <p className="text-slate-300 font-medium">
-                            {audit.action} • {audit.details}
-                          </p>
-                          {audit.contractNumber && (
-                            <span className="inline-block mt-1 bg-slate-950 px-1.5 py-0.5 rounded font-mono text-[9px] text-slate-400">
-                              {audit.contractNumber}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <button
-                    onClick={() => setActiveTab("audits")}
-                    className="w-full py-2 bg-slate-900 hover:bg-slate-850 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 text-indigo-400 transition cursor-pointer"
-                  >
-                    Buka Seluruh Audit Trail{" "}
-                    <ChevronRight className="w-3 h-3" />
-                  </button>
-                </div>
-                </div>
+              {/* Baris 3: kadaluwarsa · sharing fee (tinggi tetap) */}
+              <div className={`grid grid-cols-1 gap-5 items-start ${shareCard ? "lg:grid-cols-2" : ""}`}>
+                {expiryCard}
+                {shareCard}
               </div>
             </div>
           );
         })()}
 
-          
-{/* VIEW: KONFIGURASI & MASTER DATA */}
+          {/* VIEW: KONFIGURASI & MASTER DATA */}
           {activeTab === "konfigurasi" && !selectedContract && (
             <div className="space-y-6">
               <div>
@@ -15618,7 +15979,7 @@ export default function App() {
                       <p className="text-[13px] text-slate-500">Centang = role itu BOLEH buka menu tersebut. <b>super_admin</b> selalu penuh, tidak ada di tabel ini. Kosongkan semua centang di satu kolom role = role itu diperlakukan "belum diatur" (akses penuh juga).</p>
                     </div>
                     <div className="overflow-x-auto">
-                      <table className="text-[12px] border-collapse">
+                      <table className="plain-table text-[12px] border-collapse">
                         <thead>
                           <tr>
                             <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950">Menu</th>
@@ -15703,7 +16064,7 @@ export default function App() {
                     ) : (
                       <>
                         <div className="overflow-x-auto">
-                          <table className="text-[12px] border-collapse">
+                          <table className="plain-table text-[12px] border-collapse">
                             <thead>
                               <tr>
                                 <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950">Folder</th>
@@ -15874,17 +16235,20 @@ export default function App() {
           {(activeTab === "monitoring" || activeTab === "kontrak-karyawan") && !selectedContract && (
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    {activeTab === "kontrak-karyawan"
-                      ? <><Users className="w-5 h-5 text-emerald-400" /> Kontrak Karyawan</>
-                      : <><Bell className="w-5 h-5 text-amber-400" /> Monitoring &amp; Reminder Kontrak</>}
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    {activeTab === "kontrak-karyawan"
-                      ? "Kontrak kerja karyawan (pihak kedua = Karyawan) dipantau terpisah dari kontrak vendor/mitra."
-                      : "Semua kontrak (dibuat di sistem maupun dokumen upload) dipantau masa berlakunya di sini."}
-                  </p>
+                <div className="flex items-center gap-3.5">
+                  <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center shrink-0">
+                    {activeTab === "kontrak-karyawan" ? <Users className="w-5 h-5 text-indigo-400" /> : <Bell className="w-5 h-5 text-indigo-400" />}
+                  </span>
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-100">
+                      {activeTab === "kontrak-karyawan" ? "Kontrak Karyawan" : "Monitoring & Reminder Kontrak"}
+                    </h2>
+                    <p className="text-sm text-slate-400 mt-0.5">
+                      {activeTab === "kontrak-karyawan"
+                        ? "Kontrak kerja karyawan (pihak kedua = Karyawan) dipantau terpisah dari kontrak vendor/mitra."
+                        : "Semua kontrak (dibuat di sistem maupun dokumen upload) dipantau masa berlakunya di sini."}
+                    </p>
+                  </div>
                 </div>
                 <button
                   onClick={() => {
@@ -15898,7 +16262,7 @@ export default function App() {
                     setCreationStep(1);
                     setIsCreating(true);
                   }}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg cursor-pointer shrink-0"
+                  className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-semibold transition cursor-pointer shrink-0"
                 >
                   <Plus className="w-4 h-4" />
                   {activeTab === "kontrak-karyawan" ? "Buat Kontrak Karyawan" : "Buat Kontrak Eksternal"}
@@ -15943,6 +16307,24 @@ export default function App() {
                   if (monitorHealth === "warning") return d > 30 && d <= 90;
                   return d > 90; // healthy
                 };
+                const ex = monitorExtra;
+                const has = (v: string | undefined, q: string) => !q.trim() || (v || "").toLowerCase().includes(q.trim().toLowerCase());
+                const extraMatch = (c: Contract) => {
+                  if (!has(c.title, ex.title) || !has(c.contractNumber, ex.number) || !has(c.party2Name, ex.party) || !has(c.party1Name, ex.party1)) return false;
+                  if (ex.docType && (c.docType || "") !== ex.docType) return false;
+                  if (ex.party2Type && c.party2Type !== ex.party2Type) return false;
+                  const sd = (c.startDate || "").slice(0, 10), ed = (c.endDate || "").slice(0, 10);
+                  if (ex.startFrom && (!sd || sd < ex.startFrom)) return false;
+                  if (ex.startTo && (!sd || sd > ex.startTo)) return false;
+                  if (ex.endFrom && (!ed || ed < ex.endFrom)) return false;
+                  if (ex.endTo && (!ed || ed > ex.endTo)) return false;
+                  if (ex.statuses.length && !ex.statuses.includes(c.unifiedStatus || c.status)) return false;
+                  if (ex.docKinds.length && !ex.docKinds.includes(contractDocKind(c))) return false;
+                  const v = Number(c.contractValue) || 0;
+                  if (ex.minVal !== "" && v < Number(ex.minVal)) return false;
+                  if (ex.maxVal !== "" && v > Number(ex.maxVal)) return false;
+                  return true;
+                };
                 const searched = scoped
                   .filter((c) => (monitorScope === "all" ? true : monitorScope === "aktif" ? !isInactive(c) : isInactive(c)))
                   .filter(healthMatch)
@@ -15957,7 +16339,8 @@ export default function App() {
                   .filter((c) => (monitorStatus === "Semua" ? true : (c.unifiedStatus || c.status) === monitorStatus))
                   // Pencarian kini menembus ISI dokumen (pasal + teks OCR), bukan
                   // cuma judul/nomor/pihak — lihat contractSearchIndex.
-                  .filter((c) => matchContract(c, monitorSearch) !== null);
+                  .filter((c) => matchContract(c, monitorSearch) !== null)
+                  .filter(extraMatch);
                 const isiOnlyCount = monitorSearch.trim()
                   ? searched.filter((c) => matchContract(c, monitorSearch) === "isi").length
                   : 0;
@@ -15971,6 +16354,7 @@ export default function App() {
                   sisa: (c) => { const d = daysLeftOf(c); return isInactive(c) || !Number.isFinite(d) ? null : d; },
                   aktif: (c) => (isInactive(c) ? "Tidak Aktif" : "Aktif"),
                   status: (c) => c.status,
+                  dibuat: (c) => c.createdAt || c.startDate || "",
                 });
                 const MONITOR_PAGE_SIZE = 10;
                 const monitorTotalPages = Math.max(1, Math.ceil(filtered.length / MONITOR_PAGE_SIZE));
@@ -16012,147 +16396,182 @@ export default function App() {
                   showToast(`${baris.length} baris diekspor ke CSV (siap dibuka di Excel).`, "success");
                 };
 
+                const appliedDraft: MonitorDraft = {
+                  ...monitorExtra, keyword: monitorSearch, category: monitorCategory, health: monitorHealth, scope: monitorScope,
+                  statuses: Array.from(new Set([...monitorExtra.statuses, ...(monitorStatus !== "Semua" ? [monitorStatus] : [])])),
+                };
+                const activeFilterCount = countMonitorFilters(appliedDraft);
+                const openFilter = () => {
+                  setMonitorDraft(appliedDraft);
+                  setMonitorFilterOpen(true);
+                };
+                const applyFilter = () => {
+                  const d = monitorDraft;
+                  setMonitorSearch(d.keyword); setMonitorCategory(d.category); setMonitorHealth(d.health); setMonitorScope(d.scope);
+                  setMonitorStatus("Semua");
+                  const { keyword: _k, category: _c, health: _h, scope: _s, ...extra } = d;
+                  setMonitorExtra(extra);
+                  setMonitorPage(1);
+                  setMonitorFilterOpen(false);
+                };
+                const resetFilter = () => {
+                  setMonitorDraft({ ...EMPTY_MONITOR_EXTRA, keyword: "", category: "Semua", health: "", scope: "all" });
+                  setMonitorSearch(""); setMonitorCategory("Semua"); setMonitorHealth(""); setMonitorScope("all");
+                  setMonitorStatus("Semua"); setMonitorExtra(EMPTY_MONITOR_EXTRA); setMonitorPage(1);
+                };
+                const statusOptions = Array.from(new Set<string>(contracts.map((c) => c.unifiedStatus || c.status)))
+                  .sort()
+                  .map((st) => ({ value: st, label: CONTRACT_STATUS_LABEL_ID[st] || contractStatusLabel(st as ContractStatus) }));
+                const docTypeOptions = Array.from(new Set<string>(scoped.map((c) => c.docType || "").filter(Boolean))).sort();
+                const party2TypeOptions = Array.from(new Set<string>(scoped.map((c) => c.party2Type || "").filter(Boolean))).sort();
+                const SORT_OPTIONS: { dir: "desc" | "asc"; label: string }[] = [
+                  { dir: "desc", label: "Terbaru" }, { dir: "asc", label: "Terlama" },
+                ];
+                const sortLabel = SORT_OPTIONS.find((o) => o.dir === contractSort.dir)?.label;
+                const pageNumbers: (number | "…")[] = (() => {
+                  if (monitorTotalPages <= 7) return Array.from({ length: monitorTotalPages }, (_, i) => i + 1);
+                  const set = new Set([1, monitorTotalPages, monitorSafePage - 1, monitorSafePage, monitorSafePage + 1]);
+                  const arr = Array.from(set).filter((n) => n >= 1 && n <= monitorTotalPages).sort((a, b) => a - b);
+                  const out: (number | "…")[] = [];
+                  arr.forEach((n, i) => { if (i > 0 && n - arr[i - 1] > 1) out.push("…"); out.push(n); });
+                  return out;
+                })();
+                const topBtn = "h-11 px-5 rounded-full bg-slate-900 text-slate-300 hover:text-slate-100 text-sm font-semibold flex items-center gap-2 cursor-pointer transition card-soft";
+
                 return (
                   <>
-                    {/* Kartu ringkasan = filter cepat. Klik untuk saring tabel ke
-                        bucket itu, klik lagi untuk lepas. Kartu aktif diberi ring. */}
+                    {/* Kartu ringkasan = filter cepat (klik untuk saring tabel, klik lagi untuk lepas). */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
                       {([
-                        { key: "expired", count: expired.length, color: "rose", label: "Sudah Lewat Masa Berlaku" },
-                        { key: "critical", count: critical.length, color: "amber", label: "Berakhir ≤ 30 Hari" },
-                        { key: "warning", count: warning.length, color: "indigo", label: "Berakhir 31–90 Hari" },
-                        { key: "healthy", count: healthy.length, color: "emerald", label: "Aman (> 90 Hari)" },
-                      ] as { key: "expired" | "critical" | "warning" | "healthy"; count: number; color: string; label: string }[]).map((card) => {
-                        const active = monitorHealth === card.key;
-                        const colorMap: Record<string, string> = {
-                          rose: "bg-rose-500/10 border-rose-500/30 text-rose-400",
-                          amber: "bg-amber-500/10 border-amber-500/30 text-amber-400",
-                          indigo: "bg-indigo-500/10 border-indigo-500/30 text-indigo-400",
-                          emerald: "bg-emerald-500/10 border-emerald-500/30 text-emerald-400",
-                        };
-                        const ringMap: Record<string, string> = { rose: "ring-rose-400", amber: "ring-amber-400", indigo: "ring-indigo-400", emerald: "ring-emerald-400" };
+                        { key: "expired", count: expired.length, tone: "peach-strong", label: "Sudah Lewat Masa Berlaku", sub: "perlu tindakan segera", orange: true },
+                        { key: "critical", count: critical.length, tone: "peach", label: "Berakhir ≤ 30 Hari", sub: "perpanjang / tinjau", orange: true },
+                        { key: "warning", count: warning.length, tone: "mist-strong", label: "Berakhir 31–90 Hari", sub: "mulai dipantau", orange: false },
+                        { key: "healthy", count: healthy.length, tone: "mist", label: "Aman (> 90 Hari)", sub: "masa berlaku panjang", orange: false },
+                      ] as { key: "expired" | "critical" | "warning" | "healthy"; count: number; tone: string; label: string; sub: string; orange: boolean }[]).map((card) => {
+                        const on = monitorHealth === card.key;
+                        const share = active.length ? Math.round((card.count / active.length) * 100) : 0;
                         return (
                           <button
                             key={card.key}
-                            onClick={() => { setMonitorHealth(active ? "" : card.key); setMonitorPage(1); }}
-                            title={active ? "Klik lagi untuk lepas filter" : "Klik untuk saring tabel ke kontrak ini"}
-                            className={`text-left p-4 rounded-2xl border transition cursor-pointer ${colorMap[card.color]} ${active ? `ring-2 ${ringMap[card.color]}` : "hover:brightness-125"}`}
+                            onClick={() => { setMonitorHealth(on ? "" : card.key); setMonitorPage(1); }}
+                            title={on ? "Klik lagi untuk lepas filter" : "Klik untuk saring tabel ke kontrak ini"}
+                            className={`card-soft text-left p-5 rounded-[28px] bg-slate-900 transition cursor-pointer hover:-translate-y-0.5 ${on ? (card.orange ? "ring-2 ring-peach-strong" : "ring-2 ring-soft-blue") : ""}`}
                           >
-                            <p className="text-2xl font-bold">{card.count}</p>
-                            <p className="text-xs text-slate-400 mt-1 flex items-center gap-1">
-                              {card.label}
-                              {active && <span className="text-[9px] font-bold uppercase opacity-80">· difilter</span>}
-                            </p>
+                            <div className="flex items-center justify-between gap-2">
+                              <span className={`w-10 h-10 rounded-full flex items-center justify-center bg-${card.tone}`}>
+                                {card.key === "expired" ? <XCircle className={`w-5 h-5 ${card.orange ? "text-brand-orange" : "text-indigo-400"}`} />
+                                  : card.key === "critical" ? <Clock className="w-5 h-5 text-brand-orange" />
+                                  : card.key === "warning" ? <Calendar className="w-5 h-5 text-indigo-400" />
+                                  : <CheckCircle2 className="w-5 h-5 text-indigo-400" />}
+                              </span>
+                              {on && <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-slate-950 text-slate-400">difilter</span>}
+                            </div>
+                            <p className="text-3xl font-bold text-slate-100 mt-4 tabular-nums">{card.count}</p>
+                            <p className="text-xs font-semibold text-slate-300 mt-1">{card.label}</p>
+                            <p className="text-[11px] text-slate-500">{card.sub}</p>
+                            <div className="mt-3 h-1.5 rounded-full bg-slate-950 overflow-hidden" title={`${share}% dari kontrak aktif`}>
+                              <div className={`h-full rounded-full ${card.orange ? "bg-brand-orange" : "bg-soft-blue"}`} style={{ width: `${share}%` }} />
+                            </div>
                           </button>
                         );
                       })}
                     </div>
-                    {monitorHealth && (
-                      <button onClick={() => setMonitorHealth("")} className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer flex items-center gap-1">
-                        <XCircle className="w-3.5 h-3.5" /> Lepas filter kartu — tampilkan semua lagi
-                      </button>
-                    )}
-                    {isiOnlyCount > 0 && (
-                      <p className="text-[11px] text-indigo-300/90 flex items-center gap-1.5">
-                        <Search className="w-3.5 h-3.5 shrink-0" />
-                        {isiOnlyCount} dokumen cocok dari <b>isi pasal / teks OCR</b>, bukan dari judul atau nomornya — kata kuncinya dicuplik di bawah judul.
-                      </p>
-                    )}
 
-                    {/* Search & filter — dipindah ke sini (di bawah kartu ringkasan,
-                        di atas tabel) atas permintaan user, terpisah dari baris
-                        judul supaya judul + tombol "Buat Kontrak" tetap ringkas
-                        sejajar di atas. State (monitorSearch/Category/Status/
-                        Scope) & perilakunya SAMA PERSIS, cuma lokasi JSX-nya
-                        pindah — tidak ada logic yang berubah. */}
-                    <div className="flex flex-wrap gap-3">
-                      <div className="relative w-full sm:w-72">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                    {/* Baris aksi: hanya tiga tombol — Search, Filter, Urutkan. */}
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="relative min-w-[240px] flex-1 max-w-sm">
+                        <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 18, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
                         <input
+                          style={{ paddingLeft: 46, paddingRight: 40 }}
                           type="text"
-                          placeholder="Cari judul, nomor, pihak, atau ISI pasal…"
-                          title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
                           value={monitorSearch}
                           onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
-                          className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
+                          placeholder="Cari judul, nomor, pihak, atau isi pasal…"
+                          title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
+                          className="w-full h-11 rounded-full bg-slate-900 card-soft text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-soft-blue/40"
                         />
+                        {monitorSearch && (
+                          <button onClick={() => { setMonitorSearch(""); setMonitorPage(1); }} aria-label="Hapus pencarian" className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full text-slate-500 hover:text-slate-200 cursor-pointer">×</button>
+                        )}
                       </div>
-                      <select
-                        value={monitorCategory}
-                        onChange={(e) => { setMonitorCategory(e.target.value); setMonitorPage(1); }}
-                        className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="Semua">Semua Kategori</option>
-                        {clauseCategories.map((cat) => (
-                          <option key={cat} value={cat}>{cat}</option>
-                        ))}
-                      </select>
-                      <select
-                        value={monitorStatus}
-                        onChange={(e) => { setMonitorStatus(e.target.value); setMonitorPage(1); }}
-                        className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="Semua">Semua Status</option>
-                        {/* Opsi filter dibangun dari unifiedStatus (fallback ke
-                            c.status kalau unifiedStatus belum terisi) — value
-                            & labelnya (CONTRACT_STATUS_LABEL_ID) SAMA PERSIS
-                            dengan yang dipakai badge kolom "Status" di tabel &
-                            di Pekerjaan Legal, supaya memilih sebuah opsi di
-                            sini dijamin cocok dengan badge yang muncul. */}
-                        {Array.from(new Set<string>(contracts.map((c) => c.unifiedStatus || c.status)))
-                          .sort()
-                          .map((st) => (
-                            <option key={st} value={st}>{CONTRACT_STATUS_LABEL_ID[st] || contractStatusLabel(st as ContractStatus)}</option>
-                          ))}
-                      </select>
-                      <select
-                        value={monitorScope}
-                        onChange={(e) => { setMonitorScope(e.target.value as "all" | "aktif" | "nonaktif"); setMonitorPage(1); }}
-                        title="Tampilkan kontrak Aktif, Tidak Aktif (diakhiri/diarsipkan), atau keduanya."
-                        className="px-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-300 focus:outline-none focus:border-indigo-500"
-                      >
-                        <option value="all">Aktif &amp; Tidak Aktif</option>
-                        <option value="aktif">Hanya Aktif</option>
-                        <option value="nonaktif">Hanya Tidak Aktif</option>
-                      </select>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                      <p className="text-[11px] text-slate-500">
-                        Menampilkan <b className="text-slate-300 tabular-nums">{filtered.length}</b> dari {scoped.length} dokumen.
-                      </p>
+                      <button onClick={() => openFilter()} className={topBtn}>
+                        <SlidersHorizontal className="w-4 h-4 text-indigo-400" /> Filter
+                        {activeFilterCount > 0 && <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-peach text-brand-orange text-[10px] font-bold flex items-center justify-center tabular-nums">{activeFilterCount}</span>}
+                      </button>
+                      <div className="relative">
+                        <button onClick={() => setMonitorSortOpen((o) => !o)} className={topBtn}>
+                          <ArrowUpDown className="w-4 h-4 text-indigo-400" /> Urutkan
+                          {sortLabel && <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">· {sortLabel}</span>}
+                        </button>
+                        {monitorSortOpen && (
+                          <>
+                            <div className="fixed inset-0 z-30" onClick={() => setMonitorSortOpen(false)} />
+                            <div className="absolute left-0 top-full mt-2 z-40 w-44 bg-slate-900 rounded-[20px] p-2" style={{ boxShadow: "var(--shadow-soft)" }}>
+                              {SORT_OPTIONS.map((o) => {
+                                const on = contractSort.dir === o.dir;
+                                return (
+                                  <button
+                                    key={o.dir}
+                                    onClick={() => { setContractSort({ key: "dibuat", dir: o.dir }); setMonitorPage(1); setMonitorSortOpen(false); }}
+                                    className={`w-full flex items-center justify-between px-3 py-2 rounded-full text-xs font-semibold cursor-pointer transition ${on ? "bg-mist text-indigo-400" : "text-slate-300 hover:bg-slate-950"}`}
+                                  >
+                                    {o.label}
+                                    {on && <span className="text-[10px]">✓</span>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      {activeFilterCount > 0 && (
+                        <button onClick={resetFilter} className="text-xs font-semibold text-brand-orange hover:underline cursor-pointer flex items-center gap-1">
+                          <XCircle className="w-3.5 h-3.5" /> Reset filter
+                        </button>
+                      )}
                       <button
                         onClick={exportRegister}
                         disabled={filtered.length === 0}
                         title="Mengunduh persis daftar yang sedang tampil (sudah tersaring & terurut) sebagai CSV — langsung bisa dibuka di Excel."
-                        className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-emerald-300 rounded-lg text-[11px] font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="ml-auto h-11 px-5 rounded-full bg-slate-900 card-soft text-slate-300 hover:text-slate-100 text-xs font-semibold flex items-center gap-2 cursor-pointer transition disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        <Download className="w-3.5 h-3.5" /> Ekspor {filtered.length} baris ke Excel (CSV)
+                        <Download className="w-4 h-4 text-indigo-400" /> Ekspor CSV
                       </button>
                     </div>
+                    {isiOnlyCount > 0 && (
+                      <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                        <Search className="w-3.5 h-3.5 shrink-0 text-indigo-400" />
+                        {isiOnlyCount} dokumen cocok dari <b>isi pasal / teks OCR</b>, bukan dari judul atau nomornya — kata kuncinya dicuplik di bawah judul.
+                      </p>
+                    )}
 
-                    <div className="bg-slate-950/60 rounded-2xl border border-slate-800 overflow-hidden">
+                    <div className="table-card">
+                      <div className="flex items-center justify-between gap-3 flex-wrap px-2 pt-2 pb-3">
+                        <p className="text-sm font-bold text-slate-100">
+                          Daftar Kontrak <span className="text-xs font-medium text-slate-500 ml-1">{filtered.length} dari {scoped.length} dokumen</span>
+                        </p>
+                      </div>
                       <div className="overflow-x-auto">
                         <table className="w-full text-left text-xs">
-                          <thead className="bg-slate-900/80 text-slate-400 uppercase text-[10px] tracking-wider">
+                          <thead>
                             <tr>
-                              {(() => { const onSort = (k: string) => setContractSort((s) => nextSort(s, k)); return (
+                              {(() => { const onSort = (k: string) => setContractSort((s2) => nextSort(s2, k)); return (
                                 <>
-                                  <SortableTh label="Kontrak" colKey="kontrak" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Kategori" colKey="kategori" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Pihak Kedua" colKey="pihak" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Mulai" colKey="mulai" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Berakhir" colKey="akhir" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Sisa Waktu" colKey="sisa" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Aktif?" colKey="aktif" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <SortableTh label="Status" colKey="status" sort={contractSort} onSort={onSort} className="px-4 py-3" />
-                                  <th className="px-4 py-3">Dokumen</th>
-                                  <th className="px-4 py-3 text-right">Aksi</th>
+                                  <SortableTh label="Kontrak" colKey="kontrak" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Kategori" colKey="kategori" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Pihak Kedua" colKey="pihak" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Mulai" colKey="mulai" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Berakhir" colKey="akhir" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Sisa Waktu" colKey="sisa" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Aktif?" colKey="aktif" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <SortableTh label="Status" colKey="status" sort={contractSort} onSort={onSort} className="px-2 py-3" />
+                                  <th className="px-2 py-3">Dokumen</th>
+                                  <th className="px-2 py-3 text-right">Aksi</th>
                                 </>
                               ); })()}
                             </tr>
                           </thead>
-                          <tbody className="divide-y divide-slate-850">
+                          <tbody>
                             {pageRows.length === 0 && (
                               <tr>
                                 <td colSpan={10} className="px-4 py-10 text-center text-slate-500 italic">
@@ -16166,69 +16585,78 @@ export default function App() {
                               // Guard tanggal berakhir kosong/tidak valid (mis. kontrak
                               // open-ended tanpa tanggal) — dulu tampil "NaN hari lagi".
                               const badge = inactive
-                                ? { text: "—", cls: "bg-slate-700/30 text-slate-500" }
+                                ? { text: "—", cls: "bg-slate-950 text-slate-500" }
                                 : !Number.isFinite(d)
-                                  ? { text: "Tanpa tanggal", cls: "bg-slate-700/30 text-slate-500" }
+                                  ? { text: "Tanpa tanggal", cls: "bg-slate-950 text-slate-500" }
                                   : d < 0
-                                    ? { text: `Lewat ${Math.abs(d)} hari`, cls: "bg-rose-500/20 text-rose-400" }
+                                    ? { text: `Lewat ${Math.abs(d)} hari`, cls: "bg-peach-strong/50 text-brand-orange" }
                                     : d <= 30
-                                      ? { text: `${d} hari lagi`, cls: "bg-amber-500/20 text-amber-400" }
+                                      ? { text: `${d} hari lagi`, cls: "bg-peach text-brand-orange" }
                                       : d <= 90
-                                        ? { text: `${d} hari lagi`, cls: "bg-indigo-500/20 text-indigo-400" }
-                                        : { text: `${d} hari lagi`, cls: "bg-emerald-500/20 text-emerald-400" };
+                                        ? { text: `${d} hari lagi`, cls: "bg-mist text-indigo-400" }
+                                        : { text: `${d} hari lagi`, cls: "bg-slate-950 text-indigo-400" };
                               return (
-                                <tr key={c.id} onClick={() => handleOpenWorkspace(c)} title="Klik baris untuk buka & tinjau kontrak" className={`hover:bg-slate-900/40 transition cursor-pointer ${inactive ? "opacity-60" : ""}`}>
-                                  <td className="px-4 py-3">
-                                    <p className="font-bold text-slate-200">{c.title}</p>
+                                <tr key={c.id} onClick={() => handleOpenWorkspace(c)} title="Klik baris untuk buka & tinjau kontrak" className={`cursor-pointer ${inactive ? "opacity-60" : ""}`}>
+                                  <td className="px-2 py-3">
+                                    <p className="font-bold text-slate-200 min-w-[120px]">{c.title}</p>
                                     <p className="font-mono text-[10px] text-slate-500">{c.contractNumber}</p>
                                     {/* Cocok karena ISI dokumen, bukan judul/nomor — tanpa
                                         cuplikan ini barisnya terlihat muncul tanpa sebab. */}
                                     {matchContract(c, monitorSearch) === "isi" && (
-                                      <p className="mt-1 text-[10px] text-indigo-300/90 leading-snug max-w-[420px]">
+                                      <p className="mt-1 text-[10px] text-indigo-400 leading-snug max-w-[300px]">
                                         <span className="font-semibold">cocok di isi dokumen:</span>{" "}
                                         <span className="text-slate-400">{contentSnippet(c, monitorSearch)}</span>
                                       </p>
                                     )}
                                   </td>
-                                  <td className="px-4 py-3 text-slate-300">{c.category}</td>
-                                  <td className="px-4 py-3 text-slate-300">{c.party2Name}</td>
-                                  <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{c.startDate}</td>
-                                  <td className="px-4 py-3 text-slate-400 whitespace-nowrap">{c.endDate}</td>
-                                  <td className="px-4 py-3">
-                                    <span className={`px-2 py-1 rounded-full font-bold text-[10px] ${badge.cls}`}>
+                                  <td className="px-2 py-3 text-slate-300">{c.category}</td>
+                                  <td className="px-2 py-3 text-slate-300 min-w-[110px]">{c.party2Name}</td>
+                                  <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{c.startDate}</td>
+                                  <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{c.endDate}</td>
+                                  <td className="px-2 py-3">
+                                    <span className={`px-2 py-1 rounded-full font-semibold text-[10.5px] whitespace-nowrap ${badge.cls}`}>
                                       {badge.text}
                                     </span>
                                   </td>
-                                  <td className="px-4 py-3">
-                                    <span className={`px-2 py-1 rounded-full font-bold text-[10px] ${inactive ? "bg-slate-600/20 text-slate-400" : "bg-emerald-500/20 text-emerald-400"}`}>
+                                  <td className="px-2 py-3">
+                                    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full font-semibold text-[10.5px] ${inactive ? "bg-slate-950 text-slate-500" : "bg-mist text-indigo-400"}`}>
+                                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
                                       {inactive ? "Tidak Aktif" : "Aktif"}
                                     </span>
                                   </td>
-                                  <td className="px-4 py-3">
-                                    <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || ""}`}>
+                                  <td className="px-2 py-3">
+                                    <span className={`inline-flex items-center gap-1.5 text-[10.5px] px-2 py-1 rounded-full border font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-950 text-slate-400 border-transparent"}`}>
+                                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
                                       {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || c.unifiedStatus || contractStatusLabel(c.status)}
                                     </span>
                                   </td>
-                                  <td className="px-4 py-3">
-                                    {c.masterPdfUrl ? (
-                                      <a
-                                        href={`/api/contracts/${c.id}/view-pdf`}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1"
-                                      >
-                                        <FileText className="w-3.5 h-3.5" /> PDF
-                                      </a>
-                                    ) : (
-                                      <span className="text-slate-600">Digital</span>
-                                    )}
+                                  <td className="px-2 py-3">
+                                    {(() => {
+                                      const kind = contractDocKind(c);
+                                      if (kind === "PDF" && c.masterPdfUrl) return (
+                                        <a
+                                          href={`/api/contracts/${c.id}/view-pdf`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          onClick={(e) => e.stopPropagation()}
+                                          className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-semibold"
+                                        >
+                                          <FileText className="w-3.5 h-3.5" /> PDF
+                                        </a>
+                                      );
+                                      if (kind === "Digital") return <span className="text-slate-500">Digital</span>;
+                                      return (
+                                        <span className={`inline-flex items-center gap-1 font-semibold ${kind === "Word" ? "text-brand-orange" : "text-indigo-400"}`}>
+                                          <FileText className="w-3.5 h-3.5" /> {kind}
+                                        </span>
+                                      );
+                                    })()}
                                   </td>
-                                  <td className="px-4 py-3">
-                                    <div className="flex items-center justify-end gap-2">
+                                  <td className="px-2 py-3">
+                                    <div className="flex items-center justify-end gap-1.5">
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleOpenWorkspace(c); }}
-                                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 font-semibold transition"
+                                        className="px-2.5 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-200 font-semibold transition cursor-pointer"
                                       >
                                         Tinjau
                                       </button>
@@ -16236,14 +16664,14 @@ export default function App() {
                                         <button
                                           onClick={(e) => { e.stopPropagation(); handleOpenRenewModal(c); }}
                                           title="Muncul setelah matriks approval selesai penuh"
-                                          className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white font-bold transition flex items-center gap-1"
+                                          className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-full text-white font-bold transition flex items-center gap-1 cursor-pointer"
                                         >
                                           <RefreshCw className="w-3 h-3" /> Perpanjang
                                         </button>
                                       )}
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleDeleteContract(c.id); }}
-                                        className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-500/10 rounded-lg transition"
+                                        className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-orange hover:bg-peach rounded-full transition cursor-pointer"
                                         title="Hapus Kontrak"
                                       >
                                         <Trash2 className="w-3.5 h-3.5" />
@@ -16257,7 +16685,7 @@ export default function App() {
                         </table>
                       </div>
                       {filtered.length > MONITOR_PAGE_SIZE && (
-                        <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 border-t border-slate-800 text-[11px] text-slate-400">
+                        <div className="flex items-center justify-between gap-3 flex-wrap px-2 pt-4 pb-2 text-[11px] text-slate-400">
                           <span>
                             Menampilkan {(monitorSafePage - 1) * MONITOR_PAGE_SIZE + 1}–{Math.min(monitorSafePage * MONITOR_PAGE_SIZE, filtered.length)} dari {filtered.length} kontrak
                           </span>
@@ -16265,24 +16693,48 @@ export default function App() {
                             <button
                               onClick={() => setMonitorPage((p) => Math.max(1, p - 1))}
                               disabled={monitorSafePage <= 1}
-                              className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                              aria-label="Halaman sebelumnya"
+                              className="w-8 h-8 rounded-full bg-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                             >
-                              Sebelumnya
+                              ‹
                             </button>
-                            <span className="px-2 font-semibold text-slate-300">
-                              {monitorSafePage} / {monitorTotalPages}
-                            </span>
+                            {pageNumbers.map((n, i) => n === "…" ? (
+                              <span key={`e${i}`} className="w-6 text-center text-slate-500">…</span>
+                            ) : (
+                              <button
+                                key={n}
+                                onClick={() => setMonitorPage(n)}
+                                className={`w-8 h-8 rounded-full text-[11px] font-semibold cursor-pointer tabular-nums ${n === monitorSafePage ? "bg-indigo-600 text-white" : "bg-slate-950 text-slate-300 hover:text-slate-100"}`}
+                              >
+                                {n}
+                              </button>
+                            ))}
                             <button
                               onClick={() => setMonitorPage((p) => Math.min(monitorTotalPages, p + 1))}
                               disabled={monitorSafePage >= monitorTotalPages}
-                              className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                              aria-label="Halaman berikutnya"
+                              className="w-8 h-8 rounded-full bg-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                             >
-                              Berikutnya
+                              ›
                             </button>
                           </div>
                         </div>
                       )}
                     </div>
+
+                    {monitorFilterOpen && (
+                      <MonitorFilterDrawer
+                        draft={monitorDraft}
+                        setDraft={setMonitorDraft}
+                        onApply={applyFilter}
+                        onReset={resetFilter}
+                        onClose={() => setMonitorFilterOpen(false)}
+                        categories={clauseCategories}
+                        statusOptions={statusOptions}
+                        docTypes={docTypeOptions}
+                        party2Types={party2TypeOptions}
+                      />
+                    )}
                   </>
                 );
               })()}
@@ -17133,8 +17585,8 @@ export default function App() {
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    <CheckSquare className="w-5 h-5 text-indigo-400" />
+                  <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3">
+                    <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center shrink-0"><CheckSquare className="w-5 h-5 text-indigo-400" /></span>
                     Daftar Semua Dokumen
                   </h2>
                   <p className="text-sm text-slate-400 mt-1">
@@ -17144,7 +17596,7 @@ export default function App() {
                 <button
                   onClick={() => handleOpenActivateModal()}
                   title="Unggah bukti TTD untuk kontrak yang sudah FullyApproved — statusnya otomatis jadi Aktif"
-                  className="px-3 py-2 bg-emerald-600/20 hover:bg-emerald-600/40 border border-emerald-600/30 text-emerald-400 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shrink-0"
+                  className="btn-grad-primary px-5 h-11 text-white rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shrink-0"
                 >
                   <Upload className="w-3.5 h-3.5" /> Unggah &amp; Aktifkan
                 </button>
@@ -17164,25 +17616,25 @@ export default function App() {
                   bg-{warna}-600/20 yg pucat di tema terang ini. */}
               <div className="flex flex-wrap items-center gap-2">
                 <div className="relative w-full sm:w-72">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                  <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
                   <input
                     type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
                     placeholder="Cari nomor, judul, atau ISI pasal…"
                     title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
-                    className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
+                    style={{ paddingLeft: 44 }} className="w-full h-11 pr-4 rounded-full bg-slate-950 text-sm text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-soft-blue transition"
                   />
                 </div>
                 <button
                   onClick={() => { setBulkImportOpen(true); setBulkImportPhase("pilih"); setBulkImportRows([]); setBulkImportInfo(""); }}
                   title="Migrasi kontrak lama: unggah banyak PDF/scan sekaligus (dibaca OCR), atau impor register dari CSV."
-                  className="px-3 py-2 bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-400 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
+                  className="btn-grad-soft px-5 h-11 text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
                 >
                   <Upload className="w-3.5 h-3.5" /> Impor Massal
                 </button>
                 <select
                   value={allDocsStatusFilter}
                   onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); setAllDocsPage(1); }}
-                  className="px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
+                  className="h-11 px-4 bg-slate-900 card-soft rounded-full text-xs text-slate-200 focus:outline-none cursor-pointer"
                 >
                   <option value="all">Semua Status ({totalCount})</option>
                   <option value="aktif">Aktif ({aktifCount})</option>
@@ -17192,39 +17644,39 @@ export default function App() {
                   onClick={exportAllDocs}
                   disabled={visibleContracts.length + visibleDcsDocs.length === 0}
                   title="Mengunduh daftar gabungan yang sedang tampil (kontrak + DCS) sebagai CSV — langsung bisa dibuka di Excel."
-                  className="px-3 py-2 bg-slate-900 border border-slate-800 hover:border-emerald-500/50 text-slate-300 hover:text-emerald-400 rounded-xl text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="h-11 px-5 bg-slate-900 card-soft text-slate-300 hover:text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <Download className="w-3.5 h-3.5" /> Ekspor CSV
                 </button>
                 {selectedContractIds.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 bg-indigo-500/10 p-2 rounded-xl border border-indigo-500/20">
+                  <div className="flex flex-wrap items-center gap-2 bg-mist p-1.5 rounded-full">
                     <span className="text-xs font-bold text-indigo-400 px-2">{selectedContractIds.length} Terpilih</span>
-                    <button onClick={() => setIsBulkMoveModalOpen(true)} className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shadow-lg">
+                    <button onClick={() => setIsBulkMoveModalOpen(true)} className="btn-grad-primary px-4 py-2 text-white rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
                       <FolderOpen className="w-3.5 h-3.5" /> Pindahkan ke Arsip
                     </button>
-                    <button onClick={handleBulkDownload} disabled={isBulkDownloading} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-100 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition border border-slate-700">
+                    <button onClick={handleBulkDownload} disabled={isBulkDownloading} className="px-4 py-2 bg-slate-900 hover:bg-slate-950 disabled:opacity-50 text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition border border-slate-700">
                       {isBulkDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Download PDF (Zip)
                     </button>
-                    <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className="px-3 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 border border-amber-500/30 text-amber-400 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
+                    <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className="px-4 py-2 bg-peach hover:brightness-95 text-brand-orange rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
                       <Bell className="w-3.5 h-3.5" /> Kirim Pengingat
                     </button>
-                    <button onClick={handleBulkDelete} className="px-3 py-1.5 bg-rose-600/20 hover:bg-rose-600/40 border border-rose-600/30 text-rose-400 rounded-lg text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
+                    <button onClick={handleBulkDelete} className="px-4 py-2 bg-peach hover:brightness-95 text-brand-orange rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
                       <Trash2 className="w-3.5 h-3.5" /> Hapus
                     </button>
                   </div>
                 )}
               </div>
 
-              <div className="bg-slate-950/60 border border-slate-800 rounded-2xl overflow-hidden">
+              <div className="table-card">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
-                      <tr className="border-b border-slate-800 bg-slate-900/50">
+                      <tr>
                         <th className="p-4 w-12 text-center">
                           <input
                             type="checkbox"
                             title="Pilih semua kontrak (dokumen DCS tidak ikut aksi massal ini)"
-                            className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500/50 cursor-pointer"
+                            ref={(el) => { if (el) el.indeterminate = selectedContractIds.length > 0 && selectedContractIds.length < visibleContracts.length; }}
                             checked={visibleContracts.length > 0 && selectedContractIds.length === visibleContracts.length}
                             onChange={(e) => {
                               if (e.target.checked) {
@@ -17246,11 +17698,10 @@ export default function App() {
                       {pageContracts.map(c => {
                         const pendingStep = c.status === "OnReview" ? c.approvalSteps?.find((s) => s.decision === "pending") : undefined;
                         return (
-                        <tr key={c.id} className={`hover:bg-slate-800/20 transition ${selectedContractIds.includes(c.id) ? "bg-indigo-500/5" : ""}`}>
+                        <tr key={c.id} className={`hover:bg-slate-800/20 transition ${selectedContractIds.includes(c.id) ? "bg-mist/40" : ""}`}>
                           <td className="p-4 text-center">
                             <input
                               type="checkbox"
-                              className="w-4 h-4 rounded border-slate-700 bg-slate-800 text-indigo-500 focus:ring-indigo-500/50 cursor-pointer"
                               checked={selectedContractIds.includes(c.id)}
                               onChange={(e) => {
                                 if (e.target.checked) setSelectedContractIds([...selectedContractIds, c.id]);
@@ -17259,7 +17710,7 @@ export default function App() {
                             />
                           </td>
                           <td className="p-4">
-                            <span className="text-[9px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-full font-bold uppercase">Kontrak</span>
+                            <span className="text-[10px] bg-mist text-indigo-400 px-2.5 py-1 rounded-full font-bold uppercase">Kontrak</span>
                           </td>
                           <td className="p-4">
                             <p className="font-bold text-slate-200 text-sm">{c.title}</p>
@@ -17285,27 +17736,27 @@ export default function App() {
                           </td>
                           <td className="p-4">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <button onClick={() => handleOpenWorkspace(c)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 text-[11px] font-semibold transition cursor-pointer">
+                              <button onClick={() => handleOpenWorkspace(c)} className="px-4 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-300 text-[11px] font-semibold transition cursor-pointer">
                                 Buka
                               </button>
                               <button
                                 onClick={() => { setSelectedContractIds([c.id]); setIsBulkMoveModalOpen(true); }}
                                 title="Pindahkan dokumen ini ke folder/sub folder arsip lain"
-                                className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-indigo-300 transition cursor-pointer"
+                                className="w-8 h-8 flex items-center justify-center bg-slate-950 hover:bg-mist rounded-full text-indigo-400 transition cursor-pointer"
                               >
                                 <FolderOpen className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDownloadSingleContract(c)}
                                 title="Unduh PDF dokumen ini"
-                                className="p-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-emerald-300 transition cursor-pointer"
+                                className="w-8 h-8 flex items-center justify-center bg-slate-950 hover:bg-mist rounded-full text-indigo-400 transition cursor-pointer"
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </button>
                               <button
                                 onClick={() => handleDeleteContract(c.id)}
                                 title="Hapus dokumen ini"
-                                className="p-1.5 bg-slate-800 hover:bg-rose-600/20 rounded-lg text-rose-400 transition cursor-pointer"
+                                className="w-8 h-8 flex items-center justify-center bg-slate-950 hover:bg-peach rounded-full text-brand-orange transition cursor-pointer"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -17321,14 +17772,14 @@ export default function App() {
                         <tr key={d.id} className="hover:bg-slate-800/20 transition">
                           <td className="p-4 text-center text-slate-700">—</td>
                           <td className="p-4">
-                            <span className="text-[9px] bg-violet-500/15 text-violet-300 px-2 py-0.5 rounded-full font-bold uppercase">DCS · {d.docTypeCode}</span>
+                            <span className="text-[10px] bg-peach text-brand-orange px-2.5 py-1 rounded-full font-bold uppercase">DCS · {d.docTypeCode}</span>
                           </td>
                           <td className="p-4">
                             <p className="font-bold text-slate-200 text-sm">{d.title}</p>
                             <p className="font-mono text-xs text-slate-500 mt-1">{d.documentNumber}</p>
                           </td>
                           <td className="p-4">
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${controlled ? "bg-emerald-500/15 text-emerald-400" : "bg-rose-500/15 text-rose-400"}`}>
+                            <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase ${controlled ? "bg-mist text-indigo-400" : "bg-peach text-brand-orange"}`}>
                               {latest?.status || "—"}
                             </span>
                             {latest?.status === "effective" && !controlled && (
@@ -17341,7 +17792,7 @@ export default function App() {
                           <td className="p-4">
                             <button
                               onClick={() => { setActiveTab("internal-docs"); setDcsSelectedId(d.id); setDcsSelectedVersionId(latest?.id || null); }}
-                              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-300 text-[11px] font-semibold transition cursor-pointer"
+                              className="px-4 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-300 text-[11px] font-semibold transition cursor-pointer"
                             >
                               Buka
                             </button>
@@ -17366,7 +17817,7 @@ export default function App() {
                       <button
                         onClick={() => setAllDocsPage((p) => Math.max(1, p - 1))}
                         disabled={allDocsSafePage <= 1}
-                        className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                        className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                       >
                         Sebelumnya
                       </button>
@@ -17376,7 +17827,7 @@ export default function App() {
                       <button
                         onClick={() => setAllDocsPage((p) => Math.min(allDocsTotalPages, p + 1))}
                         disabled={allDocsSafePage >= allDocsTotalPages}
-                        className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                        className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                       >
                         Berikutnya
                       </button>
@@ -18968,7 +19419,7 @@ export default function App() {
                       selectedContractAddendumInfo && selectedContract.amendmentAttachments && selectedContract.amendmentAttachments.length > 0 && (
                         <div className="font-sans text-xs space-y-2">
                           <h5 className="font-bold text-slate-100">Lampiran Rincian</h5>
-                          <table className="w-full border-collapse text-[11px]">
+                          <table className="plain-table w-full border-collapse text-[11px]">
                             <thead>
                               <tr className="border-b border-slate-700 text-slate-400">
                                 <th className="text-left py-1 pr-2 font-semibold">Keterangan</th>
@@ -19061,7 +19512,7 @@ export default function App() {
                                       </div>
                                     )}
                                     {section.tableColumns && section.tableColumns.length > 0 && (
-                                      <table className="w-full border-collapse text-[11px] border border-slate-600">
+                                      <table className="plain-table w-full border-collapse text-[11px] border border-slate-600">
                                         <thead>
                                           <tr>
                                             {section.tableColumns.map((col, ci) => (
@@ -19523,8 +19974,12 @@ export default function App() {
           {activeTab === "clauses" && (
             <div className="space-y-6 animate-fadeIn">
               {/* Header */}
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px] flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden">
+                {/* Ornamen ikon hukum samar (dekoratif) */}
+                <Scale aria-hidden className="pointer-events-none absolute -right-2 -top-5 w-36 h-36 text-soft-blue opacity-[0.13]" strokeWidth={1.2} />
+                <Gavel aria-hidden className="pointer-events-none absolute right-44 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
+                <ScrollText aria-hidden className="pointer-events-none absolute right-[26rem] -top-3 w-16 h-16 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
+                <div className="relative z-10">
                   <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
                     <Sliders className="text-indigo-400 w-5 h-5" />
                     Clause Library (Pustaka Klausul Master)
@@ -19535,12 +19990,12 @@ export default function App() {
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="relative z-10 flex flex-nowrap gap-2.5 shrink-0 self-start sm:self-center">
                   <button
                     onClick={() =>
                       setIsManagingCategories(!isManagingCategories)
                     }
-                    className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-xl text-xs font-semibold flex items-center gap-1 transition shadow-md cursor-pointer shrink-0"
+                    className="btn-grad-soft px-4 py-2 text-slate-100 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
                   >
                     <Sliders className="w-4 h-4" />
                     Kelola Rumah/Kategori Klausul
@@ -19548,35 +20003,17 @@ export default function App() {
                   <button
                     onClick={() => openClauseCopy("dariDcs")}
                     title="Ambil klausul yang sudah ditulis di library Dokumen Internal (DCS) tanpa mengetik ulang."
-                    className="px-4 py-2 bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/30 text-violet-800 rounded-xl text-xs font-semibold flex items-center gap-1 transition cursor-pointer shrink-0"
+                    className="btn-grad-soft px-4 py-2 text-slate-100 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
                   >
                     <Workflow className="w-4 h-4" />
                     Salin dari Library DCS
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIsAddingClause(true);
-                      setEditingClauseId(null);
-                      setNewClauseForm({
-                        title: "",
-                        content: "",
-                        category: "General",
-                        tags: "",
-                        isMandatory: false,
-                        isProtected: false,
-                      });
-                    }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1 transition shadow-md cursor-pointer shrink-0"
-                  >
-                    <Plus className="w-4.5 h-4.5" />
-                    Tambah Klausul Master
                   </button>
                 </div>
               </div>
 
               {/* Category Management */}
               {isManagingCategories && (
-                <div className="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-4">
+                <div className="card-grad card-soft p-6 rounded-[28px] space-y-4">
                   <h3 className="font-bold text-sm text-slate-200">
                     Rumah / Kategori Klausul (Clause Configuration Center)
                   </h3>
@@ -19603,7 +20040,7 @@ export default function App() {
                     />
                     <button
                       type="submit"
-                      className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition cursor-pointer"
+                      className="btn-grad-primary px-4 py-1.5 text-white text-xs font-bold rounded-full transition cursor-pointer"
                     >
                       Tambah
                     </button>
@@ -19827,11 +20264,14 @@ export default function App() {
 
               {/* Form Add/Edit Clause */}
               {isAddingClause && (
+                <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={() => setIsAddingClause(false)}>
                 <form
                   onSubmit={handleSaveClause}
-                  className="bg-slate-950/60 p-5 rounded-2xl border border-indigo-500/20 grid grid-cols-1 md:grid-cols-2 gap-4"
+                  onClick={(e) => e.stopPropagation()}
+                  className="modal-panel relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] grid grid-cols-1 md:grid-cols-2 gap-4"
                 >
-                  <div className="md:col-span-2 border-b border-slate-800 pb-2 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <button type="button" onClick={() => setIsAddingClause(false)} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 text-lg leading-none cursor-pointer z-10">×</button>
+                  <div className="md:col-span-2 border-b border-slate-800 pb-3 pr-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
                     <h3 className="font-bold text-sm text-indigo-400">
                       {editingClauseId
                         ? "Edit Klausul Master"
@@ -19875,7 +20315,7 @@ export default function App() {
                         })
                       }
                       placeholder="e.g. Pasal 10 - Hak Kekayaan Intelektual"
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                      className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                     />
                   </div>
 
@@ -19892,7 +20332,7 @@ export default function App() {
                             category: e.target.value,
                           })
                         }
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                        className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                       >
                         {clauseCategories.map((cat) => (
                           <option key={cat} value={cat}>
@@ -19915,7 +20355,7 @@ export default function App() {
                           })
                         }
                         placeholder="e.g. HKI, Hukum, Kepatuhan"
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                        className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                       />
                     </div>
                   </div>
@@ -19971,18 +20411,19 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setIsAddingClause(false)}
-                      className="px-4 py-2 bg-slate-800 text-xs font-semibold rounded-xl text-slate-300"
+                      className="btn-grad-soft px-4 py-2 text-xs font-semibold rounded-full text-slate-300"
                     >
                       Batal
                     </button>
                     <button
                       type="submit"
-                      className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition shadow-lg"
+                      className="btn-grad-primary px-5 py-2 text-white text-xs font-bold rounded-full transition"
                     >
                       Simpan ke Clause Library
                     </button>
                   </div>
                 </form>
+                </div>
               )}
 
               {/* Master Clauses List Grid */}
@@ -19990,7 +20431,7 @@ export default function App() {
                 {clauses.map((c) => (
                   <div
                     key={c.id}
-                    className="bg-slate-950/40 border border-slate-800 p-5 rounded-2xl flex flex-col justify-between space-y-3"
+                    className="card-grad card-soft bg-slate-900 p-5 rounded-[28px] flex flex-col justify-between space-y-3"
                   >
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -20011,19 +20452,19 @@ export default function App() {
                                 isProtected: c.isProtected,
                               });
                             }}
-                            className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 bg-indigo-500/10 px-1.5 py-0.5 rounded cursor-pointer"
+                            className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 bg-mist px-2 py-0.5 rounded-full cursor-pointer"
                           >
                             Edit
                           </button>
                         </div>
                         <div className="flex gap-1">
                           {c.isMandatory && (
-                            <span className="bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded text-[9px] font-bold border border-emerald-500/25">
+                            <span className="bg-mist text-indigo-400 px-2 py-0.5 rounded-full text-[9px] font-bold">
                               Mandatory
                             </span>
                           )}
                           {c.isProtected && (
-                            <span className="bg-indigo-500/10 text-indigo-400 px-1.5 py-0.5 rounded text-[9px] font-bold border border-indigo-500/25">
+                            <span className="bg-peach text-brand-orange px-2 py-0.5 rounded-full text-[9px] font-bold">
                               Protected
                             </span>
                           )}
@@ -20033,7 +20474,7 @@ export default function App() {
                       <h4 className="font-bold text-sm text-slate-200">
                         {c.title}
                       </h4>
-                      <p className="text-xs text-slate-400 leading-relaxed line-clamp-3 bg-slate-900/40 p-2.5 rounded border border-slate-850/60 font-mono">
+                      <p className="text-xs text-slate-400 leading-relaxed line-clamp-3 bg-slate-950/70 p-3 rounded-2xl font-mono">
                         {c.content}
                       </p>
                     </div>
@@ -20043,7 +20484,7 @@ export default function App() {
                         {c.tags.map((t) => (
                           <span
                             key={t}
-                            className="bg-slate-900 px-1.5 py-0.5 rounded text-[9px] text-slate-400"
+                            className="bg-slate-950 px-2 py-0.5 rounded-full text-[9px] text-slate-400"
                           >
                             #{t}
                           </span>
@@ -20077,7 +20518,7 @@ export default function App() {
                         addendumRecitalParagraph: "",
                       });
                     }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold flex items-center gap-1 transition shadow-md cursor-pointer shrink-0"
+                    className="btn-grad-primary px-4 py-2 text-white rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
                   >
                     <Plus className="w-4 h-4" />
                     Tambah Template
@@ -20085,9 +20526,11 @@ export default function App() {
                 </div>
 
                 {isBuildingTemplate && (
+                  <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={() => setIsBuildingTemplate(false)}>
                   <form
                     onSubmit={handleSaveTemplate}
-                    className="bg-slate-900 border border-slate-800 p-6 rounded-2xl mb-6 space-y-4"
+                    onClick={(e) => e.stopPropagation()}
+                    className="modal-panel relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-4"
                   >
                     <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                       <h3 className="font-bold text-sm text-indigo-400">
@@ -20098,9 +20541,10 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => setIsBuildingTemplate(false)}
-                        className="text-slate-500 hover:text-slate-300 text-xs cursor-pointer"
+                        aria-label="Tutup"
+                        className="w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 text-lg leading-none cursor-pointer"
                       >
-                        Batal
+                        ×
                       </button>
                     </div>
 
@@ -20120,7 +20564,7 @@ export default function App() {
                             })
                           }
                           placeholder="e.g. Perjanjian Sewa Alat Berat"
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                         />
                       </div>
                       <div className="space-y-1">
@@ -20135,7 +20579,7 @@ export default function App() {
                               category: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                         >
                           {clauseCategories.map((cat) => (
                             <option key={cat} value={cat}>
@@ -20157,7 +20601,7 @@ export default function App() {
                               description: e.target.value,
                             })
                           }
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                           rows={2}
                         />
                       </div>
@@ -20170,7 +20614,7 @@ export default function App() {
                       </label>
                       <div className="flex gap-4">
                         {/* Selected Clauses */}
-                        <div className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-3 min-h-[200px] flex flex-col gap-2">
+                        <div className="flex-1 bg-slate-950 border border-transparent rounded-2xl p-3 min-h-[200px] flex flex-col gap-2">
                           <h4 className="text-[10px] text-slate-500 uppercase font-bold text-center mb-1">
                             Pasal dalam Template
                           </h4>
@@ -20219,7 +20663,7 @@ export default function App() {
                         </div>
 
                         {/* Available Clauses: searchable, grouped per category */}
-                        <div className="w-2/5 bg-slate-950 border border-slate-800 rounded-xl p-3 min-h-[200px] flex flex-col gap-2 overflow-y-auto max-h-[420px]">
+                        <div className="w-2/5 bg-slate-950 border border-transparent rounded-2xl p-3 min-h-[200px] flex flex-col gap-2 overflow-y-auto max-h-[420px]">
                           <h4 className="text-[10px] text-slate-500 uppercase font-bold text-center">
                             Pilih Klausul (klik untuk tambah/hapus)
                           </h4>
@@ -20385,7 +20829,7 @@ export default function App() {
                           value={templateForm.openingParagraph}
                           onChange={(e) => setTemplateForm({ ...templateForm, openingParagraph: e.target.value })}
                           placeholder='Kosongkan untuk pakai kalimat default. Bisa pakai {{Variabel}}, mis. "Pada hari ini, tanggal {{StartDate}}, kami yang bertandatangan..."'
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                         />
                       </div>
                       <div className="space-y-1">
@@ -20397,7 +20841,7 @@ export default function App() {
                           value={templateForm.closingParagraph}
                           onChange={(e) => setTemplateForm({ ...templateForm, closingParagraph: e.target.value })}
                           placeholder='Kosongkan untuk pakai kalimat default (khusus dokumen Addendum). Bisa pakai {{Variabel}}.'
-                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                          className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                         />
                       </div>
                     </div>
@@ -20411,26 +20855,27 @@ export default function App() {
                         value={templateForm.addendumRecitalParagraph}
                         onChange={(e) => setTemplateForm({ ...templateForm, addendumRecitalParagraph: e.target.value })}
                         placeholder='Kosongkan untuk pakai kalimat default (khusus dokumen Addendum, menggantikan "Bahwa PARA PIHAK telah membuat dan menandatangani..."). Token tersedia: {{ParentDocType}} {{ParentNumber}} {{ParentDate}} {{ParentEndDate}} {{PreviousOrdinal}} {{PreviousNumber}} {{PreviousDate}}, plus {{Variabel}} kontrak biasa.'
-                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                        className="w-full px-3 py-2 bg-slate-950 border border-transparent rounded-2xl text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                       />
                     </div>
 
                     <div className="flex justify-end pt-4 border-t border-slate-800">
                       <button
                         type="submit"
-                        className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition shadow-lg cursor-pointer"
+                        className="btn-grad-primary px-5 py-2 text-white text-xs font-bold rounded-full transition cursor-pointer"
                       >
                         Simpan Template
                       </button>
                     </div>
                   </form>
+                  </div>
                 )}
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   {templates.map((tpl) => (
                     <div
                       key={tpl.id}
-                      className="bg-slate-950/60 border border-slate-850 p-4 rounded-xl space-y-3 relative group"
+                      className="card-grad card-soft bg-slate-900 p-5 rounded-[28px] space-y-3 relative group"
                     >
                       <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5">
                         <button
@@ -20449,7 +20894,7 @@ export default function App() {
                               addendumRecitalParagraph: tpl.addendumRecitalParagraph || "",
                             });
                           }}
-                          className="bg-indigo-600 hover:bg-indigo-500 text-white p-1.5 rounded cursor-pointer"
+                          className="btn-grad-primary text-white w-8 h-8 flex items-center justify-center rounded-full cursor-pointer"
                           title="Edit template"
                         >
                           <Sliders className="w-3.5 h-3.5" />
@@ -20461,14 +20906,14 @@ export default function App() {
                             showToast("Template dihapus", "success");
                             fetchInitialData();
                           }}
-                          className="bg-rose-600 hover:bg-rose-500 text-white p-1.5 rounded cursor-pointer"
+                          className="btn-grad-soft text-brand-orange w-8 h-8 flex items-center justify-center rounded-full cursor-pointer"
                           title="Hapus template"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
                       </div>
                       <div>
-                        <span className="text-[9px] bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded-full font-bold uppercase border border-indigo-500/20">
+                        <span className="text-[9px] bg-mist text-indigo-400 px-2.5 py-0.5 rounded-full font-bold uppercase">
                           {tpl.category}
                         </span>
                         <h4 className="font-bold text-sm text-slate-200 mt-2">
@@ -20479,7 +20924,7 @@ export default function App() {
                         </p>
                       </div>
 
-                      <div className="space-y-1 pt-2 border-t border-slate-850">
+                      <div className="space-y-1 pt-3 border-t border-slate-800/60">
                         <p className="text-[10px] text-slate-500 uppercase font-bold">
                           Pasal Terkait ({tpl.clauseIds.length}):
                         </p>
@@ -20489,7 +20934,7 @@ export default function App() {
                             return cl ? (
                               <span
                                 key={cid}
-                                className="bg-slate-900 text-slate-400 text-[10px] px-1.5 py-0.5 rounded"
+                                className="bg-slate-950 text-slate-400 text-[10px] px-2 py-0.5 rounded-full"
                               >
                                 {cl.title.split(" - ")[0]}
                               </span>
@@ -20506,7 +20951,7 @@ export default function App() {
                           {tpl.requiredVariables.map((v) => (
                             <span
                               key={v}
-                              className="bg-slate-900 text-indigo-400 text-[10px] px-1.5 py-0.5 rounded font-mono"
+                              className="bg-slate-950 text-indigo-400 text-[10px] px-2 py-0.5 rounded-full font-mono"
                             >
                               {v}
                             </span>
@@ -21109,9 +21554,9 @@ export default function App() {
 
           {activeTab === "audits" && (
             <div className="space-y-6 animate-fadeIn text-xs">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                  <History className="text-indigo-400 w-5 h-5" />
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px]">
+                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3 mb-1">
+                  <span className="w-10 h-10 rounded-full bg-mist flex items-center justify-center shrink-0"><History className="text-indigo-400 w-5 h-5" /></span>
                   Audit Trail & Integrasi HRIS/ERP
                 </h2>
                 <p className="text-xs text-slate-400">
@@ -21123,17 +21568,17 @@ export default function App() {
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 {/* Audit Logs Table (8 cols) */}
-                <div className="xl:col-span-8 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-[28px] p-6 space-y-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <h3 className="font-bold text-sm">
                       Log Forensik Aktivitas Sistem
                     </h3>
                     <div className="relative w-full sm:w-72">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                      <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
                       <input
                         type="text" value={auditSearch} onChange={(e) => { setAuditSearch(e.target.value); setAuditPage(1); }}
                         placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
-                        className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
+                        style={{ paddingLeft: 44 }} className="w-full h-11 pr-4 rounded-full bg-slate-950 text-sm text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-soft-blue transition"
                       />
                     </div>
                   </div>
@@ -21189,7 +21634,7 @@ export default function App() {
                               </span>
                             </td>
                             <td className="py-3 px-3">
-                              <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 font-semibold">
+                              <span className={`inline-block px-2.5 py-1 rounded-full font-semibold text-[10.5px] ${/delete|hapus|reject|tolak|terminate|revoke/i.test(String(a.action)) ? "bg-peach text-brand-orange" : "bg-mist text-indigo-400"}`}>
                                 {a.action}
                               </span>
                             </td>
@@ -21219,7 +21664,7 @@ export default function App() {
                         <button
                           onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
                           disabled={safePage <= 1}
-                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                         >
                           Sebelumnya
                         </button>
@@ -21229,7 +21674,7 @@ export default function App() {
                         <button
                           onClick={() => setAuditPage((p) => Math.min(totalPages, p + 1))}
                           disabled={safePage >= totalPages}
-                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                         >
                           Berikutnya
                         </button>
@@ -21241,7 +21686,7 @@ export default function App() {
                 </div>
 
                 {/* Database Integration Simulation (4 cols) */}
-                <div className="xl:col-span-4 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-5">
+                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-[28px] p-6 space-y-5">
                   <div className="border-b border-slate-800 pb-2">
                     <h3 className="font-bold text-sm">
                       Sinkronisasi Database Eksternal
@@ -21260,7 +21705,7 @@ export default function App() {
                       {employees.map((emp) => (
                         <div
                           key={emp.id}
-                          className="p-2 bg-slate-900 rounded border border-slate-855 flex items-center justify-between text-[11px]"
+                          className="p-3 bg-slate-950 rounded-2xl flex items-center justify-between text-[11px]"
                         >
                           <div>
                             <p className="font-bold text-slate-200">
@@ -21270,7 +21715,7 @@ export default function App() {
                               {emp.id} • {emp.position}
                             </p>
                           </div>
-                          <span className="text-emerald-400 font-semibold">
+                          <span className="text-indigo-400 font-semibold">
                             Rp {emp.salary.toLocaleString("id-ID")}
                           </span>
                         </div>
@@ -21287,7 +21732,7 @@ export default function App() {
                       {vendors.map((v) => (
                         <div
                           key={v.id}
-                          className="p-2 bg-slate-900 rounded border border-slate-855 text-[11px] space-y-0.5"
+                          className="p-3 bg-slate-950 rounded-2xl text-[11px] space-y-0.5"
                         >
                           <p className="font-bold text-slate-200">{v.name}</p>
                           <p className="text-[10px] text-slate-400">
@@ -21366,15 +21811,15 @@ export default function App() {
             const safePage = Math.min(auditKdPage, totalPages);
             const pageRows = rows.slice((safePage - 1) * KD_PAGE_SIZE, safePage * KD_PAGE_SIZE);
             const moduleBadge = (m: "dcs" | "karyawan" | "eksternal") => {
-              if (m === "dcs") return <span className="px-1.5 py-0.5 rounded bg-violet-500/10 text-violet-300 font-semibold text-[10px]">DCS</span>;
-              if (m === "karyawan") return <span className="px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300 font-semibold text-[10px]">Karyawan</span>;
-              return <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 font-semibold text-[10px]">Eksternal</span>;
+              if (m === "dcs") return <span className="px-2.5 py-1 rounded-full bg-slate-950 text-slate-300 font-semibold text-[10.5px]">DCS</span>;
+              if (m === "karyawan") return <span className="px-2.5 py-1 rounded-full bg-peach text-brand-orange font-semibold text-[10.5px]">Karyawan</span>;
+              return <span className="px-2.5 py-1 rounded-full bg-mist text-indigo-400 font-semibold text-[10.5px]">Eksternal</span>;
             };
             return (
             <div className="space-y-6 animate-fadeIn text-xs">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                  <Layers className="text-indigo-400 w-5 h-5" />
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px]">
+                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3 mb-1">
+                  <span className="w-10 h-10 rounded-full bg-mist flex items-center justify-center shrink-0"><Layers className="text-indigo-400 w-5 h-5" /></span>
                   Audit Trail Kontrak &amp; DCS
                 </h2>
                 <p className="text-xs text-slate-400">
@@ -21387,17 +21832,17 @@ export default function App() {
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 {/* Log Kontrak & DCS (8 cols) */}
-                <div className="xl:col-span-8 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-[28px] p-6 space-y-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <h3 className="font-bold text-sm">
                       Log Aktivitas Kontrak &amp; DCS
                     </h3>
                     <div className="relative w-full sm:w-72">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                      <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
                       <input
                         type="text" value={auditKdSearch} onChange={(e) => { setAuditKdSearch(e.target.value); setAuditKdPage(1); }}
                         placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
-                        className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
+                        style={{ paddingLeft: 44 }} className="w-full h-11 pr-4 rounded-full bg-slate-950 text-sm text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-soft-blue transition"
                       />
                     </div>
                   </div>
@@ -21413,10 +21858,10 @@ export default function App() {
                         key={key}
                         type="button"
                         onClick={() => { setAuditKdModule(key); setAuditKdPage(1); }}
-                        className={`px-2.5 py-1 rounded-lg text-[10.5px] font-semibold cursor-pointer transition border ${
+                        className={`px-3.5 py-1.5 rounded-full text-[11px] font-semibold cursor-pointer transition ${
                           auditKdModule === key
-                            ? "bg-indigo-600/20 text-indigo-300 border-indigo-500/40"
-                            : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
+                            ? "bg-mist text-indigo-400"
+                            : "bg-slate-950 text-slate-400 hover:text-slate-200"
                         }`}
                       >
                         {label}
@@ -21455,7 +21900,7 @@ export default function App() {
                             </td>
                             <td className="py-3 px-3">{moduleBadge(a.__modul)}</td>
                             <td className="py-3 px-3">
-                              <span className="px-1.5 py-0.5 rounded bg-slate-900 text-slate-300 font-semibold">
+                              <span className={`inline-block px-2.5 py-1 rounded-full font-semibold text-[10.5px] ${/delete|hapus|reject|tolak|terminate|revoke/i.test(String(a.action)) ? "bg-peach text-brand-orange" : "bg-mist text-indigo-400"}`}>
                                 {a.action}
                               </span>
                             </td>
@@ -21485,7 +21930,7 @@ export default function App() {
                         <button
                           onClick={() => setAuditKdPage((p) => Math.max(1, p - 1))}
                           disabled={safePage <= 1}
-                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                         >
                           Sebelumnya
                         </button>
@@ -21495,7 +21940,7 @@ export default function App() {
                         <button
                           onClick={() => setAuditKdPage((p) => Math.min(totalPages, p + 1))}
                           disabled={safePage >= totalPages}
-                          className="px-2.5 py-1 rounded-lg border border-slate-800 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-900"
+                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
                         >
                           Berikutnya
                         </button>
@@ -21505,7 +21950,7 @@ export default function App() {
                 </div>
 
                 {/* Ringkasan per Modul (4 cols) */}
-                <div className="xl:col-span-4 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-[28px] p-6 space-y-4">
                   <div className="border-b border-slate-800 pb-2">
                     <h3 className="font-bold text-sm">
                       Ringkasan per Modul
@@ -21515,26 +21960,26 @@ export default function App() {
                     </p>
                   </div>
                   <div className="space-y-2.5">
-                    <div className="p-3 bg-slate-900 rounded-xl border border-slate-855 flex items-center justify-between">
+                    <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
                       <div>
                         <p className="font-bold text-slate-200">Kontrak Eksternal</p>
                         <p className="text-[10px] text-slate-500">Vendor / Customer / Mitra</p>
                       </div>
                       <span className="text-lg font-bold text-indigo-400">{countEksternal}</span>
                     </div>
-                    <div className="p-3 bg-slate-900 rounded-xl border border-slate-855 flex items-center justify-between">
+                    <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
                       <div>
                         <p className="font-bold text-slate-200">Kontrak Karyawan</p>
                         <p className="text-[10px] text-slate-500">Internal (PKWT/PKWTT)</p>
                       </div>
-                      <span className="text-lg font-bold text-emerald-400">{countKaryawan}</span>
+                      <span className="text-lg font-bold text-brand-orange">{countKaryawan}</span>
                     </div>
-                    <div className="p-3 bg-slate-900 rounded-xl border border-slate-855 flex items-center justify-between">
+                    <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
                       <div>
                         <p className="font-bold text-slate-200">Dokumen DCS</p>
                         <p className="text-[10px] text-slate-500">SOP / IK / Memo / Kebijakan</p>
                       </div>
-                      <span className="text-lg font-bold text-violet-400">{countDcs}</span>
+                      <span className="text-lg font-bold text-soft-blue">{countDcs}</span>
                     </div>
                   </div>
                   <p className="text-[10px] text-slate-600 pt-2 border-t border-slate-850">
@@ -21548,6 +21993,7 @@ export default function App() {
             );
           })()}
         </main>
+        </div>
       </div>
 
       {/* CREATE CONTRACT WIZARD MODAL */}
@@ -21783,7 +22229,7 @@ export default function App() {
                     <div className="space-y-1.5">
                       <label className="block text-sm font-semibold text-slate-300 flex items-center gap-1.5">
                         Nomor Dokumen{newContractForm.creationMode === "upload" ? " (dari vendor/penerbit)" : ""}
-                        <HelpCircle className="w-3.5 h-3.5 text-slate-500 font-normal" title={newContractForm.creationMode === "upload" ? "Dokumen ini hasil unggah PDF — nomor DIISI BEBAS sesuai dokumen aslinya/vendor. Kosongkan bila ingin nomor otomatis sistem." : "Nomor final, sudah dialokasikan begitu Kategori & Jenis Dokumen dipilih — terkunci, supaya urut & tak pernah dobel."} />
+                        <HelpCircle className="w-3.5 h-3.5 text-slate-500 font-normal" title={newContractForm.creationMode === "upload" ? `Dokumen ini hasil unggah ${fileKindFromName(newContractForm.masterPdfFile?.name) || "berkas (PDF/Word)"} — nomor DIISI BEBAS sesuai dokumen aslinya/vendor. Kosongkan bila ingin nomor otomatis sistem.` : "Nomor final, sudah dialokasikan begitu Kategori & Jenis Dokumen dipilih — terkunci, supaya urut & tak pernah dobel."} />
                       </label>
                       {newContractForm.creationMode === "upload" ? (
                         // Unggah PDF murni → nomor free text (nomor vendor/dokumen asli).
@@ -21899,7 +22345,19 @@ export default function App() {
                           <p className="text-[11px] text-emerald-400 flex items-center gap-1">
                             <CheckCircle className="w-3 h-3" />
                             {newContractForm.masterPdfFile.name} siap diunggah
+                            <span className={`ml-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${fileKindFromName(newContractForm.masterPdfFile.name) === "Word" ? "bg-peach text-brand-orange" : "bg-mist text-indigo-400"}`}>
+                              {fileKindFromName(newContractForm.masterPdfFile.name)}
+                            </span>
                           </p>
+                        )}
+                        {newContractForm.masterPdfFile && fileKindFromName(newContractForm.masterPdfFile.name) === "Word" && (
+                          <p className="text-[11px] text-slate-400">Format Word: dipratinjau &amp; bisa diedit langsung di Document Workspace; PDF dibuat saat diunduh/ditandatangani.</p>
+                        )}
+                        {newContractForm.masterPdfFile && fileKindFromName(newContractForm.masterPdfFile.name) === "PDF" && (
+                          <p className="text-[11px] text-slate-400">Format PDF: dipratinjau dengan layout asli; untuk mengedit isinya, ubah ke Word dulu di Document Workspace.</p>
+                        )}
+                        {newContractForm.masterPdfFile && fileKindFromName(newContractForm.masterPdfFile.name) === "Gambar" && (
+                          <p className="text-[11px] text-slate-400">Format gambar/scan: disimpan sebagai berkas asli (teks dibaca lewat OCR bila diaktifkan).</p>
                         )}
                         <p className="text-[11px] text-slate-500">
                           Berkas ini menjadi dokumen kontrak utama dan disimpan apa adanya (original tidak pernah ditimpa). Setelah kontrak dibuat, buka di Document Workspace: pratinjau dengan layout asli (kop, logo, tabel, footer, TTD), edit, lalu Save sebagai versi baru. PDF, Word (.docx/.doc), JPG, PNG — maks. 10 MB.

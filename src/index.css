@@ -1,51 +1,59 @@
-/* Fondasi tampilan: putih + biru + oranye, huruf serif, datar (tanpa
-   glow / bayangan berwarna / kilap). Seluruh aplikasi ditulis dengan utilitas
+/* Fondasi tampilan: putih + biru + oranye, font sans, bayangan lembut (tanpa
+   glow / kilap). Seluruh aplikasi ditulis dengan utilitas
    slate-* dan indigo-*; di Tailwind v4 keduanya lewat variabel CSS, jadi
    memetakan ulang deret warna di sini mengganti tampilan semua halaman
    sekaligus. Angka slate tinggi = permukaan, rendah = teks (sama seperti
    sebelumnya, hanya warnanya yang berganti). */
-@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Source Serif 4", "Source Serif Pro", Georgia, "Times New Roman", serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
   /* ---- TERANG: putih ---- */
-  --color-slate-950: #f4f6fa;  /* kartu pucat / isian input */
-  --color-slate-900: #ffffff;  /* kartu / panel (dipisah garis tipis) */
-  --color-slate-850: #eef1f7;  /* hover / permukaan tipis */
-  --color-slate-800: #e6eaf2;  /* garis pembatas bawaan */
-  --color-slate-750: #edf0f6;
-  --color-slate-700: #d6dce8;  /* garis lebih tegas / tombol sekunder */
-  --color-slate-650: #c6cedd;
+  --color-slate-950: #f1f6fc;  /* isi pucat: tile, input, trek grafik */
+  --color-slate-900: #ffffff;  /* kartu putih */
+  --color-slate-850: #f6f9fd;
+  --color-slate-800: #e3ebf5;  /* garis tipis (jarang dipakai) */
+  --color-slate-750: #ebf1f8;
+  --color-slate-700: #d2deed;
+  --color-slate-650: #bccbe0;
 
-  --color-slate-600: #a3a3a3;  /* label paling pudar */
-  --color-slate-500: #858585;  /* teks redup */
-  --color-slate-400: #626262;  /* teks samar */
-  --color-slate-300: #474747;  /* teks sekunder */
-  --color-slate-200: #2e2e2e;
-  --color-slate-100: #1a1a1a;  /* teks utama */
-  --color-slate-50:  #0d0d0d;
+  --color-slate-600: #a9b4c6;
+  --color-slate-500: #86929f;
+  --color-slate-400: #66738a;
+  --color-slate-300: #475469;
+  --color-slate-200: #2d3748;
+  --color-slate-100: #1c2433;  /* teks utama */
+  --color-slate-50:  #0e131c;
 
   /* ---- Biru (menggantikan indigo) ---- */
-  --color-indigo-50:  #eef3fb;
-  --color-indigo-100: #dce7f7;
-  --color-indigo-200: #bccfee;
-  --color-indigo-300: #8fb0e0;
-  --color-indigo-400: #2a5cae;  /* teks/ikon aksen di latar terang */
-  --color-indigo-500: #2a5cae;
-  --color-indigo-600: #1f4a8f;  /* tombol utama */
-  --color-indigo-700: #183b74;
-  --color-indigo-800: #122e5b;
-  --color-indigo-900: #0d2245;
-  --color-indigo-950: #08152c;
+  --color-indigo-50:  #eff7fd;
+  --color-indigo-100: #dcedfa;
+  --color-indigo-200: #bddcf4;
+  --color-indigo-300: #94c6ec;
+  --color-indigo-400: #3a86c2;  /* teks/ikon aksen */
+  --color-indigo-500: #5ba6dc;
+  --color-indigo-600: #6aaee0;  /* tombol utama (biru pucat) */
+  --color-indigo-700: #4f98d0;
+  --color-indigo-800: #3b7fb6;
+  --color-indigo-900: #2a6293;
+  --color-indigo-950: #1b4568;
 
   /* Oranye aksen (chip ikon, menu aktif, sorotan kecil) */
-  --color-peach: #fdebdc;
-  --color-peach-strong: #f8d9bd;
-  --color-shell: #e3eaf6;      /* bingkai di luar panel putih */
-  --color-mist: #dbe5f5;       /* biru sangat pucat (batang grafik, panel info) */
-  --color-soft-blue: #7b9bd6;  /* biru pucat: tombol/menu aktif */
+  --color-peach: #fdeedf;
+  --color-peach-strong: #f9cfa8;
+  --color-shell: #e8f0fa;
+  --color-mist: #d3e8f8;          /* biru sangat pucat */
+  --color-mist-strong: #a9d3f0;   /* panel biru lebih pekat */
+  --color-soft-blue: #72b6e6;     /* biru pucat: tombol/menu aktif */
+  --sky-a: #dcf0fc;
+  --sky-b: #c4e2f6;
+  --fog-a: #f6f8fb;
+  --fog-b: #e1e8f1;
+  --page-a: #eef5fd;
+  --page-b: #dfebf8;
+  --shadow-soft: 0 12px 34px -10px rgba(110, 145, 200, 0.28), 0 2px 8px rgba(110, 145, 200, 0.07);
   --color-brand-orange: #e2691f;
 
   /* -400 disetel agar terbaca di latar terang. */
@@ -55,30 +63,30 @@
   --color-violet-400: #7c53e8;
   --color-sky-400: #0c7fb8;
 
-  --radius-md: 0.25rem;
-  --radius-lg: 0.375rem;
-  --radius-xl: 0.5rem;
-  --radius-2xl: 0.5rem;
-  --radius-3xl: 0.625rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1.75rem;
 }
 
 :root {
-  --scrollbar-thumb: #ccd3e0;
-  --scrollbar-thumb-hover: #b5b5b5;
-  --selection-text: #1a1a1a;
+  --scrollbar-thumb: #c5d3e6;
+  --scrollbar-thumb-hover: #a9bcd6;
+  --selection-text: #1c2433;
 }
 
 /* ---- GELAP: arang kebiruan hangat ---- */
 .dark {
   --selection-text: #f3efe6;
 
-  --color-slate-950: #1f242d;
-  --color-slate-900: #171b22;
-  --color-slate-850: #262c37;
-  --color-slate-800: #2a2f3a;
-  --color-slate-750: #303644;
-  --color-slate-700: #3b4252;
-  --color-slate-650: #474f62;
+  --color-slate-950: #232b38;
+  --color-slate-900: #1a212c;
+  --color-slate-850: #202836;
+  --color-slate-800: #2c3544;
+  --color-slate-750: #323c4d;
+  --color-slate-700: #3d485b;
+  --color-slate-650: #4a566b;
 
   --color-slate-600: #7b7f8a;
   --color-slate-500: #9a9da6;
@@ -88,23 +96,31 @@
   --color-slate-100: #efebe1;
   --color-slate-50:  #ffffff;
 
-  --color-indigo-50:  #0d2245;
-  --color-indigo-100: #122e5b;
-  --color-indigo-200: #183b74;
-  --color-indigo-300: #9dbbea;
-  --color-indigo-400: #86a9e6;  /* teks aksen di latar gelap */
-  --color-indigo-500: #4a7bc8;
-  --color-indigo-600: #3a69b5;  /* tombol utama */
-  --color-indigo-700: #2f5799;
-  --color-indigo-800: #264a80;
-  --color-indigo-900: #1c3660;
-  --color-indigo-950: #142848;
+  --color-indigo-50:  #12304a;
+  --color-indigo-100: #174058;
+  --color-indigo-200: #1f5272;
+  --color-indigo-300: #a6d2f2;
+  --color-indigo-400: #8cc4ee;
+  --color-indigo-500: #4f9ad2;
+  --color-indigo-600: #438ac2;
+  --color-indigo-700: #3774a8;
+  --color-indigo-800: #2d6089;
+  --color-indigo-900: #234b6d;
+  --color-indigo-950: #183550;
 
-  --color-peach: #3a2a1d;
-  --color-peach-strong: #4b3423;
-  --color-shell: #0d1015;
-  --color-mist: #27354f;
-  --color-soft-blue: #4a6fae;
+  --color-peach: #3b2c21;
+  --color-peach-strong: #e8a874;
+  --color-shell: #0e131b;
+  --color-mist: #2a3d54;
+  --color-mist-strong: #2f4766;
+  --color-soft-blue: #4a8ec4;
+  --sky-a: #243a54;
+  --sky-b: #1d3149;
+  --fog-a: #232b38;
+  --fog-b: #1b222d;
+  --page-a: #121923;
+  --page-b: #0d1219;
+  --shadow-soft: 0 12px 34px -10px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.25);
   --color-brand-orange: #f08a4b;
 
   --color-emerald-400: #4fc99b;
@@ -126,6 +142,8 @@
 
   body {
     background-color: var(--color-shell);
+    background-image: linear-gradient(160deg, var(--page-a) 0%, var(--page-b) 100%);
+    background-attachment: fixed;
     color: var(--color-slate-100);
   }
 
@@ -159,9 +177,12 @@
   *::-webkit-scrollbar-thumb:hover { background-color: var(--scrollbar-thumb-hover); }
 }
 
-/* Bayangan bawaan Tailwind (shadow-md/lg/xl/2xl) dimatikan agar tampilan datar;
-   pemisah cukup garis tipis. Modal/dropdown tetap terbaca lewat garis. */
-[class*="shadow-"]:not([class*="shadow-none"]) { --tw-shadow: 0 0 #0000 !important; box-shadow: none !important; }
+/* Bayangan lembut menyebar (bukan glow berwarna): kartu, dropdown, modal. */
+.card-soft,
+[class*="shadow-"]:not([class*="shadow-none"]) { box-shadow: var(--shadow-soft) !important; }
+[class*="border-slate-800"]:is([class~="rounded-2xl"], [class~="rounded-3xl"]) { box-shadow: var(--shadow-soft); }
+.card-sky { background: linear-gradient(180deg, var(--sky-a), var(--sky-b)); }
+.card-fog { background: linear-gradient(180deg, var(--fog-a), var(--fog-b)); }
 
 /* Transisi halus saat pindah tab di toolbar editor dokumen (ribbon). */
 @keyframes ribbon-fade {
@@ -222,3 +243,98 @@ html.dark .docx-wrapper > section.docx {
 .dark [data-page] {
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
 }
+
+/* Sembunyikan scrollbar pada rel ikon sidebar. */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+
+/* ---- TABEL GLOBAL (gaya "Orders"): header pil pucat, baris lega dengan
+   garis tipis, hover biru pucat. Berlaku ke SEMUA <table> yang punya <thead>
+   di aplikasi. Tabel di dalam dokumen kontrak diberi kelas .plain-table agar
+   tidak ikut berubah. ---- */
+table:has(> thead):not(.plain-table) { border-collapse: separate; border-spacing: 0; }
+table:has(> thead):not(.plain-table) > thead > tr > th {
+  background: var(--color-slate-950);
+  color: var(--color-slate-400);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+  font-family: inherit;
+  border-bottom: 0 !important;
+  padding-top: 0.8rem;
+  padding-bottom: 0.8rem;
+}
+table:has(> thead):not(.plain-table) > thead > tr { background: transparent !important; border: 0 !important; }
+table:has(> thead):not(.plain-table) > thead > tr > th:first-child { border-top-left-radius: 14px; border-bottom-left-radius: 14px; }
+table:has(> thead):not(.plain-table) > thead > tr > th:last-child { border-top-right-radius: 14px; border-bottom-right-radius: 14px; }
+table:has(> thead):not(.plain-table) > tbody > tr > td {
+  border-top: 1px solid color-mix(in srgb, var(--color-slate-800) 70%, transparent);
+  padding-top: 0.95rem;
+  padding-bottom: 0.95rem;
+  vertical-align: middle;
+}
+table:has(> thead):not(.plain-table) > tbody > tr:first-child > td { border-top-color: transparent; }
+table:has(> thead):not(.plain-table) > tbody > tr { border: 0 !important; transition: background-color .15s; }
+table:has(> thead):not(.plain-table) > tbody > tr:hover > td {
+  background: color-mix(in srgb, var(--color-slate-950) 75%, transparent);
+}
+table:has(> thead):not(.plain-table) > tbody > tr > td:first-child { border-top-left-radius: 14px; border-bottom-left-radius: 14px; }
+table:has(> thead):not(.plain-table) > tbody > tr > td:last-child { border-top-right-radius: 14px; border-bottom-right-radius: 14px; }
+/* Pembungkus tabel: kartu putih besar bersudut lembut. */
+.table-card { background: var(--color-slate-900) !important; border: 0 !important; border-radius: 28px !important; box-shadow: var(--shadow-soft) !important; padding: 0.75rem 1rem; overflow: hidden; }
+.table-card .overflow-x-auto { border: 0 !important; }
+
+/* Drawer filter */
+@keyframes drawer-in { from { transform: translateX(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.drawer-in { animation: drawer-in .22s ease-out; }
+@media (prefers-reduced-motion: reduce) { .drawer-in { animation: none; } }
+
+/* ---- GRADASI PASTEL TIPIS (biru -> oranye) untuk tombol & kartu ---- */
+.card-grad {
+  background-image: linear-gradient(135deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-mist) 38%, transparent) 55%,
+    color-mix(in srgb, var(--color-peach) 70%, transparent) 130%);
+}
+.btn-grad-soft {
+  background-image: linear-gradient(135deg, var(--color-mist) 0%, var(--color-peach) 140%);
+  box-shadow: none !important;
+}
+.btn-grad-soft:hover { filter: brightness(0.97); }
+.btn-grad-primary {
+  background-image: linear-gradient(135deg, var(--color-soft-blue) 0%, color-mix(in srgb, var(--color-soft-blue) 72%, var(--color-peach-strong)) 140%);
+  box-shadow: none !important;
+}
+.btn-grad-primary:hover { filter: brightness(1.05); }
+
+/* Modal form: panel melayang di tengah, latar halaman diburamkan */
+.modal-backdrop { background: color-mix(in srgb, var(--color-slate-950) 45%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: modal-fade .18s ease-out; }
+.modal-panel { box-shadow: var(--shadow-soft) !important; animation: modal-pop .2s ease-out; }
+@keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .modal-backdrop, .modal-panel { animation: none; } }
+
+/* ---- CHECKBOX bergaya (menggantikan kotak bawaan browser) ---- */
+input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 1.15rem; height: 1.15rem; flex-shrink: 0;
+  border-radius: 0.45rem;
+  border: 1.5px solid var(--color-slate-700);
+  background-color: var(--color-slate-900);
+  background-repeat: no-repeat; background-position: center; background-size: 72%;
+  cursor: pointer; vertical-align: middle;
+  transition: background-color .15s, border-color .15s, box-shadow .15s;
+}
+input[type="checkbox"]:hover { border-color: var(--color-soft-blue); }
+input[type="checkbox"]:focus-visible { outline: 2px solid color-mix(in srgb, var(--color-soft-blue) 55%, transparent); outline-offset: 2px; }
+input[type="checkbox"]:checked {
+  background-color: var(--color-soft-blue); border-color: var(--color-soft-blue);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:indeterminate {
+  background-color: var(--color-soft-blue); border-color: var(--color-soft-blue);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E");
+}
+input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }

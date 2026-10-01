@@ -208,6 +208,15 @@ function findLegalJob(db: any, tid: string, id: string): LegalJob | undefined {
   if (!db.legalJobs) db.legalJobs = [];
   return (db.legalJobs as LegalJob[]).find((j) => j.id === id && j.tenantId === tid);
 }
+// Pilihan baku "PIC Pemberi Pekerjaan". "Lainnya" boleh diikuti nama divisi
+// ("Lainnya – Procurement") untuk requester dari divisi di luar daftar.
+const LEGAL_PIC_OPTIONS = ["Marketing", "Business Partnership", "Account Executive", "Operasional", "Finance", "Management", "HR/GA", "IT/System", "Lainnya"];
+function normalizeLegalPic(raw: unknown): string | null {
+  const v = String(raw || "").trim();
+  if (LEGAL_PIC_OPTIONS.includes(v)) return v;
+  const m = v.match(/^Lainnya\s*[–-]\s*(.{1,80})$/);
+  return m ? `Lainnya – ${m[1].trim()}` : null;
+}
 function pushLegalTimeline(job: LegalJob, entry: Omit<LegalJobTimelineEntry, "id" | "at">, at?: string) {
   job.timeline.push({ id: "ljt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6), at: at || new Date().toISOString(), ...entry });
 }
@@ -305,6 +314,18 @@ function pushNotif(db: any, tid: string, notif: any) {
     id: "not-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
     tenantId: tid, createdAt: new Date().toISOString(), read: false, ...notif,
   });
+}
+
+// Penerima pengumuman rilis kontrak dipilih PER NAMA (user id), bukan per
+// role/departemen. Hanya user aktif di tenant kontrak yang dianggap sah — id
+// asing/nonaktif dibuang diam-diam supaya payload manipulasi tidak bisa
+// menembus batas tenant.
+function sanitizeReleaseRecipients(db: any, tid: string, raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const valid = new Set(
+    (db.users as User[]).filter((u) => u.active && u.tenantId === tid).map((u) => u.id),
+  );
+  return Array.from(new Set(raw.map(String))).filter((id) => valid.has(id));
 }
 
 // ===== AUTHENTICATION =====
@@ -3688,6 +3709,44 @@ app.post("/api/contracts/:id/activate", requireAuth, requireRole("admin", "staff
   res.json({ success: true, contract });
 });
 
+// Pengumuman rilis: setelah kontrak AKTIF 100%, tim Legal/Admin mengumumkan
+// "kontrak ini sudah rilis" ke orang-orang yang dipilih PER NAMA, lengkap
+// dengan keterangan bebas. Bisa dikirim berkali-kali (mis. menyusul orang
+// lain); tiap pengumuman dicatat di contract.releaseAnnouncements + Audit Trail.
+app.post("/api/contracts/:id/announce-release", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status !== "Aktif") {
+    return res.status(400).json({ error: "Pengumuman rilis hanya bisa dikirim setelah kontrak berstatus Aktif." });
+  }
+  const ids = sanitizeReleaseRecipients(db, tid, req.body.userIds);
+  if (ids.length === 0) return res.status(400).json({ error: "Pilih minimal satu penerima." });
+  const note = String(req.body.note || "").trim().slice(0, 1000);
+  const names = (db.users as User[]).filter((u) => ids.includes(u.id)).map((u) => u.name);
+  pushNotif(db, tid, {
+    title: "Kontrak Telah Rilis",
+    message: `Kontrak "${contract.title}" (${contract.contractNumber}) kini AKTIF dan resmi berlaku. Diumumkan oleh ${req.user!.name}.${note ? ` Keterangan: ${note}` : ""}`,
+    type: "success", contractId: contract.id, targetUserIds: ids,
+  });
+  const entry = {
+    id: "rel-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    createdAt: new Date().toISOString(),
+    byId: req.user!.id, byName: req.user!.name,
+    userIds: ids, names, note: note || undefined,
+  };
+  contract.releaseAnnouncements = [entry, ...(contract.releaseAnnouncements || [])];
+  contract.updatedAt = new Date().toISOString();
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber,
+    action: "Announce Release",
+    details: `Mengumumkan rilis kontrak "${contract.title}" ke: ${names.join(", ")}${note ? ` — Keterangan: ${note}` : ""}`,
+  });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
 // Hitung urutan addendum ("Addendum Kesebelas") + referensi addendum terakhir
 // on-the-fly dari data existing — tidak disimpan, supaya tidak basi kalau ada
 // addendum yang dihapus. Dipakai frontend untuk preview nomor urut sebelum submit.
@@ -4861,7 +4920,9 @@ app.post("/api/notifications/read-all", requireAuth, (req: AuthedRequest, res) =
   const db = loadDB();
   const tid = tenantOf(req);
   (db.notifications as SystemNotification[]).forEach((n) => {
-    if (n.tenantId === tid) n.read = true;
+    // Hanya notifikasi yang memang terlihat oleh user ini — notifikasi yang
+    // ditargetkan ke orang lain (mis. rilis kontrak) tidak ikut ter-"read".
+    if (n.tenantId === tid && (!n.targetUserIds?.length || n.targetUserIds.includes(req.user!.id))) n.read = true;
   });
   saveDB(db);
   res.json({ success: true });
@@ -5984,7 +6045,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   );
   if (!comment) return res.status(404).json({ error: "Komentar tidak ditemukan" });
 
-  const isOwnerOrPrivileged = comment.userId === req.user!.id || ["admin", "legal"].includes(req.user!.role);
+  const isOwnerOrPrivileged = comment.userId === req.user!.id || ["admin", "legal", "super_admin"].includes(req.user!.role);
 
   // Editing the actual comment text stays owner/admin/legal-only, but
   // resolving a thread is a collaborative action (Google-Docs style: anyone
@@ -6001,7 +6062,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   // baru), jadi dibatasi ke peran yang boleh mengubah dokumen kontrak.
   if (req.body.status !== undefined) {
     if (!["pending", "accepted", "rejected"].includes(req.body.status)) return res.status(400).json({ error: "Status tidak valid." });
-    if (!["admin", "staff", "legal", "manager"].includes(req.user!.role)) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
+    if (!["admin", "staff", "legal", "manager", "super_admin"].includes(req.user!.role)) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
     if (comment.kind !== "strike" && comment.kind !== "replace") return res.status(400).json({ error: "Hanya usulan coret/ganti yang punya status." });
     comment.status = req.body.status;
     comment.resolved = req.body.status !== "pending";
@@ -6033,7 +6094,7 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
   );
   if (idx === -1) return res.status(404).json({ error: "Komentar tidak ditemukan" });
   const comment = db.clauseComments[idx];
-  if (comment.userId !== req.user!.id && !["admin", "legal"].includes(req.user!.role)) {
+  if (comment.userId !== req.user!.id && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
     return res.status(403).json({ error: "Tidak dapat menghapus komentar orang lain" });
   }
   db.clauseComments.splice(idx, 1);
@@ -6790,6 +6851,64 @@ app.get("/api/legal-jobs/:id", requireAuth, (req: AuthedRequest, res) => {
   res.json(withLinkedContract(db, job));
 });
 
+// Staff Legal menginput pekerjaan langsung (PIC pemberi tidak sempat/mau mengisi
+// formulir). Karena yang menginput sudah Legal, tahap "Menunggu Persetujuan"
+// dilewati: pekerjaan langsung masuk alur kerja utama (Draft) dengan prioritas
+// yang ditentukan penginput, sumbernya "internal".
+app.post("/api/legal-jobs", requireAuth, requireRole("admin", "legal", "manager", "staff"), uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const b = req.body || {};
+  const title = String(b.title || "").trim();
+  const partnerName = String(b.partnerName || "").trim();
+  const docType = String(b.docType || "").trim();
+  const picName = normalizeLegalPic(b.picName);
+  const deadline = String(b.deadline || "").trim();
+  const priority = String(b.priority || "") as LegalJobPriority;
+  const missing = [
+    !title && "Judul Pekerjaan", !partnerName && "Partner/Pihak", !docType && "Jenis Dokumen",
+    !picName && "PIC Pemberi Pekerjaan (pilih dari daftar; jika Lainnya, isi nama divisinya)", !deadline && "Deadline",
+    !["Tinggi", "Sedang", "Rendah"].includes(priority) && "Prioritas",
+  ].filter(Boolean);
+  if (missing.length) return res.status(400).json({ error: `Field wajib belum diisi: ${missing.join(", ")}.` });
+
+  const now = new Date().toISOString();
+  const documents: LegalJobDocument[] = [];
+  if (req.file) {
+    try {
+      const key = uploadFileKey(req.file.originalname);
+      const stored = await storeFile(req.file.buffer, key, req.file.mimetype);
+      documents.push({
+        id: "ljd-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+        name: req.file.originalname, url: stored.url, key: stored.key, mimeType: req.file.mimetype,
+        size: req.file.size, uploadedAt: now, uploadedBy: req.user!.name,
+      });
+    } catch (err) {
+      logger.error({ err }, "Gagal mengunggah lampiran Pekerjaan Legal (input Staff Legal)");
+      return res.status(500).json({ error: "Gagal mengunggah lampiran. Coba lagi atau simpan tanpa lampiran." });
+    }
+  }
+  const requester = String(b.submitterName || "").trim();
+  const job: LegalJob = {
+    id: "lj-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    tenantId: tid, title, partnerName, docType, picName: picName!, deadline,
+    description: String(b.description || "").trim() || undefined, documents,
+    status: "draft", priority, source: "internal",
+    submitterName: requester || undefined,
+    approvedByName: req.user!.name, approvedAt: now,
+    notes: [], timeline: [
+      { id: "ljt-0", label: "Diinput langsung oleh Staff Legal", actor: req.user!.name, at: now, detail: requester ? `Atas permintaan ${requester} (${picName}).` : `PIC pemberi pekerjaan: ${picName}.` },
+      { id: "ljt-1", label: `Masuk alur kerja utama — Prioritas ${priority}`, actor: req.user!.name, at: now, detail: "Tahap persetujuan dilewati karena diinput Staff Legal." },
+    ],
+    createdAt: now, updatedAt: now,
+  };
+  if (!db.legalJobs) db.legalJobs = [];
+  db.legalJobs.push(job);
+  pushAudit(db, req, { action: "Input Pekerjaan Legal", details: `Menginput langsung "${title}" (${partnerName}), PIC ${picName}, prioritas ${priority}.` });
+  saveDB(db);
+  res.json(withLinkedContract(db, job));
+});
+
 // Setujui pekerjaan masuk → tentukan prioritas → pindah ke alur kerja utama (status: draft).
 app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole("admin", "legal", "manager", "staff"), (req: AuthedRequest, res) => {
   const db = loadDB();
@@ -6975,7 +7094,7 @@ app.get("/api/legal-form/:token", apiLimiter, (req, res) => {
   res.json({
     tenantName: tenant?.name || "Perusahaan",
     partnerSuggestions: uniq(jobs.map((j) => j.partnerName)),
-    picSuggestions: uniq([...jobs.map((j) => j.picName), "Marketing", "Account Executive", "Business Development", "Operasional"]),
+    picOptions: LEGAL_PIC_OPTIONS,
   });
 });
 
@@ -6987,7 +7106,7 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
   const title = String(req.body?.title || "").trim();
   const partnerName = String(req.body?.partnerName || "").trim();
   const docType = String(req.body?.docType || "").trim();
-  const picName = String(req.body?.picName || "").trim();
+  const picName = normalizeLegalPic(req.body?.picName) || "";
   const deadline = String(req.body?.deadline || "").trim();
   const description = String(req.body?.description || "").trim();
   const submitterName = String(req.body?.submitterName || "").trim();

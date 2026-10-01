@@ -202,9 +202,22 @@ export interface ContractAttachmentSection {
   tableRows?: string[][];
 }
 
+export interface ReleaseAnnouncement {
+  id: string;
+  createdAt: string;
+  byId: string;
+  byName: string;
+  userIds: string[];
+  names: string[];
+  note?: string;
+}
+
 export interface Contract {
   id: string;
   tenantId: string;
+  // Pengumuman rilis kontrak (setelah Aktif): tim Legal/Admin memilih penerima
+  // PER NAMA user (bukan role/departemen) + keterangan bebas. Terbaru di depan.
+  releaseAnnouncements?: ReleaseAnnouncement[];
   templateId: string;
   contractNumber: string;
   title: string;

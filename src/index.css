@@ -338,3 +338,60 @@ input[type="checkbox"]:indeterminate {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M4 8h8'/%3E%3C/svg%3E");
 }
 input[type="checkbox"]:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ===== Halaman Konfigurasi: kontras warna & input seragam ===== */
+html:not(.dark) .cfg-content .text-violet-300, html:not(.dark) .cfg-content .text-violet-400 { color: #6b5bc4; }
+html:not(.dark) .cfg-content .text-sky-300, html:not(.dark) .cfg-content .text-sky-400, html:not(.dark) .cfg-content .text-indigo-300, html:not(.dark) .cfg-content .text-indigo-400 { color: #3a86b8; }
+html:not(.dark) .cfg-content .text-emerald-300, html:not(.dark) .cfg-content .text-emerald-400 { color: #2f8f6b; }
+html:not(.dark) .cfg-content .text-amber-300, html:not(.dark) .cfg-content .text-amber-400, html:not(.dark) .cfg-content .text-amber-200 { color: #b36a1f; }
+html:not(.dark) .cfg-content .text-rose-400 { color: #d1495b; }
+.cfg-content input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), .cfg-content select, .cfg-content textarea { border-radius: 0.9rem; }
+.cfg-content > .space-y-4 > p:first-child, .cfg-content > .space-y-4 > .flex.gap-2 { margin-top: 0; }
+/* Konfigurasi: semua kartu di area konten ikut gradasi samar oren–biru pucat */
+.cfg-content .card-soft:not(.card-grad):not(.card-sky):not(.card-fog):not(input):not(select):not(button) {
+  background-image: linear-gradient(135deg, transparent 0%, color-mix(in srgb, var(--color-mist) 38%, transparent) 55%, color-mix(in srgb, var(--color-peach) 55%, transparent) 130%);
+}
+
+/* Detail kontrak: toolbar header — deretan pil seragam bertema biru-oren pastel.
+   Semua tombol sekunder = pil putih bershadow lembut (tanpa tint warna-warni);
+   tombol utama = gradasi biru; toggle mati = pil transparan redup. */
+.ct-toolbar > button, .ct-toolbar > a {
+  border-radius: 9999px !important; border: 0 !important;
+  background: var(--color-slate-900) !important; color: var(--color-slate-300) !important;
+  box-shadow: var(--shadow-soft) !important;
+  height: 2.3rem; padding: 0 1rem !important; display: inline-flex; align-items: center; gap: .4rem;
+  font-size: .72rem; font-weight: 600; transition: filter .15s, transform .15s;
+}
+.ct-toolbar > button:hover:not(:disabled), .ct-toolbar > a:hover { filter: brightness(.97); transform: translateY(-1px); }
+.ct-toolbar > button:disabled { opacity: .5; }
+.ct-toolbar > button svg { color: var(--color-soft-blue); flex-shrink: 0; }
+/* toggle dalam keadaan mati (Kop/Logo/Meterai) */
+.ct-toolbar > button[class*="text-slate-500"] { background: transparent !important; box-shadow: none !important; color: var(--color-slate-500) !important; outline: 1px dashed color-mix(in srgb, var(--color-slate-500) 35%, transparent); outline-offset: -1px; }
+.ct-toolbar > button[class*="text-slate-500"] svg { color: currentColor; }
+/* aksi utama */
+.ct-toolbar > button[class*="bg-indigo-600"], .ct-toolbar > button.ct-primary {
+  background-image: linear-gradient(135deg, var(--color-soft-blue) 0%, color-mix(in srgb, var(--color-soft-blue) 72%, var(--color-peach-strong)) 140%) !important;
+  background-color: var(--color-soft-blue) !important; color: #fff !important; font-weight: 700;
+}
+.ct-toolbar > button[class*="bg-indigo-600"] svg, .ct-toolbar > button.ct-primary svg { color: #fff; }
+/* ada perubahan belum disimpan -> nuansa peach */
+.ct-toolbar > button[class*="bg-amber-500/20"] { background: var(--color-peach) !important; color: var(--color-slate-100) !important; }
+.ct-toolbar > button[class*="bg-amber-500/20"] svg { color: var(--color-peach-strong); }
+.ct-toolbar > button .animate-pulse { background: var(--color-peach-strong) !important; }
+/* kontainer segmented (ID/EN/ID+EN, Kiri-Kanan/Atas-Bawah) */
+.ct-toolbar > div { border-radius: 9999px !important; border: 0 !important; background: var(--color-slate-900) !important; box-shadow: var(--shadow-soft) !important; height: 2.3rem; padding: 3px !important; display: inline-flex; align-items: center; }
+.ct-toolbar > div button { border-radius: 9999px !important; height: 100%; padding: 0 .85rem !important; font-size: .7rem; color: var(--color-slate-500); }
+.ct-toolbar > div button:hover:not(:disabled) { color: var(--color-slate-100); }
+.ct-toolbar > div button[class*="bg-indigo-600"] {
+  background-image: linear-gradient(135deg, var(--color-soft-blue) 0%, color-mix(in srgb, var(--color-soft-blue) 72%, var(--color-peach-strong)) 140%) !important;
+  background-color: var(--color-soft-blue) !important; color: #fff !important;
+}
+/* badge jumlah komentar */
+.ct-toolbar > button > span.absolute { background: var(--color-peach-strong) !important; }
+
+/* Sorotan sesaat pada elemen tujuan tautan "isi di sini" (Konfigurasi) */
+.cfg-flash { animation: cfg-flash 1.8s ease-out; }
+@keyframes cfg-flash {
+  0%, 35% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-soft-blue) 70%, transparent), var(--shadow-soft); background-color: color-mix(in srgb, var(--color-peach) 55%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}

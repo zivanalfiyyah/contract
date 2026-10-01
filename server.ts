@@ -5883,12 +5883,17 @@ function parseMarkupFields(body: any): { kind: "comment" | "strike" | "replace";
   const kind: "comment" | "strike" | "replace" = rawKind === "replace" ? "replace" : rawKind === "strike" ? "strike" : "comment";
   const pi = body?.docAnchor?.paraIndex;
   const docAnchor = Number.isInteger(pi) && pi >= 0 ? { paraIndex: pi as number } : undefined;
+  // Markup pada PASAL kontrak template (bukan berkas upload): tanpa docAnchor,
+  // tetapi wajib membawa kutipan sorotan. Komentar coret lama (tanpa flag ini)
+  // tetap berupa sorotan biasa tanpa status, jadi data lama tidak berubah.
+  const clauseMarkup = !docAnchor && body?.clauseMarkup === true && String(body?.anchor?.quote ?? "").trim().length > 0;
   if (kind === "replace") {
     const replacement = String(body?.replacement ?? "").slice(0, 2000);
     if (!replacement.trim()) return { kind, error: "Teks pengganti wajib diisi untuk usulan ganti." };
-    if (!docAnchor) return { kind, error: "Usulan ganti hanya untuk teks yang dipilih pada dokumen." };
-    return { kind, replacement, docAnchor, status: "pending" };
+    if (!docAnchor && !clauseMarkup) return { kind, error: "Usulan ganti hanya untuk teks yang dipilih pada dokumen." };
+    return { kind, replacement, ...(docAnchor ? { docAnchor } : {}), status: "pending" };
   }
+  if (kind === "strike" && clauseMarkup) return { kind, status: "pending" };
   return { kind, ...(docAnchor ? { docAnchor, ...(kind === "strike" ? { status: "pending" as const } : {}) } : {}) };
 }
 

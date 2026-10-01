@@ -615,9 +615,11 @@ type MarginItem = {
   kind?: string;
   resolved?: boolean;
   anchor?: { quote?: string } | null;
+  replacement?: string;  // usulan teks pengganti (kind "replace")
+  status?: string;       // "pending" | "accepted" | "rejected" untuk usulan coret/ganti
 };
 type MarginClause = { id: string; title: string; heading?: string; content: string };
-type MarginDraftSeed = { clauseId: string; clauseTitle: string; quote: string; kind: "comment" | "strike" };
+type MarginDraftSeed = { clauseId: string; clauseTitle: string; quote: string; kind: "comment" | "strike" | "replace" };
 
 const MARGIN_CARD_GAP = 10;   // jarak minimum antar kartu saat bertumpuk
 const MARGIN_CARD_FALLBACK_H = 84;
@@ -626,23 +628,27 @@ const MARGIN_CARD_FALLBACK_H = 84;
 // yang sama berbagi satu tanda (dan satu tanda bisa merujuk banyak komentar).
 function buildMarkGroups(text: string, items: MarginItem[]) {
   const found = items
-    .filter((c) => c.anchor?.quote && text.includes(c.anchor.quote as string))
+    // Usulan yang sudah diputuskan (diterima/ditolak) tidak digambar lagi —
+    // sama seperti markup dokumen upload.
+    .filter((c) => c.anchor?.quote && c.status !== "accepted" && c.status !== "rejected" && text.includes(c.anchor.quote as string))
     .map((c) => {
       const q = c.anchor!.quote as string;
       const start = text.indexOf(q);
-      return { id: c.id, kind: c.kind, resolved: !!c.resolved, start, end: start + q.length };
+      return { id: c.id, kind: c.kind, resolved: !!c.resolved, replacement: c.replacement, start, end: start + q.length };
     })
     .filter((r) => r.start >= 0);
-  const byRange = new Map<string, { start: number; end: number; ids: string[]; strike: boolean; resolved: boolean }>();
+  const byRange = new Map<string, { start: number; end: number; ids: string[]; strike: boolean; resolved: boolean; replacement?: string }>();
   for (const r of found) {
     const key = r.start + ":" + r.end;
+    const isStrike = r.kind === "strike" || r.kind === "replace";
     const g = byRange.get(key);
     if (g) {
       g.ids.push(r.id);
-      g.strike = g.strike || r.kind === "strike";
+      g.strike = g.strike || isStrike;
       g.resolved = g.resolved && r.resolved;
+      if (!g.replacement && r.kind === "replace" && r.replacement) g.replacement = r.replacement;
     } else {
-      byRange.set(key, { start: r.start, end: r.end, ids: [r.id], strike: r.kind === "strike", resolved: r.resolved });
+      byRange.set(key, { start: r.start, end: r.end, ids: [r.id], strike: isStrike, resolved: r.resolved, replacement: r.kind === "replace" ? r.replacement : undefined });
     }
   }
   return Array.from(byRange.values()).sort((a, b) => a.start - b.start || b.end - a.end);
@@ -663,12 +669,20 @@ function renderMarkedClause(text: string, items: MarginItem[], activeId: string 
     const ids = g.ids.join(",");
     nodes.push(
       g.strike ? (
-        <span
-          key={"mk" + i}
-          data-cmt-id={ids}
-          title="Usulan coret — klik untuk membuka komentarnya"
-          className={`cursor-pointer rounded px-0.5 line-through decoration-rose-500 decoration-2 transition ${g.resolved ? "opacity-40" : ""} ${isActive ? "bg-rose-500/30 ring-2 ring-rose-400" : "bg-rose-500/10"}`}
-        >{seg}</span>
+        <React.Fragment key={"mk" + i}>
+          <span
+            data-cmt-id={ids}
+            title={g.replacement ? "Usulan ganti — klik untuk membuka komentarnya" : "Usulan coret — klik untuk membuka komentarnya"}
+            className={`cursor-pointer rounded px-0.5 line-through decoration-rose-500 decoration-2 transition ${g.resolved ? "opacity-40" : ""} ${isActive ? "bg-rose-500/30 ring-2 ring-rose-400" : "bg-rose-500/10"}`}
+          >{seg}</span>
+          {g.replacement && (
+            <ins
+              data-cmt-id={ids}
+              title="Teks pengganti yang diusulkan"
+              className={`ml-0.5 cursor-pointer rounded px-0.5 no-underline border-b-2 border-emerald-500 bg-emerald-500/20 text-emerald-500 transition ${g.resolved ? "opacity-40" : ""}`}
+            >{g.replacement}</ins>
+          )}
+        </React.Fragment>
       ) : (
         <mark
           key={"mk" + i}
@@ -855,7 +869,7 @@ function WordMarginReview({
     if (first) onActiveChange(first);
   };
 
-  const fireDraft = (kind: "comment" | "strike") => {
+  const fireDraft = (kind: "comment" | "strike" | "replace") => {
     if (!toolbar) return;
     onStartDraft({ clauseId: toolbar.clauseId, clauseTitle: toolbar.clauseTitle, quote: toolbar.quote, kind });
     setToolbar(null);
@@ -923,12 +937,17 @@ function WordMarginReview({
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => fireDraft("comment")}
               className="px-2 py-1 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
-            >✎ Komentar Baru</button>
+            >✎ Komentar</button>
             <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => fireDraft("strike")}
               className="px-2 py-1 text-[10px] font-semibold rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
-            >✂ Usulkan Coret</button>
+            >✂ Coret</button>
+            <button
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => fireDraft("replace")}
+              className="px-2 py-1 text-[10px] font-semibold rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/30 cursor-pointer"
+            >⇄ Ganti</button>
           </div>
         </div>
       )}
@@ -974,10 +993,13 @@ function GuestNotice({ notice, onDismiss }: { notice: { text: string; kind: "err
   const isErr = notice.kind === "error";
   return (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 w-[92vw] max-w-md animate-fadeIn" role="status" aria-live="polite">
-      <div className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border shadow-lg ${isErr ? "bg-rose-50 border-rose-200" : "bg-emerald-50 border-emerald-200"}`}>
-        {isErr ? <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" /> : <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />}
-        <p className={`text-[13px] leading-snug flex-1 ${isErr ? "text-rose-700" : "text-emerald-700"}`}>{notice.text}</p>
-        <button onClick={onDismiss} aria-label="Tutup pemberitahuan" className="text-slate-400 hover:text-slate-600 font-bold cursor-pointer leading-none">✕</button>
+      {/* Warna permukaan & teks lewat variabel tema (slate-*) supaya ikut mode
+          terang/gelap; jenis pesan dibedakan oleh border & ikon, bukan latar
+          pastel yang hanya terbaca di tema terang. */}
+      <div className={`flex items-start gap-2.5 px-4 py-3 rounded-xl border shadow-lg bg-slate-900 ${isErr ? "border-rose-500/50" : "border-emerald-500/50"}`}>
+        {isErr ? <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" /> : <CheckCircle className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />}
+        <p className="text-[13px] leading-snug flex-1 text-slate-100">{notice.text}</p>
+        <button onClick={onDismiss} aria-label="Tutup pemberitahuan" className="text-slate-400 hover:text-slate-200 font-bold cursor-pointer leading-none">✕</button>
       </div>
     </div>
   );
@@ -1021,6 +1043,7 @@ function ExternalReviewPage({ token }: { token: string }) {
   // Active anchored draft: { clauseId, clauseTitle, start, end, quote, kind }
   const [draft, setDraft] = useState<any>(null);
   const [draftText, setDraftText] = useState("");
+  const [draftReplacement, setDraftReplacement] = useState(""); // teks pengganti (usulan "Ganti" pada pasal)
   const [activeId, setActiveId] = useState<string | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
   // Markup dokumen Word (.docx): usulan yang sedang ditulis tamu.
@@ -1051,20 +1074,31 @@ function ExternalReviewPage({ token }: { token: string }) {
       start: start >= 0 ? start : 0, end: start >= 0 ? start + seed.quote.length : 0,
     });
     setDraftText("");
+    setDraftReplacement("");
     setActiveId("__draft__");
   };
   const submitComment = async () => {
     if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
-    if (!draftText.trim()) { notify("Tulis komentarnya."); return; }
+    // Sama seperti markup dokumen upload: alasan opsional untuk Coret/Ganti.
+    const repl = draftReplacement.replace(/[\r\n]+/g, " ").trim();
+    if (draft.kind === "replace" && !repl) { notify("Isi teks pengganti."); return; }
+    const reason = draftText.trim();
+    const text = reason || (draft.kind === "replace" ? `Usul ganti: "${draft.quote}" → "${repl}"` : draft.kind === "strike" ? `Usul hapus: "${draft.quote}"` : "");
+    if (!text) { notify("Tulis komentarnya."); return; }
     setBusy(true);
     try {
       const res = await fetch(`/api/external-review/${token}/comments`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, clauseId: draft.clauseId, clauseTitle: draft.clauseTitle, text: draftText, kind: draft.kind, anchor: { start: draft.start, end: draft.end, quote: draft.quote } }),
+        body: JSON.stringify({
+          name, clauseId: draft.clauseId, clauseTitle: draft.clauseTitle, text, kind: draft.kind,
+          anchor: { start: draft.start, end: draft.end, quote: draft.quote },
+          ...(draft.kind !== "comment" ? { clauseMarkup: true } : {}),
+          ...(draft.kind === "replace" ? { replacement: repl } : {}),
+        }),
       });
       const j = await res.json();
       if (!res.ok) { notify(j.error || "Gagal mengirim komentar."); }
-      else { setDraft(null); setDraftText(""); setActiveId(null); notify("Komentar terkirim.", "success"); await load(); }
+      else { setDraft(null); setDraftText(""); setDraftReplacement(""); setActiveId(null); notify(draft.kind === "comment" ? "Komentar terkirim." : "Usulan terkirim.", "success"); await load(); }
     } catch { notify("Gagal mengirim komentar."); }
     finally { setBusy(false); }
   };
@@ -1161,7 +1195,7 @@ function ExternalReviewPage({ token }: { token: string }) {
   ];
   const marginItems: MarginItem[] = allComments
     .filter((x) => !x.parentId)
-    .map((x) => ({ id: x.id, clauseId: String(x.clauseId), kind: x.kind, resolved: !!x.resolved, anchor: x.anchor }));
+    .map((x) => ({ id: x.id, clauseId: String(x.clauseId), kind: x.kind, resolved: !!x.resolved, anchor: x.anchor, replacement: x.replacement, status: x.status }));
   if (draft) {
     marginItems.push({ id: "__draft__", clauseId: String(draft.clauseId), kind: draft.kind, resolved: false, anchor: { quote: draft.quote } });
   }
@@ -1170,22 +1204,31 @@ function ExternalReviewPage({ token }: { token: string }) {
     if (item.id === "__draft__") {
       if (!draft) return null;
       return (
-        <div className={`rounded-xl border-l-4 shadow-xl bg-slate-900 border border-dashed p-3 space-y-2 ${draft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-amber-400 border-amber-700/60"}`}>
+        <div className={`rounded-xl border-l-4 shadow-xl bg-slate-900 border border-dashed p-3 space-y-2 ${draft.kind === "comment" ? "border-l-amber-400 border-amber-700/60" : draft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-            {draft.kind === "strike" ? "✂ Usulan Coret" : "✎ Komentar Baru"}
+            {draft.kind === "comment" ? "✎ Komentar Baru" : draft.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
           </p>
-          <p className={`text-[11px] italic ${draft.kind === "strike" ? "text-rose-300 line-through" : "text-amber-200"}`}>"{draft.quote}"</p>
+          <p className={`text-[11px] italic ${draft.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{draft.quote}"</p>
+          {draft.kind === "replace" && (
+            <input
+              autoFocus
+              value={draftReplacement}
+              onChange={(e) => setDraftReplacement(e.target.value)}
+              placeholder="Teks pengganti…"
+              className="w-full px-2 py-1.5 bg-slate-950 border border-emerald-700/50 rounded-lg text-xs text-emerald-200 focus:outline-none focus:border-emerald-500"
+            />
+          )}
           <textarea
-            autoFocus
+            autoFocus={draft.kind !== "replace"}
             value={draftText}
             onChange={(e) => setDraftText(e.target.value)}
             rows={3}
-            placeholder="Tulis catatan / alasan revisi…"
+            placeholder={draft.kind === "comment" ? "Tulis komentar…" : "Alasan (opsional)…"}
             className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs focus:outline-none focus:border-indigo-500"
           />
           <div className="flex gap-2">
             <button onClick={submitComment} disabled={busy} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg cursor-pointer">Kirim</button>
-            <button onClick={() => { setDraft(null); setActiveId(null); }} className="px-2 py-1 text-slate-400 hover:text-slate-200 text-[11px] rounded-lg cursor-pointer">Batal</button>
+            <button onClick={() => { setDraft(null); setDraftReplacement(""); setActiveId(null); }} className="px-2 py-1 text-slate-400 hover:text-slate-200 text-[11px] rounded-lg cursor-pointer">Batal</button>
           </div>
         </div>
       );
@@ -1194,7 +1237,7 @@ function ExternalReviewPage({ token }: { token: string }) {
     if (!cm) return null;
     const replies = allComments.filter((x) => x.parentId === cm.id);
     return (
-      <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${cm.kind === "strike" ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 shadow-xl ring-1 ring-indigo-500/40" : "border-slate-800 shadow-md hover:border-slate-700"}`}>
+      <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${cm.kind === "strike" || cm.kind === "replace" ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 shadow-xl ring-1 ring-indigo-500/40" : "border-slate-800 shadow-md hover:border-slate-700"}`}>
         <div className="flex items-center gap-1.5">
           <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${cm.external ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-300"}`}>
             {String(cm.userName || "?").charAt(0).toUpperCase()}
@@ -1203,7 +1246,15 @@ function ExternalReviewPage({ token }: { token: string }) {
           {cm.external && <span className="text-[8px] font-bold px-1 py-px rounded bg-amber-500/20 text-amber-300 uppercase shrink-0">Eksternal</span>}
         </div>
         {cm.anchor?.quote && (
-          <p className={`text-[10px] italic ${cm.kind === "strike" ? "text-rose-300/80 line-through" : "text-amber-200/80"}`}>"{cm.anchor.quote}"</p>
+          <p className={`text-[10px] italic ${cm.kind === "strike" || cm.kind === "replace" ? "text-rose-300/80 line-through" : "text-amber-200/80"}`}>"{cm.anchor.quote}"</p>
+        )}
+        {cm.kind === "replace" && cm.replacement && (
+          <p className="text-[10px] text-emerald-300 border-l-2 border-emerald-500 pl-2 underline decoration-emerald-500/60">→ "{cm.replacement}"</p>
+        )}
+        {cm.status && cm.status !== "pending" && (
+          <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cm.status === "accepted" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+            {cm.status === "accepted" ? "✓ Diterima" : "✕ Ditolak"}
+          </span>
         )}
         <p className="text-[11px] text-slate-300 whitespace-pre-wrap">{cm.text}</p>
         {replies.map((rp) => (
@@ -1229,7 +1280,7 @@ function ExternalReviewPage({ token }: { token: string }) {
         onConfirm={doApprove}
         onCancel={() => setConfirmApprove(false)}
       />
-      <div className="max-w-6xl mx-auto p-4 sm:p-6 space-y-5">
+      <div className={`${c.documentSource === "upload" ? "max-w-7xl" : "max-w-6xl"} mx-auto p-4 sm:p-6 space-y-5`}>
         <header className="bg-slate-950/60 border border-slate-800 rounded-2xl p-5">
           <p className="text-[11px] uppercase tracking-wide text-indigo-400 font-bold">Tinjauan Dokumen — Pihak Kedua</p>
           <h1 className="text-xl font-bold mt-1">{c.title}</h1>
@@ -1251,11 +1302,11 @@ function ExternalReviewPage({ token }: { token: string }) {
             <p className="text-[11px] text-slate-500 mt-2">
               {c.documentSource === "upload" ? (
                 c.documentMarkup
-                  ? <><b>Sorot teks</b> pada dokumen di bawah → pilih <b>✎ Komentar</b>, <b>✂ Coret</b>, atau <b>⇄ Ganti</b> (usulan teks pengganti). Pemilik dokumen yang menentukan diterima atau tidaknya. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
-                  : <>Baca dokumen di bawah, tulis <b>komentar</b> pada kolom komentar bila ada yang perlu direvisi. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
+                  ? <><b>Sorot teks</b> pada dokumen → pilih <b>✎ Komentar</b>, <b>✂ Coret</b>, atau <b>⇄ Ganti</b> (usulan teks pengganti). Pemilik dokumen yang menentukan diterima atau tidaknya. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
+                  : <>Baca dokumen, tulis <b>komentar</b> pada kolom komentar di sebelahnya bila ada yang perlu direvisi. Bila sudah sesuai, klik <b>Setuju / OK</b>.</>
               ) : (
                 <>
-                  <b>Sorot (block) kalimat</b> pada klausul di bawah → muncul tombol <b>✎ Komentar Baru</b> / <b>✂ Usulkan Coret</b>.
+                  <b>Sorot (block) kalimat</b> pada klausul di bawah → muncul tombol <b>✎ Komentar</b> / <b>✂ Coret</b> / <b>⇄ Ganti</b> (usulan teks pengganti).
                   Komentar tampil sebagai kartu di margin kanan, tersambung garis ke kalimatnya. Bila sudah sesuai, klik <b>Setuju / OK</b>.
                 </>
               )}
@@ -1269,6 +1320,10 @@ function ExternalReviewPage({ token }: { token: string }) {
               <p className="text-[11px] text-slate-500 truncate">
                 Berkas: <b className="text-slate-300">{c.documentName || "Dokumen"}</b>{c.documentVersion != null ? ` (versi ${c.documentVersion}, aktif)` : ""} — ditampilkan apa adanya, baca-saja.
               </p>
+              {/* Susunan sama dgn Mode Tinjau internal: dokumen di kiri, kolom
+                  komentar/coret di kanan sejajar dokumen (bukan di bawahnya). */}
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
+              <div className="min-w-0">
               {c.documentMarkup ? (
                 <DocxMarkupView
                   src={`/api/external-review/${token}/document`}
@@ -1288,6 +1343,9 @@ function ExternalReviewPage({ token }: { token: string }) {
               ) : (
                 <ReadOnlyDocumentView src={`/api/external-review/${token}/document`} format={c.documentFormat || "unsupported"} mimeType={c.documentMime} />
               )}
+              </div>
+              <div className="space-y-3 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
+              <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({allComments.filter((x) => !x.parentId).length})</h3>
               {mkSeed && (
                 <div className={`rounded-xl bg-slate-900 border border-dashed p-3 space-y-2 border-l-4 ${mkSeed.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : mkSeed.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
                   <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
@@ -1308,7 +1366,6 @@ function ExternalReviewPage({ token }: { token: string }) {
                 </div>
               )}
               <div className="space-y-3">
-                <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({allComments.filter((x) => !x.parentId).length})</h3>
                 {allComments.filter((x) => !x.parentId).length === 0 && (
                   <div className="rounded-xl border border-dashed border-slate-800 p-3 text-[11px] text-slate-500">Belum ada komentar.</div>
                 )}
@@ -1338,6 +1395,8 @@ function ExternalReviewPage({ token }: { token: string }) {
                   className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
                 <button onClick={submitGeneralComment} disabled={busy || data.locked || !draftText.trim()}
                   className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-sm font-bold rounded-lg cursor-pointer">Kirim Komentar</button>
+              </div>
+              </div>
               </div>
             </div>
           ) : (
@@ -2817,9 +2876,9 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
   return (
     <div className="space-y-6">
       {toast && (
-        <div className={`fixed top-5 right-5 z-[100] animate-fadeIn shadow-2xl flex items-center gap-2.5 pl-3.5 pr-4 py-3 rounded-lg border bg-white max-w-sm ${toast.kind === "error" ? "border-rose-400" : "border-emerald-400"}`}>
+        <div className={`fixed top-5 right-5 z-[100] animate-fadeIn shadow-2xl flex items-center gap-2.5 pl-3.5 pr-4 py-3 rounded-lg border bg-slate-900 max-w-sm ${toast.kind === "error" ? "border-rose-400" : "border-emerald-400"}`} role="status" aria-live="polite">
           {toast.kind === "error" ? <AlertTriangle className="text-rose-500 w-4 h-4 shrink-0" /> : <CheckCircle className="text-emerald-500 w-4 h-4 shrink-0" />}
-          <p className="text-[13px] font-semibold leading-snug text-slate-800">{toast.text}</p>
+          <p className="text-[13px] font-semibold leading-snug text-slate-100">{toast.text}</p>
         </div>
       )}
 
@@ -3508,6 +3567,49 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
             ))}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Grafik batang mini di kartu statistik: batang pucat, batang terakhir disorot.
+function MiniBars({ values }: { values: number[] }) {
+  const max = Math.max(1, ...values);
+  return (
+    <div className="flex items-end gap-1 h-11 shrink-0" aria-hidden="true">
+      {values.map((v, i) => (
+        <span
+          key={i}
+          className={`w-2 rounded-sm ${i === values.length - 1 ? "bg-soft-blue" : "bg-mist"}`}
+          style={{ height: `${Math.max(12, Math.round((v / max) * 100))}%` }}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Cincin proporsi (donut) tanpa library: segmen berurutan, angka di tengah.
+function StatusRing({ segments, center, sub }: { segments: { value: number; color: string }[]; center: string; sub: string }) {
+  const total = segments.reduce((a, b) => a + b.value, 0);
+  const R = 46, C = 2 * Math.PI * R;
+  let offset = 0;
+  return (
+    <div className="relative w-40 h-40">
+      <svg viewBox="0 0 120 120" className="w-full h-full -rotate-90">
+        <circle cx="60" cy="60" r={R} fill="none" stroke="var(--color-slate-900)" strokeWidth="12" />
+        {total > 0 && segments.map((sg, i) => {
+          const len = (sg.value / total) * C;
+          const el = sg.value > 0 ? (
+            <circle key={i} cx="60" cy="60" r={R} fill="none" stroke={sg.color} strokeWidth="12"
+              strokeDasharray={`${Math.max(0, len - 2)} ${C}`} strokeDashoffset={-offset} />
+          ) : null;
+          offset += len;
+          return el;
+        })}
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="text-[28px] leading-none font-semibold text-slate-100 tabular">{center}</span>
+        <span className="text-[11px] text-slate-500 mt-1">{sub}</span>
       </div>
     </div>
   );
@@ -4859,6 +4961,7 @@ export default function App() {
   const [activeMarginId, setActiveMarginId] = useState<string | null>(null);
   const [marginDraft, setMarginDraft] = useState<(MarginDraftSeed & { start: number; end: number }) | null>(null);
   const [marginDraftText, setMarginDraftText] = useState("");
+  const [marginDraftReplacement, setMarginDraftReplacement] = useState(""); // teks pengganti (usulan "Ganti" pada pasal)
   const [marginReplyText, setMarginReplyText] = useState("");
   const [marginBusy, setMarginBusy] = useState(false);
   // Saat terisi: sorotan BERIKUTNYA yang dipilih user akan MENGGANTI anchor
@@ -5366,6 +5469,7 @@ export default function App() {
 
     setMarginDraft({ ...seed, ...anchorPayload });
     setMarginDraftText("");
+    setMarginDraftReplacement("");
     setActiveMarginId("__draft__");
   };
 
@@ -5389,7 +5493,14 @@ export default function App() {
   };
 
   const submitMarginComment = async () => {
-    if (!selectedContract || !marginDraft || !marginDraftText.trim()) return;
+    if (!selectedContract || !marginDraft) return;
+    // Sama seperti markup dokumen upload: alasan opsional untuk Coret/Ganti,
+    // wajib hanya untuk komentar biasa.
+    const repl = marginDraftReplacement.replace(/[\r\n]+/g, " ").trim();
+    if (marginDraft.kind === "replace" && !repl) { showToast("Isi teks pengganti.", "warning"); return; }
+    const reason = marginDraftText.trim();
+    const text = reason || (marginDraft.kind === "replace" ? `Usul ganti: "${marginDraft.quote}" → "${repl}"` : marginDraft.kind === "strike" ? `Usul hapus: "${marginDraft.quote}"` : "");
+    if (!text) return;
     setMarginBusy(true);
     try {
       const res = await fetch(`/api/contracts/${selectedContract.id}/comments`, {
@@ -5398,18 +5509,26 @@ export default function App() {
         body: JSON.stringify({
           clauseId: marginDraft.clauseId,
           clauseTitle: marginDraft.clauseTitle,
-          text: marginDraftText.trim(),
+          text,
           kind: marginDraft.kind,
           anchor: { start: marginDraft.start, end: marginDraft.end, quote: marginDraft.quote },
+          ...(marginDraft.kind !== "comment" ? { clauseMarkup: true } : {}),
+          ...(marginDraft.kind === "replace" ? { replacement: repl } : {}),
         }),
       });
-      if (!res.ok) { showToast("Gagal menambahkan komentar", "warning"); return; }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        showToast(err.error || "Gagal menambahkan komentar", "warning");
+        return;
+      }
       const data = await res.json();
       setClauseComments((prev) => [...prev, data.comment]);
+      const kindDone = marginDraft.kind;
       setMarginDraft(null);
       setMarginDraftText("");
+      setMarginDraftReplacement("");
       setActiveMarginId(data.comment.id);
-      showToast(marginDraft.kind === "strike" ? "Usulan coret ditambahkan" : "Komentar ditambahkan", "success");
+      showToast(kindDone === "replace" ? "Usulan ganti ditambahkan" : kindDone === "strike" ? "Usulan coret ditambahkan" : "Komentar ditambahkan", "success");
     } catch {
       showToast("Gagal menambahkan komentar", "warning");
     } finally {
@@ -5503,6 +5622,56 @@ export default function App() {
       showToast(saved ? `Usulan diterima — tersimpan sebagai Versi ${r.version}.` : `Dokumen sudah diperbarui (Versi ${r.version}), tetapi status usulan gagal disimpan.`, saved ? "success" : "warning");
     } catch (e: any) {
       showToast(e?.message || "Gagal menerapkan usulan", "warning");
+    } finally {
+      setMarginBusy(false);
+    }
+  };
+
+  // Terima usulan Coret/Ganti pada PASAL template: terapkan ke teks pasal dan
+  // simpan sebagai versi baru draf (riwayat versi tetap utuh), lalu tandai
+  // diterima. Kutipan dicari di isi pasal MENTAH (bukan teks tampil), jadi
+  // bila kutipannya melintasi {{variabel}} atau format tebal/miring, usulan
+  // tidak diterapkan otomatis — pengguna diminta mengubah manual di Editor Pasal.
+  const handleAcceptClauseMarkup = async (cmt: ClauseComment) => {
+    if (!selectedContract || !cmt.anchor?.quote) return;
+    const quote = cmt.anchor.quote;
+    const idx = selectedContract.clauses.findIndex((x, i) => (x.id || String(i)) === cmt.clauseId);
+    if (idx < 0) { showToast("Pasal untuk usulan ini tidak ditemukan lagi.", "warning"); return; }
+    const raw = String(selectedContract.clauses[idx].content || "");
+    const display = stripHtmlOnly(substituteVars(raw, selectedContract.variables));
+    // Kemunculan ke-n kutipan (n dihitung dari teks tampil sebelum posisi sorotan)
+    // dipakai untuk memilih kemunculan yang sama di teks mentah.
+    let nth = 0;
+    for (let from = display.indexOf(quote); from >= 0 && from < cmt.anchor.start; from = display.indexOf(quote, from + 1)) nth++;
+    let at = -1;
+    for (let i = 0, from = 0; i <= nth; i++) {
+      at = raw.indexOf(quote, from);
+      if (at < 0) break;
+      from = at + 1;
+    }
+    if (at < 0) {
+      showToast("Kutipan tidak ditemukan utuh di isi pasal (mungkin melintasi {{variabel}} atau format tebal/miring). Ubah manual lewat Editor Pasal, lalu tolak usulan ini.", "warning");
+      return;
+    }
+    const isRich = /<\/?[a-z][^>]*>/i.test(raw);
+    const insert = cmt.kind === "replace" ? (isRich ? escapeHtml(cmt.replacement || "") : (cmt.replacement || "")) : "";
+    const before = raw.slice(0, at);
+    let after = raw.slice(at + quote.length);
+    // Coret: rapikan spasi ganda yang tersisa di bekas potongan.
+    if (!insert && before.endsWith(" ") && after.startsWith(" ")) after = after.slice(1);
+    const updated: Contract = {
+      ...selectedContract,
+      clauses: selectedContract.clauses.map((c, i) => (i === idx ? { ...c, content: before + insert + after } : c)),
+    };
+    setMarginBusy(true);
+    try {
+      const note = cmt.kind === "replace"
+        ? `Terima usulan ${cmt.userName}: "${quote}" → "${cmt.replacement || ""}"`
+        : `Terima usulan hapus dari ${cmt.userName}: "${quote}"`;
+      const saved = await handleUpdateContractDraft(note.slice(0, 480), updated);
+      if (!saved) return; // galat sudah ditampilkan oleh handleUpdateContractDraft
+      const marked = await putMarkupStatus(cmt, "accepted");
+      if (!marked) showToast("Pasal sudah diperbarui, tetapi status usulan gagal disimpan.", "warning");
     } finally {
       setMarginBusy(false);
     }
@@ -6470,7 +6639,7 @@ export default function App() {
     // berubah), lalu respons lama itu menimpa balik update optimistis di
     // layar — persis gejala "toast tersimpan, tapi tampilan gak berubah".
     const target = contractOverride || selectedContract;
-    if (!target) return;
+    if (!target) return false;
 
     try {
       const res = await fetch(`/api/contracts/${target.id}`, {
@@ -6494,14 +6663,17 @@ export default function App() {
         const versions = await resVersions.json();
         setContractVersions(versions);
         fetchInitialData();
+        return true;
       } else {
         // dulu tidak ada else → penolakan validasi server (success:false) senyap,
         // user tak tahu simpanannya gagal. Sekarang selalu munculkan pop-up.
         showToast(data.error || "Gagal menyimpan perubahan", "warning");
+        return false;
       }
     } catch (err) {
       console.error(err);
       showToast("Gagal menyimpan perubahan", "warning");
+      return false;
     }
   };
 
@@ -11026,7 +11198,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-shell md:p-3 text-slate-100 flex flex-col font-sans">
       {/* Kontrol gambar mengambang ala Canva — global, lepas dari alur
           dokumen manapun (lihat komentar di definisi komponennya). */}
       <ImageSelectionOverlay />
@@ -11046,7 +11218,7 @@ export default function App() {
             ? { icon: <Bell className="text-indigo-500 w-4 h-4 shrink-0" />, ring: "border-indigo-500/40", bar: "bg-indigo-500" }
             : { icon: <CheckCircle className="text-emerald-500 w-4 h-4 shrink-0" />, ring: "border-emerald-500/40", bar: "bg-emerald-500" };
         return (
-          <div className={`fixed top-5 right-5 z-[100] animate-fadeIn shadow-2xl flex items-center gap-2.5 pl-3.5 pr-4 py-3 rounded-lg border bg-white text-slate-100 ${style.ring} overflow-hidden max-w-sm`} role="status" aria-live="polite">
+          <div className={`fixed top-5 right-5 z-[100] animate-fadeIn shadow-2xl flex items-center gap-2.5 pl-3.5 pr-4 py-3 rounded-lg border bg-slate-900 text-slate-100 ${style.ring} overflow-hidden max-w-sm`} role="status" aria-live="polite">
             <span className={`absolute left-0 top-0 bottom-0 w-1 ${style.bar}`} />
             {style.icon}
             <p className="text-[13px] font-semibold leading-snug">{toast.message}</p>
@@ -11055,7 +11227,7 @@ export default function App() {
       })()}
 
       {/* Top Header */}
-      <header className="border-b border-white/5 bg-slate-950/40 backdrop-blur-xl px-6 py-4 flex items-center justify-between sticky top-0 z-40">
+      <header className="bg-slate-900 md:rounded-t-[16px] px-6 py-4 flex items-center justify-between sticky top-0 z-40">
         <div className="flex items-center gap-3 min-w-0">
           {/* Fallback toggle buat mobile — di desktop dipindah jadi handle
               di pembatas sidebar (lihat dekat <aside>). */}
@@ -11068,8 +11240,8 @@ export default function App() {
             {sidebarOpen ? <PanelLeftClose className="w-[18px] h-[18px]" /> : <PanelLeftOpen className="w-[18px] h-[18px]" />}
           </button>
 
-          <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-center shrink-0">
-            <FileText className="text-indigo-400 w-[18px] h-[18px]" strokeWidth={2.25} />
+          <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center shrink-0">
+            <FileText className="text-white w-[18px] h-[18px]" strokeWidth={2.25} />
           </div>
           <div className="hidden sm:block shrink-0">
             <h1 className="font-semibold text-[15px] leading-tight text-slate-100 tracking-tight">
@@ -11080,15 +11252,6 @@ export default function App() {
             </p>
           </div>
 
-          {/* Ucapan selamat datang — cuma tampil di Dashboard, ilang di tab lain. */}
-          {activeTab === "dashboard" && (
-            <div className="hidden lg:flex items-center gap-2 pl-4 ml-1 border-l border-slate-800 min-w-0 animate-fadeIn">
-              <span className="text-base leading-none shrink-0">👋</span>
-              <p className="text-[13px] text-slate-300 truncate">
-                Selamat datang kembali, <span className="font-semibold text-slate-100">{currentUser.name}</span>
-              </p>
-            </div>
-          )}
         </div>
 
         <div className="flex items-center gap-3">
@@ -11097,7 +11260,15 @@ export default function App() {
               kontrak yang cocok — supaya bener-bener "search semua fitur", bukan
               cuma tabel dokumen. */}
           <div className="relative hidden md:block">
-            <div className="flex items-center gap-1.5 bg-slate-900/50 border border-slate-800 rounded-full pl-4 pr-1.5 py-1.5 w-56 lg:w-80 focus-within:border-indigo-500/50 transition">
+            <div className="flex items-center gap-2 bg-slate-950 rounded-lg pl-3 pr-4 py-2.5 w-56 lg:w-80 transition">
+              <button
+                onClick={submitNavbarSearch}
+                className="shrink-0 text-slate-500 hover:text-slate-100 transition cursor-pointer"
+                title="Cari"
+                aria-label="Cari"
+              >
+                <Search className="w-4 h-4" />
+              </button>
               <input
                 type="text"
                 value={navbarSearch}
@@ -11114,14 +11285,6 @@ export default function App() {
                 placeholder="Cari fitur, kontrak & dokumen…"
                 className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
               />
-              <button
-                onClick={submitNavbarSearch}
-                className="shrink-0 w-7 h-7 rounded-full bg-indigo-500 hover:bg-indigo-400 flex items-center justify-center transition cursor-pointer"
-                title="Cari"
-                aria-label="Cari"
-              >
-                <Search className="w-3.5 h-3.5 text-white" />
-              </button>
             </div>
 
             {navbarSearchFocused && navbarSearch.trim().length > 0 && (
@@ -11185,7 +11348,7 @@ export default function App() {
           {/* Dark / light theme toggle */}
           <button
             onClick={toggleTheme}
-            className="p-2 rounded-lg bg-slate-900/60 border border-slate-800 hover:bg-slate-800 transition cursor-pointer shrink-0"
+            className="p-2.5 rounded-lg bg-slate-950 hover:bg-slate-800 transition cursor-pointer shrink-0"
             title={theme === "dark" ? "Ganti ke mode terang" : "Ganti ke mode gelap"}
             aria-label="Ganti tema"
           >
@@ -11200,12 +11363,12 @@ export default function App() {
           <div className="relative group">
             <button
               onClick={handleMarkNotificationsRead}
-              className="relative p-2.5 rounded-full hover:bg-slate-800/40 transition cursor-pointer"
+              className="relative p-2.5 rounded-lg bg-slate-950 hover:bg-slate-800 transition cursor-pointer"
               title="Tandai semua telah dibaca"
             >
-              <Bell className="w-5 h-5 text-slate-300" />
+              <Bell className="w-[18px] h-[18px] text-slate-300" />
               {notifications.filter((n) => !n.read).length > 0 && (
-                <span className="absolute top-0.5 right-0.5 bg-rose-500 text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full font-bold ring-2 ring-slate-950">
+                <span className="absolute -top-1 -right-1 bg-brand-orange text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full font-bold">
                   {notifications.filter((n) => !n.read).length}
                 </span>
               )}
@@ -11213,8 +11376,8 @@ export default function App() {
           </div>
 
           <div className="relative group">
-            <button className="flex items-center gap-2.5 pl-1 pr-2 py-1 rounded-full hover:bg-slate-800/40 transition cursor-pointer">
-              <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center text-white font-bold text-xs shrink-0">
+            <button className="flex items-center gap-2.5 pl-1 pr-3 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 transition cursor-pointer">
+              <div className="w-8 h-8 rounded-md bg-indigo-600 flex items-center justify-center text-white font-bold text-xs shrink-0">
                 {(currentUser.name || "U").trim().charAt(0).toUpperCase()}
               </div>
               <div className="hidden sm:block text-left leading-tight">
@@ -11261,14 +11424,14 @@ export default function App() {
       </header>
 
       {/* Main Body */}
-      <div className="flex-1 flex flex-col md:flex-row">
+      <div className="flex-1 flex flex-col md:flex-row bg-slate-900 md:rounded-b-[16px]">
         {/* Handle pembatas sidebar — nempel di garis batas sidebar/konten,
             posisi fixed di tengah layar biar tetap kelihatan walau discroll.
             Cuma di desktop (mobile tetap pakai tombol di navbar). */}
         <button
           onClick={() => setSidebarOpen((o) => !o)}
           className={`hidden md:flex items-center justify-center fixed top-1/2 -translate-y-1/2 z-30 w-5 h-14 rounded-r-lg bg-slate-900/90 border border-l-0 border-slate-800 hover:bg-slate-800 hover:w-6 transition-all cursor-pointer text-slate-400 hover:text-slate-100 ${
-            sidebarOpen ? "left-64" : "left-0"
+            sidebarOpen ? "left-[16.75rem]" : "left-3"
           }`}
           title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
           aria-label="Tampilkan/sembunyikan sidebar"
@@ -11277,7 +11440,7 @@ export default function App() {
         </button>
 
         {sidebarOpen && (
-        <aside className="w-full md:w-64 bg-slate-950/30 backdrop-blur-xl border-r border-white/5 p-4 space-y-4 shrink-0 flex flex-col justify-between animate-fadeIn">
+        <aside className="w-full md:w-64 bg-slate-900 p-4 space-y-4 shrink-0 flex flex-col justify-between animate-fadeIn">
           <div className="space-y-4">
             <div>
               <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2">
@@ -11292,8 +11455,8 @@ export default function App() {
                 }}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "dashboard"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <LayoutDashboard className="w-4 h-4" />
@@ -11301,7 +11464,7 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5">
                 Legal
               </p>
               {canSee("dashboard-legal") && (
@@ -11309,8 +11472,8 @@ export default function App() {
                 onClick={() => { setActiveTab("dashboard-legal"); setSelectedContract(null); }}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "dashboard-legal"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <LayoutDashboard className="w-4 h-4" />
@@ -11322,8 +11485,8 @@ export default function App() {
                 onClick={() => { setActiveTab("pekerjaan-legal"); setSelectedContract(null); }}
                 className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "pekerjaan-legal"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <ClipboardList className="w-4 h-4" />
@@ -11331,7 +11494,7 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5" title="Perjanjian dengan pihak kedua — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
                 Dokumen Eksternal &middot; Kontrak
               </p>
               {canSee("monitoring") && (
@@ -11342,8 +11505,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "monitoring"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -11375,8 +11538,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "kontrak-karyawan"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -11401,8 +11564,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "clauses"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <Sliders className="w-4 h-4" />
@@ -11410,7 +11573,7 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5" title="SOP, Instruksi Kerja, Memo, Kebijakan — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem, tidak perlu meterai.">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="SOP, Instruksi Kerja, Memo, Kebijakan — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem, tidak perlu meterai.">
                 Dokumen Internal &middot; DCS
               </p>
               {canSee("internal-docs") && (
@@ -11421,8 +11584,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "internal-docs"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <Workflow className="w-4 h-4" />
@@ -11430,7 +11593,7 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[9.5px] font-bold text-slate-600 uppercase tracking-wide px-3 mt-4 mb-1.5" title="Gabungan dokumen dari kedua jalur — menampilkan kontrak eksternal maupun dokumen DCS bersama-sama.">
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Gabungan dokumen dari kedua jalur — menampilkan kontrak eksternal maupun dokumen DCS bersama-sama.">
                 Arsip &amp; Daftar &middot; Gabungan
               </p>
               {canSee("arsip") && (
@@ -11441,8 +11604,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "arsip"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
                 title="Dokumen tersusun per folder & subfolder — untuk menelusuri berdasarkan pengelompokan."
               >
@@ -11459,8 +11622,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "all-docs"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
                 title="Satu tabel datar berisi semua kontrak & dokumen DCS — untuk aksi massal, penyaringan, dan ekspor CSV."
               >
@@ -11477,8 +11640,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "konfigurasi"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <Sliders className="w-4 h-4" />
@@ -11494,8 +11657,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "audits"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <Settings className="w-4 h-4" />
@@ -11511,8 +11674,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "audit-kontrak-dcs"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
                 title="Audit Trail yang sama, disaring khusus Kontrak Eksternal, Kontrak Karyawan, dan Dokumen DCS."
               >
@@ -11529,8 +11692,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "kalender-legal"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <CalendarDays className="w-4 h-4" />
@@ -11546,8 +11709,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "retensi-arsip"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <Archive className="w-4 h-4" />
@@ -11563,8 +11726,8 @@ export default function App() {
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                   activeTab === "performa-vendor"
-                    ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                    : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                    ? "bg-soft-blue text-white font-semibold"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
               >
                 <Star className="w-4 h-4" />
@@ -11595,8 +11758,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "pusat-peraturan"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <Scale className="w-4 h-4" />
@@ -11610,8 +11773,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "putusan-pengadilan"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <FolderOpen className="w-4 h-4" />
@@ -11625,8 +11788,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "opini-hukum"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <MessageSquare className="w-4 h-4" />
@@ -11640,8 +11803,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "terjemah-dokumen"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <Languages className="w-4 h-4" />
@@ -11655,8 +11818,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "review-dokumen"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <Search className="w-4 h-4" />
@@ -11670,8 +11833,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "bandingkan-dokumen"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <ArrowLeftRight className="w-4 h-4" />
@@ -11685,8 +11848,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "buat-draft-ai"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />
@@ -11700,8 +11863,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "tabular"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <LayoutDashboard className="w-4 h-4" />
@@ -11716,8 +11879,8 @@ export default function App() {
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       activeTab === "analytics"
-                        ? "bg-indigo-600/20 text-indigo-400 border border-indigo-500/30"
-                        : "text-slate-400 hover:bg-slate-800/40 hover:text-slate-100"
+                        ? "bg-soft-blue text-white font-semibold"
+                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                     }`}
                   >
                     <LineChart className="w-4 h-4" />
@@ -11729,7 +11892,7 @@ export default function App() {
             )}
           </div>
 
-        </aside>
+                </aside>
         )}
 
         {/* Center Dynamic Content Area */}
@@ -13248,30 +13411,65 @@ export default function App() {
           )}
 
           {/* VIEW: DASHBOARD */}
-          {activeTab === "dashboard" && !selectedContract && (
-            <div className="space-y-6">
-              {/* Header */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          {activeTab === "dashboard" && !selectedContract && (() => {
+          // Data ringkas untuk grafik mini — semuanya dari data kontrak nyata.
+          const parseD = (v: any) => { const t = new Date(v); return isNaN(t.getTime()) ? null : t; };
+          const monthKeys = Array.from({ length: 6 }, (_, i) => {
+            const t = new Date(today.getFullYear(), today.getMonth() - (5 - i), 1);
+            return { y: t.getFullYear(), m: t.getMonth() };
+          });
+          const perMonth = (list: any[], val: (c: any) => number) =>
+            monthKeys.map((k) => list.reduce((sum, c) => {
+              const t = parseD(c.startDate);
+              return t && t.getFullYear() === k.y && t.getMonth() === k.m ? sum + val(c) : sum;
+            }, 0));
+          const aktifList = contracts.filter((c) => c.status === "Aktif");
+          const draftList = contracts.filter((c) => c.status === "Draft");
+          const weeklyExpiry = [0, 1, 2, 3].map((w) =>
+            aktifList.filter((c) => { const dl = getDaysRemaining(c.endDate); return dl >= w * 7 && dl < (w + 1) * 7 + (w === 3 ? 2 : 0); }).length);
+          const statCards = [
+            { label: "Kontrak Aktif", value: `${aktifList.length}`, unit: "kontrak", Icon: CheckCircle, bars: perMonth(aktifList, () => 1) },
+            { label: "Draft Kontrak", value: `${draftContractsCount}`, unit: "draft", Icon: Clock, bars: perMonth(draftList, () => 1) },
+            { label: "Segera Berakhir · 30 hari", value: `${criticalExpiryContracts.length}`, unit: "kontrak", Icon: ShieldAlert, bars: weeklyExpiry },
+            { label: "Portfolio Value (GA)", value: `Rp ${totalValueActive.toLocaleString("id-ID")}`, unit: "", Icon: Building2, bars: perMonth(aktifList, (c) => Number(c.contractValue) || 0) },
+          ];
+          const otherCount = Math.max(0, contracts.length - aktifList.length - draftList.length);
+          const aktifPct = contracts.length ? Math.round((aktifList.length / contracts.length) * 100) : 0;
+          const nextExp = aktifList
+            .filter((c) => c.endDate && getDaysRemaining(c.endDate) >= 0)
+            .sort((x, y) => getDaysRemaining(x.endDate) - getDaysRemaining(y.endDate))[0];
+          const nextProgress = (() => {
+            if (!nextExp) return 0;
+            const st = parseD(nextExp.startDate), en = parseD(nextExp.endDate);
+            if (!st || !en || en <= st) return 0;
+            return Math.min(100, Math.max(0, Math.round(((today.getTime() - st.getTime()) / (en.getTime() - st.getTime())) * 100)));
+          })();
+
+          return (
+            <div className="space-y-4">
+              {/* Sapaan + aksi */}
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                 <div className="space-y-1">
-                  <h2 className="text-xl font-semibold text-slate-100 tracking-tight">Beranda</h2>
-                  <p className="text-[13px] text-slate-500 max-w-xl">
-                    Manajemen kontrak digital General Affair — Clause Library terpusat &amp; kepatuhan hukum terintegrasi.
+                  <h2 className="text-[26px] leading-tight font-semibold text-slate-100">
+                    Selamat datang, {(currentUser.name || "").split(" ")[0]}!
+                  </h2>
+                  <p className="text-[12px] text-slate-500">
+                    {criticalExpiryContracts.length > 0
+                      ? `Ada ${criticalExpiryContracts.length} kontrak yang segera berakhir.`
+                      : "Tidak ada kontrak yang mendekati masa berakhir."}
                   </p>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     onClick={() => { setActiveTab("analytics"); fetchAnalytics(); }}
-                    className="flex items-center gap-2 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 rounded-lg text-[13px] font-semibold transition cursor-pointer"
+                    className="flex items-center gap-2 px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 rounded-lg text-[13px] font-semibold transition cursor-pointer"
                   >
                     <LineChart className="w-4 h-4" />
                     Analytics &amp; Risk
                   </button>
                   <button
-                    onClick={() => {
-                      setIsCreating(true);
-                      setActiveTab("monitoring");
-                    }}
-                    className="flex items-center gap-2 px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[13px] font-semibold transition cursor-pointer"
+                    onClick={() => { setIsCreating(true); setActiveTab("monitoring"); }}
+                    className="flex items-center gap-2 px-3.5 py-2 bg-soft-blue hover:opacity-90 text-white rounded-lg text-[13px] font-semibold transition cursor-pointer"
                   >
                     <Plus className="w-4 h-4" />
                     Request kontrak baru
@@ -13279,24 +13477,23 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Stat cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                {[
-                  { label: "Kontrak Aktif", value: `${contracts.filter((c) => c.status === "Aktif").length}`, unit: "kontrak", sub: "Masa berlaku valid", Icon: CheckCircle, tone: "text-emerald-400" },
-                  { label: "Draft Kontrak", value: `${draftContractsCount}`, unit: "draft", sub: "Belum diaktifkan", Icon: Clock, tone: "text-amber-400" },
-                  { label: "Segera Berakhir · 30 hari", value: `${criticalExpiryContracts.length}`, unit: "kontrak", sub: "Butuh keputusan perpanjangan", Icon: ShieldAlert, tone: "text-rose-400" },
-                  { label: "Portfolio Value (GA)", value: `Rp ${totalValueActive.toLocaleString("id-ID")}`, unit: "", sub: "Kontrak aktif enterprise", Icon: Building2, tone: "text-indigo-400" },
-                ].map((s, i) => (
-                  <div key={i} className="rounded-xl border border-slate-800/80 bg-slate-900/30 p-4 space-y-3 hover:border-slate-700 transition">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">{s.label}</p>
-                      <s.Icon className={`w-4 h-4 ${s.tone}`} />
+              {/* Kartu statistik + grafik mini */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {statCards.map((sc, i) => (
+                  <div key={i} className="rounded-[14px] bg-slate-950 p-5">
+                    <p className="text-[13px] text-slate-500">{sc.label}</p>
+                    <div className="flex items-end justify-between gap-3 mt-3">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="w-9 h-9 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                          <sc.Icon className="w-4 h-4 text-slate-900" />
+                        </span>
+                        <div className="min-w-0">
+                          <p className={`${sc.value.length > 9 ? "text-[17px]" : "text-[28px]"} leading-none font-semibold tabular text-slate-100 truncate`}>{sc.value}</p>
+                          {sc.unit && <p className="text-[11px] text-slate-500 mt-1">{sc.unit}</p>}
+                        </div>
+                      </div>
+                      <MiniBars values={sc.bars} />
                     </div>
-                    <div className="flex items-baseline gap-1.5">
-                      <p className="text-[26px] leading-none font-semibold tabular tracking-tight text-slate-100">{s.value}</p>
-                      {s.unit && <span className="text-xs text-slate-500 font-medium">{s.unit}</span>}
-                    </div>
-                    <p className="text-[11px] text-slate-500">{s.sub}</p>
                   </div>
                 ))}
               </div>
@@ -13305,15 +13502,15 @@ export default function App() {
                   Sebelum ini approver tak punya satu pun tempat untuk melihat
                   giliran dirinya; harus menyisir Monitoring manual. */}
               {myApprovalQueue.length > 0 && (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.07] p-4 space-y-3">
+                <div className="rounded-[14px] bg-peach p-5 space-y-3">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1.5">
-                      <ShieldAlert className="w-3.5 h-3.5" />
+                    <p className="text-[15px] font-semibold text-slate-100 flex items-center gap-2">
+                      <ShieldAlert className="w-4 h-4 text-brand-orange" />
                       Perlu Persetujuan Saya
                       {/* amber-200/300 nyaris tak terbaca di tema terang —
                           pakai amber tua untuk teks di atas latar amber pucat. */}
                       {myApprovalCount > 0 && (
-                        <span className="ml-1 px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-800 text-[10px] font-bold tabular-nums">{myApprovalCount}</span>
+                        <span className="ml-1 px-2 py-0.5 rounded-md bg-slate-900 text-brand-orange text-[11px] font-bold tabular-nums">{myApprovalCount}</span>
                       )}
                     </p>
                     <span className="text-[10px] text-slate-500">
@@ -13332,7 +13529,7 @@ export default function App() {
                         <button
                           key={c.id}
                           onClick={() => handleOpenWorkspace(c)}
-                          className="w-full text-left p-2.5 rounded-xl border bg-slate-950/40 border-slate-800 hover:border-amber-500/40 transition cursor-pointer flex items-center gap-3"
+                          className="w-full text-left p-3 rounded-xl bg-slate-900 hover:bg-slate-850 transition cursor-pointer flex items-center gap-3"
                         >
                           <div className="min-w-0 flex-1">
                             <p className="text-[13px] font-semibold text-slate-100 truncate">{c.title}</p>
@@ -13344,13 +13541,13 @@ export default function App() {
                           </div>
                           <div className="shrink-0 text-right">
                             {isMine ? (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-800 uppercase">Giliran Anda</span>
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-slate-900 text-brand-orange uppercase">Giliran Anda</span>
                             ) : asDelegate ? (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-violet-500/25 text-violet-800 uppercase" title={`${step.approverName} sedang berhalangan dan menunjuk Anda sebagai pengganti. Keputusan tetap tercatat atas nama ${step.approverName}.`}>
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-violet-500/25 text-violet-800 uppercase" title={`${step.approverName} sedang berhalangan dan menunjuk Anda sebagai pengganti. Keputusan tetap tercatat atas nama ${step.approverName}.`}>
                                 Pengganti · {step.approverName}
                               </span>
                             ) : (
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-700/40 text-slate-300 uppercase" title={`Giliran ${step.approverName} — Anda bisa memutuskan sebagai override admin.`}>
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded-md bg-slate-700/40 text-slate-300 uppercase" title={`Giliran ${step.approverName} — Anda bisa memutuskan sebagai override admin.`}>
                                 Override · {step.approverName}
                               </span>
                             )}
@@ -13365,7 +13562,7 @@ export default function App() {
                     })}
                   </div>
                   {myApprovalQueue.length > 6 && (
-                    <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("OnReview"); }} className="text-[11px] text-amber-300 hover:underline font-semibold cursor-pointer">
+                    <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("OnReview"); }} className="text-[12px] text-indigo-400 hover:underline font-semibold cursor-pointer">
                       Lihat semua {myApprovalQueue.length} dokumen di Monitoring →
                     </button>
                   )}
@@ -13376,17 +13573,17 @@ export default function App() {
                   (tidak dijumlah sbg rupiah; hanya estimasi utk yg nilai kontraknya
                   diketahui). Muncul hanya kalau ada kontrak ber-sharing-fee. */}
               {sharingFeeStats.hasAny && (
-                <div className="rounded-xl border border-slate-800/80 bg-slate-900/30 p-4 space-y-3">
+                <div className="rounded-[14px] bg-slate-950 p-5 space-y-3">
                   <div className="flex items-center justify-between">
-                    <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide flex items-center gap-1.5">
-                      <Percent className="w-3.5 h-3.5 text-indigo-400" /> Sharing Fee Kontrak Aktif
+                    <p className="text-[15px] font-semibold text-slate-100 flex items-center gap-2">
+                      <Percent className="w-4 h-4 text-brand-orange" /> Sharing Fee Kontrak Aktif
                     </p>
                     <span className="text-[10px] text-slate-600" title="Persentase tidak dijumlah bersama rupiah karena satuannya beda — ditampilkan terpisah.">Nominal & persentase dipisah</span>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {/* Nominal — rupiah pasti, boleh dijumlah */}
-                    <div className="p-3 bg-slate-950/60 border border-emerald-500/20 rounded-xl">
-                      <p className="text-[10px] font-bold text-emerald-400/90 uppercase tracking-wide">Nominal (pasti)</p>
+                    <div className="p-4 bg-slate-900 rounded-xl">
+                      <p className="text-[12px] text-slate-400">Nominal (pasti)</p>
                       <p className="text-[22px] leading-tight font-semibold text-slate-100 tabular-nums mt-1">
                         Rp {sharingFeeStats.nominalSum.toLocaleString("id-ID")}
                       </p>
@@ -13395,8 +13592,8 @@ export default function App() {
                       </p>
                     </div>
                     {/* Persentase — TIDAK dijumlah sbg rupiah; estimasi terpisah */}
-                    <div className="p-3 bg-slate-950/60 border border-amber-500/20 rounded-xl">
-                      <p className="text-[10px] font-bold text-amber-400/90 uppercase tracking-wide">Berbasis Persentase (terpisah)</p>
+                    <div className="p-4 bg-slate-900 rounded-xl">
+                      <p className="text-[12px] text-slate-400">Berbasis Persentase (terpisah)</p>
                       <p className="text-[22px] leading-tight font-semibold text-slate-100 tabular-nums mt-1">
                         {sharingFeeStats.pctContracts} <span className="text-sm font-medium text-slate-400">kontrak</span>
                       </p>
@@ -13412,87 +13609,198 @@ export default function App() {
                 </div>
               )}
 
-              {/* Middle Section: Urgent Alerts and Productivity Heatmap */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Left: Urgent Renewal & Expiry Alerts */}
-                <div className="lg:col-span-2 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+              {/* Baris 3: berakhir berikutnya · status · kategori */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                <div className="lg:col-span-4 rounded-[14px] bg-slate-950 p-5 space-y-4 flex flex-col">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-bold text-sm tracking-wide flex items-center gap-2">
-                      <ShieldAlert className="text-rose-500 w-4 h-4" />
-                      Peringatan Kadaluwarsa Kontrak & Mesin Perpanjangan
-                    </h3>
-                    <span className="text-xs text-rose-400 font-semibold bg-rose-500/10 px-2.5 py-0.5 rounded-full border border-rose-500/20 animate-pulse">
-                      Critical
-                    </span>
+                    <h3 className="font-semibold text-[15px]">Berakhir Berikutnya</h3>
+                    {nextExp && <span className="text-[11px] text-slate-500">{nextExp.contractNumber}</span>}
                   </div>
-
-                  <div className="space-y-3">
-                    {criticalExpiryContracts.length === 0 ? (
-                      <div className="p-8 text-center text-slate-500 bg-slate-950/20 border border-slate-800 rounded-xl">
-                        Tidak ada kontrak yang akan kedaluwarsa dalam waktu
-                        dekat.
+                  {!nextExp ? (
+                    <p className="text-sm text-slate-500 py-8 text-center">Tidak ada kontrak aktif yang akan berakhir.</p>
+                  ) : (
+                    <>
+                      <div className="rounded-xl bg-mist p-4 space-y-3">
+                        <p className="text-[15px] font-semibold text-slate-100 leading-snug">{nextExp.title}</p>
+                        <p className="text-[12px] text-slate-500">{nextExp.party2Name || "—"}</p>
+                        <div className="h-1.5 rounded-sm bg-slate-900 overflow-hidden">
+                          <div className="h-full bg-soft-blue" style={{ width: `${nextProgress}%` }} />
+                        </div>
+                        <div className="flex justify-between text-[11px] text-slate-500 tabular">
+                          <span>{nextExp.startDate}</span>
+                          <span>{nextExp.endDate}</span>
+                        </div>
                       </div>
-                    ) : (
-                      criticalExpiryContracts.map((c) => {
-                        const daysLeft = getDaysRemaining(c.endDate);
-                        return (
-                          <div
-                            key={c.id}
-                            className="p-4 bg-slate-900 border border-slate-800 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-                          >
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-xs font-bold text-indigo-400">
-                                  {c.contractNumber}
-                                </span>
-                                <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-semibold uppercase">
-                                  {c.category}
-                                </span>
-                              </div>
-                              <h4 className="font-bold text-sm text-slate-100">
-                                {c.title}
-                              </h4>
-                              <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                                <Users className="w-3.5 h-3.5" />
-                                Pihak Kedua:{" "}
-                                <strong className="text-slate-300">
-                                  {c.party2Name}
-                                </strong>
-                              </p>
-                              <p className="text-xs text-rose-400 font-semibold flex items-center gap-1">
-                                <Calendar className="w-3.5 h-3.5" />
-                                Berakhir {c.endDate} ({daysLeft} hari lagi)
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => handleOpenWorkspace(c)}
-                                className="px-3 py-1.5 bg-slate-800 text-xs font-semibold rounded hover:bg-slate-750 text-slate-200 transition"
-                              >
-                                Tinjau
-                              </button>
-                              <button
-                                onClick={() => handleOpenRenewModal(c)}
-                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white rounded transition flex items-center gap-1 shadow-md"
-                              >
-                                <RefreshCw className="w-3 h-3" />
-                                Perpanjang
-                              </button>
-                            </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { l: "Sisa", v: `${getDaysRemaining(nextExp.endDate)} hari` },
+                          { l: "Kategori", v: nextExp.category },
+                          { l: "Nilai", v: nextExp.contractValue > 0 ? `Rp ${nextExp.contractValue.toLocaleString("id-ID")}` : "—" },
+                        ].map((t) => (
+                          <div key={t.l} className="rounded-xl bg-slate-900 px-2.5 py-2 min-w-0">
+                            <p className="text-[11px] text-slate-500 truncate">{t.l}</p>
+                            <p className="text-[12px] font-semibold text-slate-100 truncate tabular">{t.v}</p>
                           </div>
-                        );
-                      })
-                    )}
+                        ))}
+                      </div>
+                      <div className="flex gap-2 mt-auto">
+                        <button onClick={() => handleOpenWorkspace(nextExp)} className="flex-1 py-2 rounded-lg bg-slate-900 hover:bg-slate-850 text-xs font-semibold text-slate-200 transition cursor-pointer">Tinjau</button>
+                        <button onClick={() => handleOpenRenewModal(nextExp)} className="flex-1 py-2 rounded-lg bg-soft-blue hover:opacity-90 text-xs font-semibold text-white transition cursor-pointer flex items-center justify-center gap-1">
+                          <RefreshCw className="w-3 h-3" /> Perpanjang
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="lg:col-span-4 rounded-[14px] bg-slate-950 p-5 flex flex-col">
+                  <h3 className="font-semibold text-[15px]">Status Kontrak</h3>
+                  <div className="flex-1 flex items-center justify-center py-3">
+                    <StatusRing
+                      segments={[
+                        { value: aktifList.length, color: "var(--color-soft-blue)" },
+                        { value: draftList.length, color: "var(--color-brand-orange)" },
+                        { value: otherCount, color: "var(--color-slate-700)" },
+                      ]}
+                      center={`${aktifPct}%`}
+                      sub="aktif"
+                    />
+                  </div>
+                  <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 flex-wrap">
+                    <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm bg-soft-blue" />Aktif {aktifList.length}</span>
+                    <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm bg-brand-orange" />Draft {draftList.length}</span>
+                    <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm bg-slate-700" />Lainnya {otherCount}</span>
                   </div>
                 </div>
 
-                {/* Right: Notifications Feed */}
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+                <div className="lg:col-span-4">
+                  {/* Contract Category Chart Simulator */}
+                <div className="bg-slate-950 rounded-[14px] p-5 h-full">
+                  <h3 className="font-semibold text-[15px] mb-4">
+                    Distribusi Kontrak Berdasarkan Kategori
+                  </h3>
+
+                  <div className="space-y-4">
+                    {["Employment", "Vendor", "NDA", "MOU", "Rental"].map(
+                      (cat) => {
+                        const count = contracts.filter(
+                          (c) => c.category === cat,
+                        ).length;
+                        const percentage = contracts.length
+                          ? Math.round((count / contracts.length) * 100)
+                          : 0;
+                        return (
+                          <div key={cat} className="space-y-1">
+                            <div className="flex justify-between text-xs font-semibold">
+                              <span>
+                                {cat === "Employment"
+                                  ? "Karyawan / PKWT"
+                                  : cat === "Vendor"
+                                    ? "Vendor / Supplier Jasa"
+                                    : cat}
+                              </span>
+                              <span className="text-indigo-400">
+                                {count} Kontrak ({percentage}%)
+                              </span>
+                            </div>
+                            <div className="w-full bg-slate-800 rounded-md h-2">
+                              <div
+                                className={`h-2 rounded-md ${
+                                  cat === "Employment"
+                                    ? "bg-indigo-600"
+                                    : cat === "Vendor"
+                                      ? "bg-brand-orange"
+                                      : cat === "NDA"
+                                        ? "bg-indigo-300"
+                                        : "bg-slate-600"
+                                }`}
+                                style={{ width: `${percentage}%` }}
+                              ></div>
+                            </div>
+                          </div>
+                        );
+                      },
+                    )}
+                  </div>
+                </div>
+                </div>
+              </div>
+
+              {/* Baris 4: kontrak terbaru · notifikasi */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                <div className="lg:col-span-8">
+                  {/* Kontrak Terbaru */}
+              <div className="rounded-[14px] bg-slate-950 p-5 h-full">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-[15px]">Kontrak Terbaru</h3>
+                  <button
+                    onClick={() => { setActiveTab("monitoring"); setSelectedContract(null); }}
+                    className="text-[13px] font-semibold text-indigo-400 hover:underline cursor-pointer"
+                  >
+                    Lihat semua →
+                  </button>
+                </div>
+                {contracts.length === 0 ? (
+                  <p className="text-sm text-slate-500 text-center py-8">Belum ada kontrak.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[13px]">
+                      <thead>
+                        <tr className="text-left text-[12px] text-slate-500 border-b border-slate-900">
+                          <th className="font-medium py-2 pr-3">Judul kontrak</th>
+                          <th className="font-medium py-2 pr-3">Pihak kedua</th>
+                          <th className="font-medium py-2 pr-3">Berakhir</th>
+                          <th className="font-medium py-2 pr-3 text-right">Nilai</th>
+                          <th className="font-medium py-2">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[...contracts]
+                          .sort((x: any, y: any) => String(y.updatedAt || y.createdAt || y.startDate || "").localeCompare(String(x.updatedAt || x.createdAt || x.startDate || "")))
+                          .slice(0, 6)
+                          .map((c) => (
+                            <tr
+                              key={c.id}
+                              onClick={() => handleOpenWorkspace(c)}
+                              className="border-b border-slate-900 last:border-0 hover:bg-slate-900 cursor-pointer"
+                            >
+                              <td className="py-3 pr-3">
+                                <p className="font-semibold text-slate-100 truncate max-w-[260px]">{c.title}</p>
+                                <p className="text-[11px] text-slate-500 font-mono">{c.contractNumber}</p>
+                              </td>
+                              <td className="py-3 pr-3 text-slate-300">{c.party2Name || "—"}</td>
+                              <td className="py-3 pr-3 text-slate-300 whitespace-nowrap">{c.endDate || "—"}</td>
+                              <td className="py-3 pr-3 text-right tabular whitespace-nowrap text-slate-300">
+                                {c.contractValue > 0 ? `Rp ${c.contractValue.toLocaleString("id-ID")}` : "—"}
+                              </td>
+                              <td className="py-3">
+                                <span
+                                  className={`inline-block px-2.5 py-0.5 rounded-md text-[11px] font-semibold ${
+                                    c.status === "Aktif"
+                                      ? "bg-indigo-500/15 text-indigo-400"
+                                      : c.status === "Draft"
+                                        ? "bg-peach text-brand-orange"
+                                        : "bg-slate-900 text-slate-400"
+                                  }`}
+                                >
+                                  {c.unifiedStatus || c.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+                </div>
+                <div className="lg:col-span-4">
+                  {/* Right: Notifications Feed */}
+                <div className="bg-slate-950 rounded-[14px] p-5 flex flex-col justify-between h-full">
                   <div>
-                    <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
-                      <h3 className="font-bold text-sm flex items-center gap-2">
-                        <Bell className="text-amber-400 w-4 h-4 animate-swing" />
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="font-semibold text-[15px] flex items-center gap-2">
+                        <Bell className="text-brand-orange w-4 h-4" />
                         Log Notifikasi Real-time
                       </h3>
                       <button
@@ -13529,18 +13837,18 @@ export default function App() {
                             }}
                             className={`p-2.5 rounded-xl border transition cursor-pointer text-xs ${
                               n.read
-                                ? "bg-slate-950/20 border-slate-850/40 text-slate-400"
-                                : "bg-indigo-900/10 border-indigo-800/30 text-indigo-100"
+                                ? "bg-slate-900 border-transparent text-slate-400"
+                                : "bg-peach border-transparent text-slate-100"
                             }`}
                           >
                             <div className="flex items-center justify-between mb-1">
                               <span
                                 className={`font-semibold px-1.5 py-0.5 rounded text-[9px] uppercase ${
                                   n.type === "success"
-                                    ? "bg-emerald-500/15 text-emerald-400"
+                                    ? "bg-indigo-500/15 text-indigo-400"
                                     : n.type === "danger"
                                       ? "bg-rose-500/15 text-rose-400"
-                                      : "bg-amber-500/15 text-amber-400"
+                                      : "bg-slate-800 text-brand-orange"
                                 }`}
                               >
                                 {n.type}
@@ -13561,69 +13869,95 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="pt-4 border-t border-slate-800 mt-4 text-center">
+                  <div className="pt-4 mt-4 text-center">
                     <p className="text-[10px] text-slate-500">
                       Real-time status synced via server webhooks
                     </p>
                   </div>
                 </div>
+                </div>
               </div>
 
-              {/* Analytics Section */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Contract Category Chart Simulator */}
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5">
-                  <h3 className="font-bold text-sm mb-4">
-                    Distribusi Kontrak Berdasarkan Kategori
-                  </h3>
+              {/* Baris 5: peringatan kadaluwarsa · audit */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                <div className="lg:col-span-8">
+                  {/* Left: Urgent Renewal & Expiry Alerts */}
+                <div className="bg-slate-950 rounded-[14px] p-5 space-y-4 h-full">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-[15px] flex items-center gap-2">
+                      <ShieldAlert className="text-brand-orange w-4 h-4" />
+                      Peringatan Kadaluwarsa Kontrak & Mesin Perpanjangan
+                    </h3>
+                    <span className="text-xs text-brand-orange font-semibold bg-peach px-2.5 py-0.5 rounded-md">
+                      Critical
+                    </span>
+                  </div>
 
-                  <div className="space-y-4">
-                    {["Employment", "Vendor", "NDA", "MOU", "Rental"].map(
-                      (cat) => {
-                        const count = contracts.filter(
-                          (c) => c.category === cat,
-                        ).length;
-                        const percentage = contracts.length
-                          ? Math.round((count / contracts.length) * 100)
-                          : 0;
+                  <div className="space-y-3">
+                    {criticalExpiryContracts.length === 0 ? (
+                      <div className="p-8 text-center text-slate-500 bg-slate-900 rounded-xl">
+                        Tidak ada kontrak yang akan kedaluwarsa dalam waktu
+                        dekat.
+                      </div>
+                    ) : (
+                      criticalExpiryContracts.map((c) => {
+                        const daysLeft = getDaysRemaining(c.endDate);
                         return (
-                          <div key={cat} className="space-y-1">
-                            <div className="flex justify-between text-xs font-semibold">
-                              <span>
-                                {cat === "Employment"
-                                  ? "Karyawan / PKWT"
-                                  : cat === "Vendor"
-                                    ? "Vendor / Supplier Jasa"
-                                    : cat}
-                              </span>
-                              <span className="text-indigo-400">
-                                {count} Kontrak ({percentage}%)
-                              </span>
+                          <div
+                            key={c.id}
+                            className="p-4 bg-slate-900 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-indigo-400">
+                                  {c.contractNumber}
+                                </span>
+                                <span className="text-[10px] bg-slate-800 px-2 py-0.5 rounded text-slate-400 font-semibold uppercase">
+                                  {c.category}
+                                </span>
+                              </div>
+                              <h4 className="font-bold text-sm text-slate-100">
+                                {c.title}
+                              </h4>
+                              <p className="text-xs text-slate-400 flex items-center gap-1.5">
+                                <Users className="w-3.5 h-3.5" />
+                                Pihak Kedua:{" "}
+                                <strong className="text-slate-300">
+                                  {c.party2Name}
+                                </strong>
+                              </p>
+                              <p className="text-xs text-rose-400 font-semibold flex items-center gap-1">
+                                <Calendar className="w-3.5 h-3.5" />
+                                Berakhir {c.endDate} ({daysLeft} hari lagi)
+                              </p>
                             </div>
-                            <div className="w-full bg-slate-900 rounded-full h-2">
-                              <div
-                                className={`h-2 rounded-full ${
-                                  cat === "Employment"
-                                    ? "bg-emerald-500"
-                                    : cat === "Vendor"
-                                      ? "bg-indigo-500"
-                                      : cat === "NDA"
-                                        ? "bg-amber-500"
-                                        : "bg-rose-500"
-                                }`}
-                                style={{ width: `${percentage}%` }}
-                              ></div>
+
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => handleOpenWorkspace(c)}
+                                className="px-3 py-1.5 bg-slate-950 text-xs font-semibold rounded-lg hover:bg-slate-850 text-slate-200 transition"
+                              >
+                                Tinjau
+                              </button>
+                              <button
+                                onClick={() => handleOpenRenewModal(c)}
+                                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-xs font-bold text-white rounded-lg transition flex items-center gap-1"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                Perpanjang
+                              </button>
                             </div>
                           </div>
                         );
-                      },
+                      })
                     )}
                   </div>
                 </div>
-
-                {/* User Productivity and Audit Trail Summary */}
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
-                  <h3 className="font-bold text-sm">
+                </div>
+                <div className="lg:col-span-4">
+                  {/* User Productivity and Audit Trail Summary */}
+                <div className="bg-slate-950 rounded-[14px] p-5 space-y-4 h-full">
+                  <h3 className="font-semibold text-[15px]">
                     Produktivitas Pengguna & Log Audit Aktivitas
                   </h3>
 
@@ -13631,9 +13965,9 @@ export default function App() {
                     {audits.slice(0, 4).map((audit) => (
                       <div
                         key={audit.id}
-                        className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 text-xs flex items-start gap-3"
+                        className="p-3 bg-slate-900 rounded-xl text-xs flex items-start gap-3"
                       >
-                        <div className="p-1.5 rounded-lg bg-slate-850 text-indigo-400">
+                        <div className="p-1.5 rounded-lg bg-peach text-brand-orange">
                           <User className="w-3.5 h-3.5" />
                         </div>
                         <div className="flex-1 space-y-0.5">
@@ -13652,7 +13986,7 @@ export default function App() {
                             {audit.action} • {audit.details}
                           </p>
                           {audit.contractNumber && (
-                            <span className="inline-block mt-1 bg-slate-800 px-1.5 py-0.5 rounded font-mono text-[9px] text-slate-400">
+                            <span className="inline-block mt-1 bg-slate-950 px-1.5 py-0.5 rounded font-mono text-[9px] text-slate-400">
                               {audit.contractNumber}
                             </span>
                           )}
@@ -13663,17 +13997,20 @@ export default function App() {
 
                   <button
                     onClick={() => setActiveTab("audits")}
-                    className="w-full py-2 bg-slate-900 hover:bg-slate-850 rounded-xl border border-slate-800 text-xs font-semibold flex items-center justify-center gap-1 text-indigo-400 transition cursor-pointer"
+                    className="w-full py-2 bg-slate-900 hover:bg-slate-850 rounded-xl text-xs font-semibold flex items-center justify-center gap-1 text-indigo-400 transition cursor-pointer"
                   >
                     Buka Seluruh Audit Trail{" "}
                     <ChevronRight className="w-3 h-3" />
                   </button>
                 </div>
+                </div>
               </div>
             </div>
-          )}
+          );
+        })()}
 
-          {/* VIEW: KONFIGURASI & MASTER DATA */}
+          
+{/* VIEW: KONFIGURASI & MASTER DATA */}
           {activeTab === "konfigurasi" && !selectedContract && (
             <div className="space-y-6">
               <div>
@@ -17830,16 +18167,20 @@ export default function App() {
                         <DocToolbar />
                       </div>
                     )}
-                    {/* Standard Indonesian Style Document Formatting */}
+                    {/* Standard Indonesian Style Document Formatting.
+                        Di layar, kertas ini mengikuti tema (gelap di dark mode).
+                        Saat export PDF kelas "paper-light" mengunci palet terang
+                        (lihat index.css) supaya hasil cetak SELALU kertas putih
+                        bertinta gelap, apa pun tema yang sedang aktif. */}
                     <div
                       ref={previewRef}
-                      style={{ ...docTypographyStyle(), backgroundColor: "#ffffff" }}
+                      style={{ ...docTypographyStyle(), backgroundColor: isExportingPdf ? "#ffffff" : "var(--color-slate-900)" }}
                       // p-6 di sini CUMA padding nyaman buat EDIT di layar (panel
                       // ini bukan seukuran kertas A4 asli). Margin cetak yang
                       // sesungguhnya (mm, dari Konfigurasi > Master Data > "Margin
                       // Halaman Kontrak") dipaksakan terpisah, HANYA saat export,
                       // di dalam generateContractPdf — lihat komentar di sana.
-                      className={`${isExportingPdf ? "space-y-3" : "space-y-6"} max-h-[600px] overflow-y-auto p-6 border border-slate-850 text-slate-300`}
+                      className={`${isExportingPdf ? "paper-light space-y-3" : "space-y-6"} max-h-[600px] overflow-y-auto p-6 border border-slate-850 text-slate-300`}
                     >
                       {/* Kop Surat (Letterhead) — logo + identitas perusahaan, sumber
                           data sama dengan yang dipakai kop surat dokumen DCS
@@ -24303,7 +24644,7 @@ export default function App() {
         }))];
         const visible = clauseComments.filter((c) => !c.parentId && (marginShowResolved || !c.resolved));
         const marginItems: MarginItem[] = visible.map((c) => ({
-          id: c.id, clauseId: c.clauseId, kind: c.kind, resolved: c.resolved, anchor: c.anchor,
+          id: c.id, clauseId: c.clauseId, kind: c.kind, resolved: c.resolved, anchor: c.anchor, replacement: c.replacement, status: c.status,
         }));
         if (marginDraft) {
           marginItems.push({ id: "__draft__", clauseId: marginDraft.clauseId, kind: marginDraft.kind, resolved: false, anchor: { quote: marginDraft.quote } });
@@ -24320,29 +24661,38 @@ export default function App() {
             id: c.id, kind: (c.kind || "comment") as MarkupItem["kind"], resolved: c.resolved, status: c.status,
             paraIndex: c.docAnchor!.paraIndex, start: c.anchor!.start, end: c.anchor!.end, quote: c.anchor!.quote, replacement: c.replacement,
           }));
-        const closeReview = () => { setDocMarkupDraft(null); setDocMarkupText(""); setDocMarkupReplacement(""); setReviewModeOpen(false); setMarginDraft(null); setMarginDraftText(""); setMarginReplyText(""); setActiveMarginId(null); setReAnchoringCommentId(null); };
+        const closeReview = () => { setDocMarkupDraft(null); setDocMarkupText(""); setDocMarkupReplacement(""); setReviewModeOpen(false); setMarginDraft(null); setMarginDraftText(""); setMarginDraftReplacement(""); setMarginReplyText(""); setActiveMarginId(null); setReAnchoringCommentId(null); };
 
         const renderInternalCard = (item: MarginItem, isActive: boolean) => {
           if (item.id === "__draft__") {
             if (!marginDraft) return null;
             return (
-              <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${marginDraft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-amber-400 border-amber-600/60"}`}>
+              <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${marginDraft.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : marginDraft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
                 <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
-                  {marginDraft.kind === "strike" ? "✂ Usulan Coret" : "✎ Komentar Baru"}
+                  {marginDraft.kind === "comment" ? "✎ Komentar Baru" : marginDraft.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
                 </p>
-                <p className={`text-[11px] italic ${marginDraft.kind === "strike" ? "text-rose-300 line-through" : "text-amber-200"}`}>"{marginDraft.quote}"</p>
+                <p className={`text-[11px] italic ${marginDraft.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{marginDraft.quote}"</p>
+                {marginDraft.kind === "replace" && (
+                  <input
+                    autoFocus
+                    value={marginDraftReplacement}
+                    onChange={(e) => setMarginDraftReplacement(e.target.value)}
+                    placeholder="Teks pengganti…"
+                    className="w-full px-2 py-1.5 bg-slate-950 border border-emerald-700/50 rounded-lg text-xs text-emerald-200 focus:outline-none focus:border-emerald-500"
+                  />
+                )}
                 <textarea
-                  autoFocus
+                  autoFocus={marginDraft.kind !== "replace"}
                   value={marginDraftText}
                   onChange={(e) => setMarginDraftText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitMarginComment(); }}
                   rows={3}
-                  placeholder="Tulis komentar / alasan revisi… (Ctrl+Enter kirim)"
+                  placeholder={marginDraft.kind === "comment" ? "Tulis komentar… (Ctrl+Enter kirim)" : "Alasan (opsional)… (Ctrl+Enter kirim)"}
                   className="w-full px-2 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                 />
                 <div className="flex gap-2">
-                  <button onClick={submitMarginComment} disabled={marginBusy || !marginDraftText.trim()} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-bold rounded-lg cursor-pointer">Kirim</button>
-                  <button onClick={() => { setMarginDraft(null); setMarginDraftText(""); setActiveMarginId(null); }} className="px-2 py-1 text-slate-400 hover:text-slate-200 text-[11px] rounded-lg cursor-pointer">Batal</button>
+                  <button onClick={submitMarginComment} disabled={marginBusy || (marginDraft.kind === "comment" && !marginDraftText.trim())} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 text-white text-[11px] font-bold rounded-lg cursor-pointer">Kirim</button>
+                  <button onClick={() => { setMarginDraft(null); setMarginDraftText(""); setMarginDraftReplacement(""); setActiveMarginId(null); }} className="px-2 py-1 text-slate-400 hover:text-slate-200 text-[11px] rounded-lg cursor-pointer">Batal</button>
                 </div>
               </div>
             );
@@ -24352,7 +24702,7 @@ export default function App() {
           const replies = clauseComments.filter((c) => c.parentId === cmt.id);
           const canManage = currentUser?.id === cmt.userId || ["admin", "legal"].includes(currentUser?.role);
           const isMarkupProposal = cmt.kind === "strike" || cmt.kind === "replace";
-          const isPendingMarkup = !!cmt.docAnchor && isMarkupProposal && cmt.status === "pending";
+          const isPendingMarkup = isMarkupProposal && cmt.status === "pending";
           const canDecideMarkup = ["admin", "staff", "legal", "manager"].includes(currentUser?.role);
           return (
             <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${isMarkupProposal ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
@@ -24391,8 +24741,8 @@ export default function App() {
                   <>
                     <button
                       disabled={!canApplyMarkup || marginBusy}
-                      onClick={(e) => { e.stopPropagation(); handleAcceptMarkup(cmt); }}
-                      title={canApplyMarkup ? "Terapkan usulan ini ke dokumen sebagai versi baru (original tetap utuh)." : "Menerima usulan mengubah dokumen — hanya bisa saat kontrak berstatus Draft, oleh staf yang berwenang."}
+                      onClick={(e) => { e.stopPropagation(); if (cmt.docAnchor) handleAcceptMarkup(cmt); else handleAcceptClauseMarkup(cmt); }}
+                      title={canApplyMarkup ? (cmt.docAnchor ? "Terapkan usulan ini ke dokumen sebagai versi baru (original tetap utuh)." : "Terapkan usulan ini ke teks pasal; tersimpan sebagai versi baru draf (riwayat versi tetap utuh).") : "Menerima usulan mengubah dokumen — hanya bisa saat kontrak berstatus Draft, oleh staf yang berwenang."}
                       className="text-[10px] font-bold text-emerald-300 hover:text-emerald-200 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
                     >✓ Terima</button>
                     <button
@@ -24480,9 +24830,10 @@ export default function App() {
               </div>
             ) : (
               <div className="shrink-0 px-5 py-2 border-b border-slate-800/60 bg-slate-900/30 text-[10px] text-slate-500 flex items-center gap-4 flex-wrap">
-                <span><b className="text-slate-300">Sorot kalimat</b> → pilih ✎ Komentar Baru / ✂ Usulkan Coret</span>
+                <span><b className="text-slate-300">Sorot kalimat</b> → pilih ✎ Komentar / ✂ Coret / ⇄ Ganti</span>
                 <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-amber-300/60" /> komentar</span>
                 <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-rose-500/30 border-b-2 border-rose-500" /> usulan coret</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500/30 border-b-2 border-emerald-500" /> usulan ganti</span>
                 <span>Klik sorotan ⇄ klik kartu untuk saling memfokuskan</span>
               </div>
             )}

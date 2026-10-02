@@ -18885,7 +18885,7 @@ export default function App() {
                       {isOcrRunning ? "Membaca..." : "OCR → Teks"}
                     </button>
                   )}
-                  {isContractEditable(selectedContract) && !isUploadedDocument(selectedContract) && (
+                  {isContractEditable(selectedContract) && (
                     <button
                       onClick={() =>
                         handleUpdateContractDraft("Memperbarui isi draf")

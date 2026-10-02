@@ -4834,8 +4834,11 @@ export default function App() {
   // konsep yang serupa. Dua state terpisah (bukan satu) supaya user bisa
   // sedang lihat Format Nomor Kontrak sambil Margin masih di mode DCS, dst.
   const [numberFormatModule, setNumberFormatModule] = useState<"dcs" | "kontrak">("dcs");
-  // Panduan & daftar token di kartu Format Nomor Dokumen — dilipat (accordion).
-  const [numberGuideOpen, setNumberGuideOpen] = useState(false);
+  // Pop-up penjelasan 1 token (dibuka dgn klik tag "Klik Tag Untuk Menyisipkan
+  // Variabel") — UI-only, cuma tampilan. Token baru benar2 disisipkan ke pola
+  // lewat tombol "Tambahkan" di pop-up ini, yg memanggil insertToken yg sama
+  // persis seperti sebelumnya (klik tag langsung insert, tanpa pop-up).
+  const [tokenInfoModal, setTokenInfoModal] = useState<{ t: string; l: string; d: string; go?: { label: string; tab?: string; anchor?: string; superOnly?: boolean } } | null>(null);
   const [marginModule, setMarginModule] = useState<"dcs" | "kontrak">("dcs");
   // Rule override milik SATU jenis dokumen yang sedang dibuka di form edit
   // (dcsDocTypeForm) — state TERPISAH dari dcsNumberingRule di atas (bukan
@@ -15191,7 +15194,6 @@ export default function App() {
                         ? previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })
                         : previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Platform: platformCode(tenantPlatforms[0]), Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) });
                       const saveDisabled = isDcs && (dcsBusy || dcsNumberingMaskDraft === dcsNumberingRule?.mask);
-                      const needsInput = groups.flatMap((g) => g.tokens).filter((tk) => !!tk.go);
                       const goTo = (go: TokGo) => {
                         if (go.anchor) {
                           const el = document.getElementById(go.anchor);
@@ -15206,7 +15208,8 @@ export default function App() {
                       const segBtn = (active: boolean) =>
                         `px-4 py-1.5 rounded-lg text-xs transition-all cursor-pointer ${active ? "bg-slate-900 text-indigo-400 shadow-sm font-bold" : "text-slate-400 hover:text-slate-200 font-semibold"}`;
                       return (
-                    /* ==== Format Nomor Dokumen — SATU kartu, dua mode ====
+                    <>
+                    {/* ==== Format Nomor Dokumen — SATU kartu, dua mode ====
                         Sebelumnya 2 kartu terpisah ("Format Nomor Dokumen DCS"
                         & "Format Nomor Dokumen Kontrak") dengan mekanisme
                         simpan yang beda di baliknya: DCS punya tabel rule
@@ -15216,7 +15219,7 @@ export default function App() {
                         tersimpan lewat handleSaveSettings). Digabung jadi 1
                         kartu dengan toggle supaya orang awam tidak bingung
                         ada 2 kartu mirip — tapi state & endpoint di baliknya
-                        TETAP terpisah persis seperti sebelumnya. */
+                        TETAP terpisah persis seperti sebelumnya. */}
                     <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-sm overflow-hidden lg:col-span-2">
                       {/* Header + tab switcher */}
                       <div className="p-5 border-b border-slate-800 bg-slate-950/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -15236,55 +15239,12 @@ export default function App() {
                       </div>
 
                       <div className="p-5 space-y-6">
-                        {/* Panduan (accordion) — berisi cara kerja + arti tiap token */}
-                        <div className="border border-indigo-500/20 bg-indigo-500/5 rounded-xl overflow-hidden">
-                          <button
-                            type="button"
-                            onClick={() => setNumberGuideOpen((v) => !v)}
-                            className="w-full px-4 py-3 flex items-center justify-between text-left text-xs font-semibold text-slate-200 hover:bg-indigo-500/10 transition cursor-pointer"
-                          >
-                            <span className="flex items-center gap-2">
-                              <HelpCircle className="w-4 h-4 text-indigo-400" />
-                              Panduan &amp; Cara Kerja Penomoran ({isDcs ? "DCS" : "Kontrak"})
-                            </span>
-                            <ChevronDown className={`w-4 h-4 text-indigo-400 transition-transform duration-200 ${numberGuideOpen ? "rotate-180" : ""}`} />
-                          </button>
-                          {numberGuideOpen && (
-                            <div className="px-4 pb-4 pt-3 text-xs text-slate-400 space-y-3 border-t border-indigo-500/15 bg-slate-900/60">
-                              {isDcs ? (
-                                <ul className="list-disc list-inside space-y-1.5 pl-1 leading-relaxed">
-                                  <li>Format bawaan untuk jenis dokumen <b className="text-violet-400">DCS</b> (SOP/IK/Memo/Kebijakan) yang belum punya format khusus sendiri.</li>
-                                  <li>Tiap jenis dokumen bisa di-override lewat tombol "Edit template"-nya masing-masing di tab <b>Jenis Dokumen (Semua Modul)</b>.</li>
-                                  <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — tiap ganti tahun urutan mulai lagi dari 1.</li>
-                                </ul>
-                              ) : (
-                                <ul className="list-disc list-inside space-y-1.5 pl-1 leading-relaxed">
-                                  <li>Tiap <b>Jenis Dokumen</b> boleh punya "Format Nomor" sendiri (diatur di panel Jenis Kontrak / Dokumen di atas).</li>
-                                  <li>Jenis dokumen yang <b>tidak</b> punya format sendiri memakai <b>Format Nomor Dokumen Kontrak</b> di bawah ini.</li>
-                                  <li>Nomor urut dihitung <b>terpisah per Jenis Dokumen dan per tahun</b> — jadi PKS dan Sewa punya urutan masing-masing, dan tiap ganti tahun keduanya mulai lagi dari 1.</li>
-                                  <li>Nomor dibuat otomatis &amp; terkunci saat dokumen <b>disusun di sistem</b>. Untuk dokumen <b>hasil unggahan PDF</b>, nomor diisi bebas sesuai dokumen aslinya dan tidak memakai urutan ini.</li>
-                                </ul>
-                              )}
-                              <div className="space-y-1">
-                                <p className="font-semibold text-slate-300">Arti tiap token:</p>
-                                <ul className="space-y-0.5 leading-relaxed">
-                                  {groups.flatMap((g) => g.tokens).map((tok) => (
-                                    <li key={tok.t}>
-                                      <code className="font-mono text-indigo-400">{tok.t}</code> — {tok.d}
-                                      {tok.go && (canGo(tok.go) ? (
-                                        <button type="button" onClick={() => goTo(tok.go!)} className="ml-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-soft-blue/15 text-[#3a7fa8] font-semibold hover:bg-soft-blue/25 transition cursor-pointer">
-                                          {tok.go.label} <ArrowRight className="w-3 h-3" />
-                                        </button>
-                                      ) : (
-                                        <span className="ml-1.5 text-[10.5px] italic text-slate-500">(diatur oleh Super Admin di Kelola Perusahaan)</span>
-                                      ))}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            </div>
-                          )}
-                        </div>
+                        {/* Panduan & Cara Kerja Penomoran (accordion) dan "Data token
+                            ini diisi di tempat lain" DIHAPUS atas permintaan user —
+                            keduanya sudah redundan dengan pop-up penjelasan token
+                            (buka lewat klik tag di bawah: deskripsi + tombol "ke
+                            tempat lain" sudah ada di sana). Berlaku sama persis
+                            untuk mode DCS maupun Kontrak krn satu kartu yang sama. */}
 
                         {/* Prefix Default — khusus Kontrak */}
                         {!isDcs && (
@@ -15307,7 +15267,7 @@ export default function App() {
                         <div className="space-y-3">
                           <div className="flex items-center justify-between gap-2">
                             <label className="block text-xs font-bold uppercase tracking-wider text-slate-500">Klik Tag Untuk Menyisipkan Variabel:</label>
-                            <span className="text-[11px] text-slate-500 hidden sm:inline">Arahkan kursor ke tag untuk penjelasan</span>
+                            <span className="text-[11px] text-slate-500 hidden sm:inline">Klik tag untuk lihat penjelasan &amp; menambahkan</span>
                           </div>
                           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-950/70 p-3.5 rounded-xl border border-slate-800">
                             {groups.map((g) => (
@@ -15315,11 +15275,14 @@ export default function App() {
                                 <span className="text-[11px] font-bold text-slate-500 block border-b border-slate-800 pb-1">{g.title}</span>
                                 <div className="flex flex-wrap gap-1.5">
                                   {g.tokens.map((tok) => (
+                                    // Klik tag = buka pop-up penjelasan (bukan langsung
+                                    // menyisipkan) — token baru benar2 ditambahkan ke
+                                    // pola lewat tombol "+ Tambahkan ke Pola" di pop-up,
+                                    // yang tetap memanggil insertToken yang sama persis.
                                     <button
                                       key={tok.t}
                                       type="button"
-                                      title={`${tok.t} — ${tok.d}`}
-                                      onClick={() => insertToken(tok.t)}
+                                      onClick={() => setTokenInfoModal(tok)}
                                       className="px-2.5 py-1 text-xs font-medium bg-slate-900 hover:bg-indigo-500/10 hover:text-indigo-400 hover:border-indigo-500/40 hover:-translate-y-px text-slate-300 rounded-md border border-slate-800 shadow-sm transition flex items-center gap-1 cursor-pointer"
                                     >
                                       <Plus className="w-3 h-3 text-slate-500" /> {tok.l}
@@ -15331,25 +15294,10 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* Token yang datanya TIDAK diisi di halaman ini — tautan langsung ke tempat pengisiannya */}
-                        {needsInput.length > 0 && (
-                          <div className="rounded-[22px] bg-soft-blue/10 px-4 py-3.5 space-y-2.5">
-                            <p className="text-[11px] font-bold text-slate-400 flex items-center gap-1.5"><HelpCircle className="w-3.5 h-3.5 text-[#3a7fa8]" /> Data token ini diisi di tempat lain — klik untuk menuju ke sana:</p>
-                            <div className="flex flex-wrap gap-2">
-                              {needsInput.map((tok) => canGo(tok.go!) ? (
-                                <button key={tok.t} type="button" onClick={() => goTo(tok.go!)} className="inline-flex items-center gap-1.5 pl-3 pr-2.5 py-1.5 rounded-full bg-slate-900 card-soft text-[11px] text-slate-300 hover:brightness-95 transition cursor-pointer">
-                                  <code className="font-mono text-[#3a7fa8]">{tok.t}</code>
-                                  <span>{tok.go!.label}</span>
-                                  <ArrowRight className="w-3 h-3 text-slate-500" />
-                                </button>
-                              ) : (
-                                <span key={tok.t} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-900/60 text-[11px] text-slate-500 italic">
-                                  <code className="font-mono not-italic">{tok.t}</code> diatur Super Admin di Kelola Perusahaan
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                        {/* "Data token ini diisi di tempat lain" DIHAPUS — tautan ke
+                            tempat pengisian token sudah ada di pop-up penjelasan
+                            tiap tag (lihat tokenInfoModal.go di bawah), jadi tidak
+                            perlu diulang di sini lagi. */}
 
                         {/* Pola format */}
                         <div className="space-y-1.5">
@@ -15389,6 +15337,64 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+
+                    {/* Pop-up penjelasan token — dibuka saat tag diklik. Hanya
+                        tampilan baru; penyisipan ke pola tetap lewat
+                        insertToken yang sama seperti sebelumnya, dan link
+                        "ke tempat lain" tetap lewat goTo/canGo yang sama. */}
+                    {tokenInfoModal && (
+                      <div
+                        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn"
+                        onClick={() => setTokenInfoModal(null)}
+                        role="dialog"
+                        aria-modal="true"
+                      >
+                        <div
+                          className="w-full max-w-sm bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <div className="p-4 border-b border-slate-800 flex items-start gap-3">
+                            <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg shrink-0">
+                              <Hash className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <h5 className="text-sm font-bold text-slate-100">{tokenInfoModal.l}</h5>
+                              <code className="text-[11px] font-mono text-indigo-400">{tokenInfoModal.t}</code>
+                            </div>
+                            <button type="button" onClick={() => setTokenInfoModal(null)} className="text-slate-500 hover:text-slate-300 cursor-pointer" aria-label="Tutup">
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <div className="p-4 space-y-3">
+                            <p className="text-xs text-slate-400 leading-relaxed">{tokenInfoModal.d}</p>
+                            {tokenInfoModal.go && (
+                              canGo(tokenInfoModal.go) ? (
+                                <button
+                                  type="button"
+                                  onClick={() => { goTo(tokenInfoModal.go!); setTokenInfoModal(null); }}
+                                  className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-soft-blue/10 text-[#3a7fa8] text-xs font-semibold hover:bg-soft-blue/20 transition cursor-pointer"
+                                >
+                                  {tokenInfoModal.go.label} <ArrowRight className="w-3.5 h-3.5" />
+                                </button>
+                              ) : (
+                                <p className="text-[11px] italic text-slate-500">(diatur oleh Super Admin di Kelola Perusahaan)</p>
+                              )
+                            )}
+                          </div>
+                          <div className="p-4 border-t border-slate-800 flex justify-end gap-2">
+                            <button type="button" onClick={() => setTokenInfoModal(null)} className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer">Batal</button>
+                            <button
+                              type="button"
+                              onClick={() => { insertToken(tokenInfoModal.t); setTokenInfoModal(null); }}
+                              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5"
+                            >
+                              <Plus className="w-3.5 h-3.5" /> Tambahkan ke Pola
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    </>
                       );
                     })()}
 

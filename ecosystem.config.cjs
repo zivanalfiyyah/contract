@@ -54,6 +54,9 @@ function loadEnv(filePath) {
 const envFilePath = path.resolve(__dirname, '.env');
 const parsedEnv = loadEnv(envFilePath);
 
+// Use PORT from .env if defined, then process.env.PORT, otherwise default to 3000
+const appPort = Number(parsedEnv.PORT || process.env.PORT) || 3000;
+
 module.exports = {
   apps: [
     {
@@ -81,22 +84,22 @@ module.exports = {
       // Default environment: loaded .env with production defaults
       env: {
         NODE_ENV: 'production',
-        PORT: 3000,
         ...parsedEnv,
+        PORT: appPort,
       },
 
       // Overrides when running: pm2 start ecosystem.config.cjs --env production
       env_production: {
         NODE_ENV: 'production',
-        PORT: 3000,
         ...parsedEnv,
+        PORT: appPort,
       },
 
       // Overrides when running: pm2 start ecosystem.config.cjs --env development
       env_development: {
         NODE_ENV: 'development',
-        PORT: 3000,
         ...parsedEnv,
+        PORT: appPort,
       },
     },
   ],

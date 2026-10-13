@@ -232,7 +232,8 @@ function pushLegalTimeline(job: LegalJob, entry: Omit<LegalJobTimelineEntry, "id
 //   Finalisasi                -> Contract.status === "OnReview" (diajukan, approval matrix berjalan)
 //   ProsesTTD                 -> Contract.status === "FullyApproved" (disetujui penuh, TTD blm diunggah)
 //   Aktif / TidakAktif / Archived / Terminated -> tetap sama seperti Contract.status (tidak diubah)
-type UnifiedLegalStatus = "Draft" | "ReviewInternalEksternal" | "RevisiNegosiasi" | "Finalisasi" | "ProsesTTD" | ContractStatus;
+//   DokumenKembali            -> FullyApproved + dokumen fisik sudah diterima kembali (signingReceipt terisi), belum diaktifkan
+type UnifiedLegalStatus = "Draft" | "ReviewInternalEksternal" | "RevisiNegosiasi" | "Finalisasi" | "ProsesTTD" | "DokumenKembali" | ContractStatus;
 function computeUnifiedLegalStatus(c: Contract): UnifiedLegalStatus {
   if (c.status === "Draft") {
     if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
@@ -240,7 +241,7 @@ function computeUnifiedLegalStatus(c: Contract): UnifiedLegalStatus {
     return "Draft";
   }
   if (c.status === "OnReview") return "Finalisasi";
-  if (c.status === "FullyApproved") return "ProsesTTD";
+  if (c.status === "FullyApproved") return c.signingReceipt ? "DokumenKembali" : "ProsesTTD";
   return c.status; // Aktif, TidakAktif, Archived, Terminated — lolos apa adanya
 }
 // dibaca (bukan disalin sekali ke LegalJob) — satu-satunya sumber kebenaran
@@ -248,11 +249,11 @@ function computeUnifiedLegalStatus(c: Contract): UnifiedLegalStatus {
 // Ini yang membuat status di tabel Pekerjaan Legal & Monitoring Kontrak WAJIB
 // selalu sama: keduanya baca field yang persis sama, tidak pernah disinkronkan
 // manual (yang rawan lupa/telat).
-function legalJobLinkedContractInfo(db: any, job: LegalJob): { id: string; title: string; contractNumber: string; status: UnifiedLegalStatus } | null {
+function legalJobLinkedContractInfo(db: any, job: LegalJob): { id: string; title: string; contractNumber: string; status: UnifiedLegalStatus; rawStatus: ContractStatus; signingDispatch?: Contract["signingDispatch"]; signingReceipt?: Contract["signingReceipt"] } | null {
   if (!job.linkedContractId) return null;
   const c = (db.contracts as Contract[]).find((x) => x.id === job.linkedContractId);
   if (!c) return null;
-  return { id: c.id, title: c.title, contractNumber: c.contractNumber, status: computeUnifiedLegalStatus(c) };
+  return { id: c.id, title: c.title, contractNumber: c.contractNumber, status: computeUnifiedLegalStatus(c), rawStatus: c.status, signingDispatch: c.signingDispatch, signingReceipt: c.signingReceipt };
 }
 function withLinkedContract(db: any, job: LegalJob) {
   return { ...job, linkedContract: legalJobLinkedContractInfo(db, job) };
@@ -3639,12 +3640,91 @@ app.get("/api/contracts/:id/verify-integrity", requireAuth, async (req: AuthedRe
   }
 });
 
+// Tahap "Proses TTD" -> "Dokumen Kembali" (diisi dari Detail Pekerjaan Legal).
+// 1) Catat pengiriman dokumen fisik untuk tanda tangan: jumlah rangkap, tanggal
+//    kirim, media. 2) Catat penerimaan kembali: jumlah rangkap & tanggal terima.
+// Hanya untuk kontrak FullyApproved; aktivasi (di bawah) baru boleh setelah (2).
+function pushLinkedJobTimeline(db: any, contract: Contract, req: AuthedRequest, label: string, detail?: string) {
+  const job = ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === contract.id && j.tenantId === contract.tenantId);
+  if (!job) return;
+  job.updatedAt = new Date().toISOString();
+  pushLegalTimeline(job, { label, actor: req.user!.name, detail }, job.updatedAt);
+}
+const isoDateOnly = (v: any): string | null => {
+  const t = typeof v === "string" ? v.trim().slice(0, 10) : "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(t) && !isNaN(new Date(t).getTime()) ? t : null;
+};
+app.post("/api/contracts/:id/signing-dispatch", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status !== "FullyApproved") {
+    return res.status(400).json({ error: "Pengiriman dokumen fisik hanya bisa dicatat pada tahap Proses TTD (kontrak sudah disetujui penuh)." });
+  }
+  if (contract.signingReceipt) {
+    return res.status(400).json({ error: "Dokumen sudah dicatat kembali — pengiriman tidak bisa diubah lagi." });
+  }
+  const copies = Number(req.body.copies);
+  const sentDate = isoDateOnly(req.body.sentDate);
+  const medium = typeof req.body.medium === "string" ? req.body.medium.trim().slice(0, 60) : "";
+  if (!Number.isInteger(copies) || copies < 1 || copies > 20) return res.status(400).json({ error: "Jumlah rangkap harus bilangan bulat antara 1 dan 20." });
+  if (!sentDate) return res.status(400).json({ error: "Tanggal kirim tidak valid." });
+  if (!medium) return res.status(400).json({ error: "Media pengiriman wajib diisi (contoh: Kurir)." });
+  const now = new Date().toISOString();
+  contract.signingDispatch = { copies, sentDate, medium, recordedAt: now, recordedBy: req.user!.name };
+  contract.updatedAt = now;
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber,
+    action: "Catat Pengiriman Dokumen TTD",
+    details: `${copies} rangkap dikirim pada ${sentDate} via ${medium}`,
+  });
+  pushLinkedJobTimeline(db, contract, req, "Dokumen fisik dikirim untuk tanda tangan", `${copies} rangkap · ${sentDate} · ${medium}`);
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status !== "FullyApproved") {
+    return res.status(400).json({ error: "Penerimaan dokumen hanya bisa dicatat pada tahap Proses TTD (kontrak sudah disetujui penuh)." });
+  }
+  if (!contract.signingDispatch) {
+    return res.status(400).json({ error: "Catat pengiriman dokumen (jumlah rangkap, tanggal kirim, media) terlebih dahulu." });
+  }
+  const copies = Number(req.body.copies);
+  const receivedDate = isoDateOnly(req.body.receivedDate);
+  if (!Number.isInteger(copies) || copies < 1 || copies > 20) return res.status(400).json({ error: "Jumlah rangkap diterima harus bilangan bulat antara 1 dan 20." });
+  if (!receivedDate) return res.status(400).json({ error: "Tanggal terima tidak valid." });
+  if (receivedDate < contract.signingDispatch.sentDate) {
+    return res.status(400).json({ error: "Tanggal terima tidak boleh lebih awal dari tanggal kirim." });
+  }
+  const now = new Date().toISOString();
+  contract.signingReceipt = { copies, receivedDate, recordedAt: now, recordedBy: req.user!.name };
+  contract.updatedAt = now;
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber,
+    action: "Catat Penerimaan Dokumen TTD",
+    details: `${copies} rangkap diterima kembali pada ${receivedDate}`,
+  });
+  pushLinkedJobTimeline(db, contract, req, "Dokumen kembali", `${copies} rangkap diterima · ${receivedDate}`);
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
 app.post("/api/contracts/:id/activate", requireAuth, requireRole("admin", "staff", "legal", "manager"), upload.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
   if (contract.status !== "FullyApproved") {
     return res.status(400).json({ error: "Kontrak baru bisa diaktifkan setelah disetujui penuh lewat approval matrix." });
+  }
+  // Kontrak yang dikerjakan lewat Pekerjaan Legal wajib melewati tahap
+  // Dokumen Kembali dulu. Kontrak tanpa Pekerjaan Legal tidak terpengaruh.
+  const linkedJobForActivation = ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === contract.id && j.tenantId === contract.tenantId);
+  if (linkedJobForActivation && !contract.signingReceipt) {
+    return res.status(400).json({ error: "Catat pengiriman dan penerimaan dokumen fisik (tahap Dokumen Kembali) di Detail Pekerjaan Legal sebelum mengaktifkan kontrak." });
   }
   if (!req.file) {
     return res.status(400).json({ error: "Unggah berkas bukti tanda tangan (hasil scan dokumen yang sudah ditandatangani) untuk mengaktifkan kontrak." });
@@ -3667,6 +3747,7 @@ app.post("/api/contracts/:id/activate", requireAuth, requireRole("admin", "staff
     action: "Activate Contract",
     details: `Mengaktifkan kontrak "${contract.title}" dengan bukti TTD "${req.file.originalname}" (SHA-256: ${proofHash.slice(0, 16)}…) — terkunci dari editing & masuk monitoring`,
   });
+  pushLinkedJobTimeline(db, contract, req, "Kontrak diaktifkan", `Bukti TTD: ${req.file.originalname}`);
   pushNotif(db, tenantOf(req), {
     title: "Kontrak Diaktifkan",
     message: `Kontrak ${contract.contractNumber} kini berstatus Aktif dan masuk monitoring & reminder.`,

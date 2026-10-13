@@ -345,6 +345,11 @@ export interface Contract {
   attachmentSections?: ContractAttachmentSection[];
   subFolderId?: string; // id SubFolder (sub/sub-sub folder) tempat kontrak ini diarsipkan, di bawah `category`
   copies?: ContractCopy[]; // rangkap fisik kontrak (1 atau 2) + posisi meterai per rangkap
+  // Pengiriman dokumen fisik untuk tanda tangan (tahap "Proses TTD") dan
+  // penerimaannya kembali (tahap "Dokumen Kembali"). Diisi dari Detail
+  // Pekerjaan Legal. Aktivasi baru boleh setelah signingReceipt terisi.
+  signingDispatch?: { copies: number; sentDate: string; medium: string; recordedAt: string; recordedBy: string };
+  signingReceipt?: { copies: number; receivedDate: string; recordedAt: string; recordedBy: string };
   // Sharing fee opsional — kosong/tidak ada = kontrak ini tidak punya skema
   // bagi hasil (mayoritas kontrak internal/Employment memang tidak perlu ini).
   sharingFeeItems?: ContractSharingFeeItem[];

@@ -2798,7 +2798,14 @@ const LEGAL_STATUS_LABEL: Record<string, string> = {
   arsip: "Arsip",
   selesai: "Selesai",
   ditolak: "Ditolak",
+  belum_diproses: "Belum Diproses",
 };
+// Status yang DITAMPILKAN di Daftar Pekerjaan Legal: pekerjaan yang belum
+// dibuatkan Kontrak Eksternal-nya = "Belum Diproses". Begitu kontrak dibuat &
+// tertaut, status mengikuti kontrak (awalnya Draft). Pekerjaan masuk/ditolak
+// tidak terpengaruh.
+const legalJobDisplayStatus = (j: { status: string; linkedContract?: any }) =>
+  j.status === "menunggu_persetujuan" || j.status === "ditolak" || j.linkedContract ? j.status : "belum_diproses";
 const LEGAL_WORKFLOW_ORDER = ["draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "penomoran", "ttd", "distribusi", "arsip", "selesai"];
 const LEGAL_PRIORITY_STYLE: Record<string, string> = {
   Tinggi: "bg-brand-orange text-white border-transparent",
@@ -2893,7 +2900,7 @@ const CONTRACT_STATUS_LABEL_ID: Record<string, string> = {
   Draft: "Draft", OnReview: "Sedang Ditinjau", FullyApproved: "Disetujui Penuh",
   Aktif: "Aktif", TidakAktif: "Tidak Aktif", Archived: "Diarsipkan", Terminated: "Diakhiri",
   ReviewInternalEksternal: "Review Internal/Eksternal", RevisiNegosiasi: "Revisi/Negosiasi",
-  Finalisasi: "Finalisasi", ProsesTTD: "Proses TTD",
+  Finalisasi: "Finalisasi", ProsesTTD: "Proses TTD", DokumenKembali: "Dokumen Kembali",
 };
 const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
   // Pastel biru/oranye senada dashboard — biru = berjalan baik, oranye = perlu perhatian.
@@ -2908,12 +2915,18 @@ const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
   RevisiNegosiasi: "bg-peach text-brand-orange border-transparent",
   Finalisasi: "bg-mist text-indigo-400 border-transparent",
   ProsesTTD: "bg-mist text-indigo-400 border-transparent",
+  DokumenKembali: "bg-peach text-brand-orange border-transparent",
 };
 // Bentuk LegalJob yang dikembalikan API (lihat withLinkedContract di
 // server.ts) — nempel field `linkedContract` di atas LegalJob biasa, dihitung
 // ulang dari Contract tiap request, BUKAN disalin sekali (jadi selalu akurat).
 type LegalJobWithLink = LegalJob & {
-  linkedContract?: { id: string; title: string; contractNumber: string; status: string } | null;
+  linkedContract?: {
+    id: string; title: string; contractNumber: string; status: string;
+    rawStatus?: string;
+    signingDispatch?: { copies: number; sentDate: string; medium: string };
+    signingReceipt?: { copies: number; receivedDate: string };
+  } | null;
 };
 function fmtDateID(s?: string): string {
   if (!s) return "—";
@@ -2955,7 +2968,7 @@ async function openLegalJobDocument(
 // Bagikan Link Formulir (bukan form internal lagi); pekerjaan yang masuk
 // dari form eksternal direview lewat tabel "Pekerjaan Masuk" sebelum masuk
 // ke tabel utama. Lihat Spek-Dashboard-Pekerjaan-Legal.docx bagian 4.
-function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any; onOpenContract: (contractId: string) => void }) {
+function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContract }: { currentUser: any; onOpenContract: (contractId: string) => void; onCreateExternalContract?: (job: { id: string; title: string }) => void }) {
   const [jobs, setJobs] = useState<LegalJobWithLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ text: string; kind: "error" | "success" } | null>(null);
@@ -2984,11 +2997,11 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
   const incoming = jobs.filter((j) => j.status === "menunggu_persetujuan").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const rejected = jobs.filter((j) => j.status === "ditolak").sort((a, b) => (b.rejectedAt || "").localeCompare(a.rejectedAt || ""));
   const mainJobs = jobs.filter((j) => j.status !== "menunggu_persetujuan" && j.status !== "ditolak")
-    .filter((j) => statusFilter === "semua" || j.status === statusFilter)
+    .filter((j) => statusFilter === "semua" || legalJobDisplayStatus(j) === statusFilter)
     .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 
-  const cardStatuses = ["menunggu_persetujuan", "draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "ttd", "selesai"];
-  const countOf = (s: string) => jobs.filter((j) => j.status === s).length;
+  const cardStatuses = ["menunggu_persetujuan", "belum_diproses", "draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "ttd", "selesai"];
+  const countOf = (s: string) => jobs.filter((j) => legalJobDisplayStatus(j) === s).length;
 
   const refreshAfter = async (fn: () => Promise<Response>, successMsg: string, onDone?: () => void) => {
     try {
@@ -3016,7 +3029,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
         right={<button onClick={() => setAddOpen(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer"><Plus className="w-4 h-4" /> Tambah Pekerjaan Legal</button>} />
 
       {/* Kartu ringkasan status — klik untuk filter tabel utama di bawah. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-9 gap-3">
         {cardStatuses.map((s) => (
           <LegalStatCard key={s} status={s} count={countOf(s)} active={statusFilter === s} onClick={() => setStatusFilter(s === statusFilter ? "semua" : s)} />
         ))}
@@ -3086,6 +3099,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
             <Filter className="w-3.5 h-3.5 text-slate-500" />
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-transparent text-[12px] text-slate-300 focus:outline-none cursor-pointer" style={{ border: "none", boxShadow: "none" }}>
               <option value="semua">Semua Status</option>
+              <option value="belum_diproses">{LEGAL_STATUS_LABEL.belum_diproses}</option>
               {LEGAL_WORKFLOW_ORDER.map((s) => <option key={s} value={s}>{LEGAL_STATUS_LABEL[s]}</option>)}
             </select>
           </div>
@@ -3123,7 +3137,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
                           <button onClick={() => onOpenContract(j.linkedContract!.id)} className="text-[9.5px] text-[#3a7fa8] font-semibold hover:underline text-left cursor-pointer pl-1">mengikuti Kontrak →</button>
                         </div>
                       ) : (
-                        <span className={LEGAL_PILL}>{LEGAL_STATUS_LABEL[j.status]}</span>
+                        <span className={LEGAL_PILL}>{LEGAL_STATUS_LABEL[legalJobDisplayStatus(j)]}</span>
                       )}
                     </td>
                     <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
@@ -3211,6 +3225,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract }: { currentUser: any;
           onChanged={fetchJobs}
           notify={notify}
           onOpenContract={onOpenContract}
+          onCreateExternalContract={onCreateExternalContract}
         />
       )}
     </div>
@@ -3452,9 +3467,10 @@ function RejectReasonModal({ job, onClose, onConfirm }: { job: LegalJob; onClose
 // Detail per pekerjaan — Info umum, tombol lanjut tahap workflow, dan tab
 // Dokumen/Timeline/Catatan (lihat sketsa: tidak double dgn Dokumen/Timeline
 // milik kontrak lain, ini khusus pekerjaan ybs).
-function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, onOpenContract }: {
+function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, onOpenContract, onCreateExternalContract }: {
   job: LegalJobWithLink; currentUser: any; onClose: () => void; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void;
   onOpenContract: (contractId: string) => void;
+  onCreateExternalContract?: (job: { id: string; title: string }) => void;
 }) {
   const [tab, setTab] = useState<"dokumen" | "timeline" | "catatan">("timeline");
   const [noteText, setNoteText] = useState("");
@@ -3506,7 +3522,7 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
             <InfoField label="Deadline" value={fmtDateID(job.deadline)} />
             <InfoField label="Status" value={job.linkedContract
               ? <span className={`text-[11px] px-2.5 py-1 rounded-full font-semibold ${CONTRACT_STATUS_BADGE_CLASS[job.linkedContract.status] || ""}`}>{CONTRACT_STATUS_LABEL_ID[job.linkedContract.status] || job.linkedContract.status}</span>
-              : <span className={LEGAL_PILL}>{LEGAL_STATUS_LABEL[job.status]}</span>} />
+              : <span className={LEGAL_PILL}>{LEGAL_STATUS_LABEL[legalJobDisplayStatus(job)]}</span>} />
             <InfoField label="Prioritas" value={job.priority ? <span className={`text-[11px] px-2.5 py-1 rounded-full font-semibold ${LEGAL_PRIORITY_STYLE[job.priority]}`}>{job.priority}</span> : "—"} />
             <InfoField label="Sumber" value={job.source === "eksternal" ? "Formulir Eksternal" : "Input Internal"} />
             <InfoField label="Tgl. Request" value={fmtDateID(job.createdAt)} />
@@ -3541,9 +3557,21 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
               </button>
             </div>
           ) : (
-            <div className="p-4 bg-slate-950 rounded-[22px]">
-              <p className="text-[11.5px] text-slate-500 leading-relaxed">Status di atas belum berjalan otomatis — akan mengikuti status Kontrak begitu pekerjaan ini ditautkan lewat form <b className="text-slate-100">Buat Kontrak Eksternal</b> (dropdown "Pilih Judul Pekerjaan Legal").</p>
+            <div className="p-4 bg-slate-950 rounded-[22px] space-y-3">
+              <p className="text-[11.5px] text-slate-500 leading-relaxed">Pekerjaan ini <b className="text-slate-100">belum diproses</b>. Begitu Kontrak Eksternal dibuat dari sini, pekerjaan otomatis tertaut ke kontrak itu dan statusnya berubah menjadi <b className="text-slate-100">Draft</b>, lalu mengikuti status Kontrak.</p>
+              {onCreateExternalContract && job.status !== "menunggu_persetujuan" && job.status !== "ditolak" && (
+                <div className="flex justify-end">
+                  <button onClick={() => { onClose(); onCreateExternalContract({ id: job.id, title: job.title }); }}
+                    className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[12.5px] font-bold cursor-pointer">
+                    <Plus className="w-3.5 h-3.5" /> Buat Kontrak Eksternal
+                  </button>
+                </div>
+              )}
             </div>
+          )}
+          {/* Proses TTD -> Dokumen Kembali -> Aktif (hanya saat kontrak Disetujui Penuh) */}
+          {job.linkedContract && job.linkedContract.rawStatus === "FullyApproved" && (
+            <LegalSigningPanel key={job.linkedContract.id} job={job} onChanged={onChanged} notify={notify} />
           )}
 
           {/* Tabs */}
@@ -3620,6 +3648,112 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+// Tahap Proses TTD -> Dokumen Kembali -> Aktif di Detail Pekerjaan Legal:
+// 1) pengiriman dokumen fisik (rangkap, tanggal kirim, media), 2) penerimaan
+// kembali (rangkap, tanggal terima), 3) upload bukti TTD lalu Aktifkan.
+// Tiap langkah baru terbuka setelah langkah sebelumnya tersimpan — aturan yang
+// sama dijaga juga di server (signing-dispatch / signing-receipt / activate).
+const SIGNING_MEDIA = ["Kurir", "Antar Langsung", "Pos", "Lainnya"];
+function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJobWithLink; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void }) {
+  const lc = job.linkedContract!;
+  const today = new Date().toISOString().slice(0, 10);
+  const [sendForm, setSendForm] = useState({ copies: String(lc.signingDispatch?.copies ?? 2), sentDate: lc.signingDispatch?.sentDate || today, medium: lc.signingDispatch?.medium || "Kurir" });
+  const [recvForm, setRecvForm] = useState({ copies: String(lc.signingReceipt?.copies ?? 1), receivedDate: lc.signingReceipt?.receivedDate || today });
+  const [proof, setProof] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const proofRef = useRef<HTMLInputElement | null>(null);
+
+  const post = async (path: string, body: any, okMsg: string) => {
+    setBusy(true);
+    try {
+      const isForm = body instanceof FormData;
+      const res = await fetch(`/api/contracts/${lc.id}/${path}`, isForm
+        ? { method: "POST", body }
+        : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) { notify(j.error || "Terjadi kesalahan."); return; }
+      notify(okMsg, "success");
+      setProof(null);
+      onChanged();
+    } catch { notify("Gagal terhubung ke server."); }
+    finally { setBusy(false); }
+  };
+
+  const dispatched = lc.signingDispatch;
+  const received = lc.signingReceipt;
+  const inputCls = "w-full px-3 py-2 bg-slate-900 rounded-[14px] text-[12px] text-slate-100 focus:outline-none";
+  const labelCls = "block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1";
+  const stepHead = (n: number, text: string, done: boolean) => (
+    <p className="text-[11px] font-bold uppercase tracking-wider text-brand-orange flex items-center gap-1.5">
+      <span className={`w-4 h-4 rounded-full text-[9px] flex items-center justify-center ${done ? "bg-emerald-600 text-white" : "bg-peach text-brand-orange"}`}>{done ? "✓" : n}</span> {text}
+    </p>
+  );
+
+  return (
+    <div className="space-y-3">
+      {/* 1. Pengiriman */}
+      <div className="p-4 bg-peach/40 rounded-[22px] space-y-3">
+        {stepHead(1, "Pengiriman Dokumen Fisik", !!dispatched)}
+        <div className="grid grid-cols-3 gap-2">
+          <div><label className={labelCls}>Jumlah Rangkap</label>
+            <input type="number" min={1} max={20} value={sendForm.copies} disabled={!!received} onChange={(e) => setSendForm({ ...sendForm, copies: e.target.value })} className={inputCls} /></div>
+          <div><label className={labelCls}>Tanggal Kirim</label>
+            <input type="date" value={sendForm.sentDate} disabled={!!received} onChange={(e) => setSendForm({ ...sendForm, sentDate: e.target.value })} className={inputCls} /></div>
+          <div><label className={labelCls}>Media</label>
+            <select value={sendForm.medium} disabled={!!received} onChange={(e) => setSendForm({ ...sendForm, medium: e.target.value })} className={inputCls}>
+              {SIGNING_MEDIA.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select></div>
+        </div>
+        {!received && (
+          <div className="flex justify-end">
+            <button disabled={busy} onClick={() => post("signing-dispatch", { copies: Number(sendForm.copies), sentDate: sendForm.sentDate, medium: sendForm.medium }, "Pengiriman dokumen dicatat.")}
+              className="px-4 py-2 rounded-full bg-mist text-indigo-400 hover:brightness-95 text-[12px] font-semibold cursor-pointer disabled:opacity-50">
+              {dispatched ? "Perbarui Pengiriman" : "Simpan Pengiriman"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 2. Penerimaan / Dokumen Kembali */}
+      <div className={`p-4 rounded-[22px] space-y-3 ${dispatched ? "bg-peach/40" : "bg-slate-950 opacity-60"}`}>
+        {stepHead(2, "Penerimaan Dokumen (Dokumen Kembali)", !!received)}
+        {!dispatched && <p className="text-[11px] text-slate-500">Catat pengiriman dulu untuk membuka langkah ini.</p>}
+        <div className="grid grid-cols-2 gap-2">
+          <div><label className={labelCls}>Rangkap Diterima</label>
+            <input type="number" min={1} max={20} value={recvForm.copies} disabled={!dispatched || !!received} onChange={(e) => setRecvForm({ ...recvForm, copies: e.target.value })} className={inputCls} /></div>
+          <div><label className={labelCls}>Tanggal Terima</label>
+            <input type="date" value={recvForm.receivedDate} min={dispatched?.sentDate} disabled={!dispatched || !!received} onChange={(e) => setRecvForm({ ...recvForm, receivedDate: e.target.value })} className={inputCls} /></div>
+        </div>
+        {dispatched && !received && (
+          <div className="flex justify-end">
+            <button disabled={busy} onClick={() => post("signing-receipt", { copies: Number(recvForm.copies), receivedDate: recvForm.receivedDate }, "Dokumen kembali dicatat.")}
+              className="px-4 py-2 rounded-full bg-mist text-indigo-400 hover:brightness-95 text-[12px] font-semibold cursor-pointer disabled:opacity-50">Simpan Penerimaan</button>
+          </div>
+        )}
+      </div>
+
+      {/* 3. Bukti TTD + Aktifkan */}
+      <div className={`p-4 rounded-[22px] space-y-3 ${received ? "bg-mist" : "bg-slate-950 opacity-60"}`}>
+        {stepHead(3, "Bukti TTD & Aktifkan", false)}
+        {!received && <p className="text-[11px] text-slate-500">Catat penerimaan dokumen dulu untuk membuka langkah ini.</p>}
+        <div className="flex items-center gap-2">
+          <button disabled={!received || busy} onClick={() => proofRef.current?.click()}
+            className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900 text-slate-300 hover:brightness-110 text-[12px] font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+            <Upload className="w-3.5 h-3.5" /> {proof ? "Ganti Berkas" : "Upload Bukti TTD"}
+          </button>
+          <span className="text-[11.5px] text-slate-400 truncate">{proof ? proof.name : "Belum ada berkas"}</span>
+          <input ref={proofRef} type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) setProof(f); e.target.value = ""; }} />
+        </div>
+        <button disabled={!received || !proof || busy}
+          onClick={() => { const fd = new FormData(); fd.append("file", proof!); post("activate", fd, "Kontrak diaktifkan dan masuk Monitoring Kontrak."); }}
+          className="w-full flex items-center justify-center gap-2 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[12.5px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
+          <CheckCircle className="w-3.5 h-3.5" /> Aktifkan Kontrak
+        </button>
       </div>
     </div>
   );
@@ -5269,7 +5403,7 @@ export default function App() {
       return "Draft";
     }
     if (c.status === "OnReview") return "Finalisasi";
-    if (c.status === "FullyApproved") return "ProsesTTD";
+    if (c.status === "FullyApproved") return c.signingReceipt ? "DokumenKembali" : "ProsesTTD";
     return c.status;
   };
   const unifiedContractStatusOf = (c: Contract): string =>
@@ -5411,7 +5545,10 @@ export default function App() {
   // Monitoring Kontrak (opsi Karyawan disembunyikan dari dropdown). null =
   // entri poin lain (dashboard/OCR/dst, perilaku lama tak berubah).
   const [creationLockedParty, setCreationLockedParty] = useState<"employee" | "external" | null>(null);
-  const closeCreationWizard = () => { setIsCreating(false); setCreationLockedParty(null); setShowWizardAdvanced(false); };
+  // Pekerjaan Legal yang mengunci wizard (dibuka dari Detail Pekerjaan Legal).
+  // null = wizard dibuka dari tempat lain, dropdown tautan tetap bebas dipilih.
+  const [creationLockedLegalJob, setCreationLockedLegalJob] = useState<{ id: string; title: string } | null>(null);
+  const closeCreationWizard = () => { setIsCreating(false); setCreationLockedParty(null); setCreationLockedLegalJob(null); setShowWizardAdvanced(false); };
   const [newContractForm, setNewContractForm] = useState({
     title: "",
     category: "Vendor" as any,
@@ -14324,6 +14461,18 @@ export default function App() {
               const c = contracts.find((x) => x.id === contractId);
               if (c) { setSelectedContract(c); setActiveTab("monitoring"); }
               else showToast("Kontrak terhubung tidak ditemukan.", "warning");
+            }} onCreateExternalContract={(job) => {
+              // Wizard Kontrak Eksternal yang sama dengan tombol di Monitoring
+              // Kontrak, hanya saja pekerjaan Legal-nya sudah terpilih & terkunci.
+              setCreationLockedParty("external");
+              setCreationLockedLegalJob(job);
+              setNewContractForm((f) => ({
+                ...f,
+                party2Type: masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type,
+                linkedLegalJobId: job.id,
+              }));
+              setCreationStep(1);
+              setIsCreating(true);
             }} />
           )}
 
@@ -23087,6 +23236,11 @@ export default function App() {
                       <label className="block text-xs font-semibold text-slate-300">
                         Pilih Judul Pekerjaan Legal <span className="text-slate-500 font-normal">(opsional — status Pekerjaan Legal ini akan otomatis mengikuti status kontrak yang dibuat)</span>
                       </label>
+                      {creationLockedLegalJob ? (
+                        <div className="w-full px-4 py-2.5 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-sm text-indigo-300 font-semibold flex items-center gap-2">
+                          <Briefcase className="w-4 h-4 shrink-0" /> <span className="truncate">{creationLockedLegalJob.title}</span> <span className="text-[11px] font-normal text-slate-400 shrink-0">(terkunci — dibuat dari Pekerjaan Legal)</span>
+                        </div>
+                      ) : (
                       <select
                         value={newContractForm.linkedLegalJobId}
                         onChange={(e) => setNewContractForm({ ...newContractForm, linkedLegalJobId: e.target.value })}
@@ -23094,9 +23248,10 @@ export default function App() {
                       >
                         <option value="">— Tidak ditautkan —</option>
                         {legalJobsForLinking.map((j) => (
-                          <option key={j.id} value={j.id}>{j.title} — {j.partnerName} ({LEGAL_STATUS_LABEL[j.status] || j.status})</option>
+                          <option key={j.id} value={j.id}>{j.title} — {j.partnerName} (Belum Diproses)</option>
                         ))}
                       </select>
+                      )}
                     </div>
 
                     <div className="space-y-1.5">

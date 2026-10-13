@@ -1025,8 +1025,11 @@ const PdfDocumentView = React.forwardRef<EditorHandle, { contractId: string; ver
           // Build "legacy" pdf.js: build modern v6 memakai API JS sangat baru
           // (Map.getOrInsertComputed) yang belum ada di banyak browser kantor
           // -> halaman kosong. Legacy build menyertakan polyfill-nya.
-          const pdfjsLib: any = await import("pdfjs-dist/legacy/build/pdf.mjs");
-          pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.mjs", import.meta.url).toString();
+          const [pdfjsLib, workerMod]: any[] = await Promise.all([
+            import("pdfjs-dist/legacy/build/pdf.mjs"),
+            import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
+          ]);
+          pdfjsLib.GlobalWorkerOptions.workerSrc = workerMod.default;
           const doc = await pdfjsLib.getDocument({ data: new Uint8Array(data.slice(0)) }).promise;
           if (cancelled) return;
           docRef.current = doc;

@@ -72,7 +72,7 @@ npm run build
 # Nginx proxy_pass target below. Change both together if you ever need a
 # different port.
 pm2 delete smart-clm 2>/dev/null || true
-NODE_ENV=production pm2 start dist/server.cjs --name smart-clm
+pm2 start ecosystem.config.cjs --env production
 pm2 save
 pm2 startup systemd -u root --hp /root | tail -1 | bash || true
 

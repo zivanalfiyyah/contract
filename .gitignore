@@ -11,4 +11,5 @@ app.db-wal
 app.db-shm
 backups/
 uploads/
+logs/
 .claude/

@@ -2241,7 +2241,7 @@ function DocToolbar() {
       // di-resolve Vite dan berujung 404.
       const [pdfjsLib, workerMod]: any[] = await Promise.all([
         import("pdfjs-dist/legacy/build/pdf.mjs"),
-        import("pdfjs-dist/legacy/build/pdf.worker.mjs?url"),
+        import("pdfjs-dist/legacy/build/pdf.worker.min.mjs?url"),
       ]);
       pdfjsLib.GlobalWorkerOptions.workerSrc = workerMod.default;
       const buf = await file.arrayBuffer();

@@ -233,14 +233,31 @@ function pushLegalTimeline(job: LegalJob, entry: Omit<LegalJobTimelineEntry, "id
 //   ProsesTTD                 -> Contract.status === "FullyApproved" (disetujui penuh, TTD blm diunggah)
 //   Aktif / TidakAktif / Archived / Terminated -> tetap sama seperti Contract.status (tidak diubah)
 //   DokumenKembali            -> FullyApproved + dokumen fisik sudah diterima kembali (signingReceipt terisi), belum diaktifkan
-type UnifiedLegalStatus = "Draft" | "ReviewInternalEksternal" | "RevisiNegosiasi" | "Finalisasi" | "ProsesTTD" | "DokumenKembali" | ContractStatus;
+//
+// Alur baru (Okt 2026) — revisi internal/eksternal:
+//   Draft             -> status Draft, tidak sedang revisi
+//   RevisiInternal    -> status Draft + revisionStage "internal" (ditolak approver)
+//   RevisiEksternal   -> status Draft + revisionStage "eksternal" (pihak eksternal minta revisi)
+//   ReviewInternal    -> status OnReview (matriks approval internal berjalan)
+//   ApprovedInternal  -> status ApprovedInternal (acc internal, belum dibuka ke eksternal)
+//   ReviewEksternal   -> status ReviewEksternal (link review eksternal aktif)
+//   ProsesTTD / DokumenKembali -> FullyApproved (sama seperti sebelumnya)
+// Status lama "ReviewInternalEksternal"/"RevisiNegosiasi" tetap dihasilkan
+// untuk kontrak LAMA (review eksternal dibuka saat Draft, sebelum alur baru).
+type UnifiedLegalStatus = "Draft" | "RevisiInternal" | "RevisiEksternal" | "ReviewInternal" | "ReviewInternalEksternal" | "RevisiNegosiasi" | "Finalisasi" | "ProsesTTD" | "DokumenKembali" | ContractStatus;
 function computeUnifiedLegalStatus(c: Contract): UnifiedLegalStatus {
   if (c.status === "Draft") {
-    if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
-    if (c.externalReviewToken) return "ReviewInternalEksternal";
+    if (c.revisionStage === "internal") return "RevisiInternal";
+    if (c.revisionStage === "eksternal") return "RevisiEksternal";
+    if (!c.externalRoundCount) {
+      if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
+      if (c.externalReviewToken) return "ReviewInternalEksternal";
+    }
     return "Draft";
   }
-  if (c.status === "OnReview") return "Finalisasi";
+  if (c.status === "OnReview") return "ReviewInternal";
+  if (c.status === "ApprovedInternal") return "ApprovedInternal";
+  if (c.status === "ReviewEksternal") return "ReviewEksternal";
   if (c.status === "FullyApproved") return c.signingReceipt ? "DokumenKembali" : "ProsesTTD";
   return c.status; // Aktif, TidakAktif, Archived, Terminated — lolos apa adanya
 }
@@ -2764,6 +2781,8 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
 const CONTRACT_PUT_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   Draft: [],
   OnReview: [],
+  ApprovedInternal: [],
+  ReviewEksternal: [],
   FullyApproved: [],
   Aktif: ["TidakAktif", "Archived", "Terminated"],
   TidakAktif: ["Archived", "Terminated"],
@@ -3326,13 +3345,23 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requireRole("admin", "
   contract.approvalRound = (contract.approvalRound || 0) + 1;
   contract.approvalSubmittedById = req.user!.id;
   contract.approvalSubmittedByName = req.user!.name;
+  // Revisi selesai dikerjakan → tutup entri revisi yang masih terbuka dan
+  // kembalikan dokumen ke Review Internal. Ini berlaku untuk revisi internal
+  // MAUPUN eksternal: revisi eksternal wajib lewat review internal dulu
+  // sebelum akses ke pihak eksternal dibuka lagi.
+  const closingRevision = contract.revisionStage || null;
+  if (closingRevision) {
+    const open = (contract.revisionHistory || []).slice().reverse().find((r) => !r.resubmittedAt);
+    if (open) { open.resubmittedAt = new Date().toISOString(); open.resubmittedBy = req.user!.name; }
+  }
+  contract.revisionStage = null;
   contract.status = "OnReview";
   contract.updatedAt = new Date().toISOString();
 
   pushAudit(db, req, {
     contractId: contract.id, contractNumber: contract.contractNumber,
-    action: "Ajukan Persetujuan Kontrak",
-    details: `Mengajukan kontrak "${contract.title}" untuk persetujuan ${steps.map((s) => s.approverName).join(" → ")}`,
+    action: closingRevision ? "Ajukan Ulang Persetujuan (Hasil Revisi)" : "Ajukan Persetujuan Kontrak",
+    details: `${closingRevision ? `Mengajukan ulang hasil revisi ${closingRevision} untuk` : "Mengajukan"} kontrak "${contract.title}" untuk review internal ${steps.map((s) => s.approverName).join(" → ")}`,
   });
   pushNotif(db, tid, {
     title: "Kontrak Menunggu Persetujuan",
@@ -3417,22 +3446,31 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
 
   if (decision === "rejected") {
     archiveRound("rejected");
+    // Ditolak = ada revisi dari review internal. Dokumen kembali bisa diedit
+    // (status Draft) dengan penanda revisionStage "internal"; begitu diajukan
+    // lagi (submit-review), status otomatis kembali ke Review Internal.
     contract.status = "Draft";
+    contract.revisionStage = "internal";
+    if (!contract.revisionHistory) contract.revisionHistory = [];
+    contract.revisionHistory.push({
+      id: "rev-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      stage: "internal", note: comment, requestedBy: req.user!.name, requestedAt: new Date().toISOString(),
+    });
     pushAudit(db, req, {
       contractId: contract.id, contractNumber: contract.contractNumber,
-      action: "Tolak Kontrak (Approval Matrix)",
-      details: `${req.user!.name} menolak kontrak "${contract.title}": ${comment}`,
+      action: "Revisi Internal (Approval Matrix)",
+      details: `${req.user!.name} meminta revisi kontrak "${contract.title}": ${comment}`,
     });
     pushNotif(db, tid, {
-      title: "Kontrak Ditolak",
-      message: `Kontrak ${contract.contractNumber} ditolak oleh ${req.user!.name}: ${comment}`,
+      title: "Kontrak Perlu Revisi (Internal)",
+      message: `Kontrak ${contract.contractNumber} dikembalikan untuk revisi oleh ${req.user!.name}: ${comment}`,
       type: "warning", contractId: contract.id,
     });
     saveDB(db);
     if (contract.approvalSubmittedById) {
       sendPushToUser(contract.approvalSubmittedById, {
-        title: "Kontrak Ditolak",
-        body: `${req.user!.name} menolak "${contract.title}": ${comment}`,
+        title: "Kontrak Perlu Revisi",
+        body: `${req.user!.name} meminta revisi "${contract.title}": ${comment}`,
         url: `/?contract=${contract.id}`,
         tag: `approval-${contract.id}`,
       }).catch((err) => logger.warn({ err }, "Push for rejection failed"));
@@ -3461,22 +3499,31 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
     }).catch((err) => logger.warn({ err }, "Push for next approver failed"));
   } else {
     archiveRound("approved");
-    contract.status = "FullyApproved";
+    // Acc internal TIDAK langsung ke Proses TTD lagi: dokumen masuk
+    // "Disetujui Internal" dan menunggu dibuka ke pihak eksternal (Review
+    // Eksternal). Pengecualian kompatibilitas: kontrak LAMA yang sudah
+    // disetujui pihak eksternal sebelum matriks (alur lama, belum pernah
+    // memakai alur baru) langsung FullyApproved seperti dulu.
+    const legacyExternallyApproved = !contract.externalRoundCount && (contract.externalApprovals?.length || 0) > 0;
+    contract.status = legacyExternallyApproved ? "FullyApproved" : "ApprovedInternal";
+    const okMsg = legacyExternallyApproved
+      ? "disetujui penuh — siap diunduh untuk TTD basah."
+      : "disetujui internal — siap dikirim ke pihak eksternal untuk review.";
     pushAudit(db, req, {
       contractId: contract.id, contractNumber: contract.contractNumber,
       action: "Setujui Kontrak (Approval Matrix)",
-      details: `${req.user!.name} menyetujui langkah terakhir — kontrak "${contract.title}" disetujui penuh`,
+      details: `${req.user!.name} menyetujui langkah terakhir — kontrak "${contract.title}" ${okMsg}`,
     });
     pushNotif(db, tid, {
-      title: "Kontrak Disetujui Penuh",
-      message: `Kontrak ${contract.contractNumber} disetujui penuh — siap diunduh untuk TTD basah.`,
+      title: legacyExternallyApproved ? "Kontrak Disetujui Penuh" : "Kontrak Disetujui Internal",
+      message: `Kontrak ${contract.contractNumber} ${okMsg}`,
       type: "success", contractId: contract.id,
     });
     saveDB(db);
     if (contract.approvalSubmittedById) {
       sendPushToUser(contract.approvalSubmittedById, {
-        title: "Kontrak Disetujui Penuh",
-        body: `"${contract.title}" disetujui penuh — siap diunduh untuk TTD basah.`,
+        title: legacyExternallyApproved ? "Kontrak Disetujui Penuh" : "Kontrak Disetujui Internal",
+        body: `"${contract.title}" ${okMsg}`,
         url: `/?contract=${contract.id}`,
         tag: `approval-${contract.id}`,
       }).catch((err) => logger.warn({ err }, "Push for full approval failed"));
@@ -4068,7 +4115,7 @@ app.get("/api/contracts/:id/view-pdf", requireAuth, async (req: AuthedRequest, r
   // file yang BARU SAJA dia unggah sendiri walau belum diajukan approval —
   // yang tetap diblokir cuma status "belum jelas sama sekali" (mis. hasil
   // impor data lama tanpa status valid), bukan Draft yang wajar.
-  if (!["Draft", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
+  if (!["Draft", "ApprovedInternal", "ReviewEksternal", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
     return res.status(403).json({ error: "Dokumen belum bisa diunduh — selesaikan approval matriks terlebih dahulu." });
   }
 
@@ -4383,7 +4430,7 @@ app.get("/api/contracts/:id/versions", requireAuth, (req: AuthedRequest, res) =>
 // menyajikan berkas asli/versi apa adanya (layout 100% asli), dan menyimpan
 // hasil edit workspace sebagai VERSI BARU — original (versi 0) tidak pernah
 // ditimpa. Kontrak "template" tidak memakai endpoint ini sama sekali.
-const DOC_VIEW_STATUSES = ["Draft", "OnReview", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
+const DOC_VIEW_STATUSES = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
 const DOC_DOWNLOAD_STATUSES = ["FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
 
 function uploadedDocumentVersions(db: any, contract: Contract): ContractVersion[] {
@@ -4945,6 +4992,15 @@ app.post("/api/contracts/:id/renew", requireAuth, requireRole("admin", "staff", 
       approvalSubmittedById: undefined,
       approvalSubmittedByName: undefined,
       approvalHistory: undefined,
+      // Review eksternal & siklus revisi juga milik kontrak asal — jangan
+      // diwarisi (token yang sama akan membuka 2 kontrak sekaligus).
+      externalReviewToken: undefined,
+      externalReviewExpiresAt: null,
+      externalReviewLocked: false,
+      externalApprovals: undefined,
+      externalRoundCount: undefined,
+      revisionStage: null,
+      revisionHistory: undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -5308,7 +5364,7 @@ function migrateLegacyContracts() {
     Signed: "Aktif", Approved: "Aktif", Signature: "Aktif",
     Completed: "Archived",
   };
-  const validStatuses = ["Draft", "OnReview", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
+  const validStatuses = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
   const staleProps = ["signToken", "externalSignFor", "externalSignEmail", "useEMeterai", "signatures", "approvalWorkflow", "currentApprovalStep"];
   let migrated = 0;
   for (const contract of db.contracts as any[]) {
@@ -6197,9 +6253,16 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, (req: AuthedR
   const tid = tenantOf(req);
   const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
-  if (contract.status === "Aktif" || contract.status === "Archived" || contract.status === "Terminated") {
-    return res.status(409).json({ error: "Review eksternal hanya untuk kontrak yang masih dalam penyusunan/review (sebelum aktif)." });
+  // Alur baru: review eksternal baru boleh dibuka SETELAH acc internal
+  // (ApprovedInternal), atau saat sudah dalam Review Eksternal (ambil ulang
+  // link). Draft/Review Internal/Revisi belum boleh — dokumen harus disetujui
+  // internal dulu sebelum diperlihatkan ke pihak eksternal.
+  if (contract.status !== "ApprovedInternal" && contract.status !== "ReviewEksternal") {
+    return res.status(409).json({ error: contract.status === "Draft" || contract.status === "OnReview"
+      ? "Review eksternal baru bisa dibuka setelah dokumen disetujui internal. Ajukan persetujuan internal dulu."
+      : "Review eksternal hanya untuk kontrak yang sudah disetujui internal dan belum masuk proses TTD." });
   }
+  const openingNewRound = contract.status === "ApprovedInternal";
   // Link yang masih berlaku dipakai ulang (jangan diputar tiap klik) supaya link
   // yang sudah dikirim ke pihak eksternal tidak mati. Putar token = disable dulu.
   const tokenStillValid = !!contract.externalReviewToken
@@ -6211,10 +6274,96 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, (req: AuthedR
   const days = Number(req.body?.expiresInDays);
   contract.externalReviewExpiresAt = Number.isFinite(days) && days > 0
     ? new Date(Date.now() + days * 86400000).toISOString() : null;
+  if (openingNewRound) {
+    // Ronde eksternal baru (pertama kali, atau setelah revisi eksternal yang
+    // sudah lolos review internal): status → Review Eksternal dan akses tamu
+    // dibuka lagi lewat link yang sama.
+    contract.status = "ReviewEksternal";
+    contract.externalReviewLocked = false;
+    contract.externalRoundCount = (contract.externalRoundCount || 0) + 1;
+  }
   contract.updatedAt = new Date().toISOString();
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Enable External Review", details: `Membuat link review eksternal${contract.externalReviewExpiresAt ? ` (kadaluarsa ${new Date(contract.externalReviewExpiresAt).toLocaleDateString("id-ID")})` : ""}.` });
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: openingNewRound ? "Kirim ke Review Eksternal" : "Enable External Review", details: `${openingNewRound ? `Membuka Review Eksternal ronde ${contract.externalRoundCount}` : "Membuat link review eksternal"}${contract.externalReviewExpiresAt ? ` (kadaluarsa ${new Date(contract.externalReviewExpiresAt).toLocaleDateString("id-ID")})` : ""}.` });
   saveDB(db);
-  res.json({ success: true, token: contract.externalReviewToken, expiresAt: contract.externalReviewExpiresAt, url: `${shareBaseUrl(req)}/?reviewToken=${contract.externalReviewToken}` });
+  res.json({ success: true, token: contract.externalReviewToken, expiresAt: contract.externalReviewExpiresAt, url: `${shareBaseUrl(req)}/?reviewToken=${contract.externalReviewToken}`, contract });
+});
+
+// Tandai Review Eksternal butuh REVISI (dipicu staf internal, mis. revisi
+// dikirim pihak eksternal lewat email/telepon). Dokumen kembali ke Draft
+// dengan revisionStage "eksternal" dan akses tamu DIJEDA: hasil revisi harus
+// lolos Review Internal dulu sebelum diperlihatkan lagi ke pihak eksternal.
+function startExternalRevision(db: any, contract: Contract, note: string, by: string) {
+  contract.status = "Draft";
+  contract.revisionStage = "eksternal";
+  contract.externalReviewLocked = true;
+  if (!contract.revisionHistory) contract.revisionHistory = [];
+  contract.revisionHistory.push({
+    id: "rev-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    stage: "eksternal", note, requestedBy: by, requestedAt: new Date().toISOString(),
+  });
+  contract.updatedAt = new Date().toISOString();
+  pushNotif(db, contract.tenantId, {
+    title: "Kontrak Perlu Revisi (Eksternal)",
+    message: `Pihak eksternal (${by}) meminta revisi kontrak "${contract.title}"${note ? `: ${note}` : ""}. Revisi lalu ajukan ulang ke review internal sebelum dikirim kembali.`,
+    type: "warning", contractId: contract.id,
+  });
+}
+
+app.post("/api/contracts/:id/external-review/request-revision", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
+  if (contract.status !== "ReviewEksternal") {
+    return res.status(409).json({ error: "Revisi eksternal hanya bisa dimulai saat kontrak sedang dalam Review Eksternal." });
+  }
+  const note = String(req.body?.note || "").trim().slice(0, 1000);
+  const by = String(req.body?.requestedBy || "").trim().slice(0, 80) || contract.party2Name || "Pihak Eksternal";
+  startExternalRevision(db, contract, note, by);
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Revisi Eksternal", details: `${req.user!.name} mencatat permintaan revisi dari ${by}${note ? `: ${note}` : ""}. Akses review eksternal dijeda sampai revisi disetujui internal.` });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Pihak eksternal setuju di luar sistem (email/rapat) — staf internal
+// mencatat persetujuannya sendiri. Sama efeknya dgn tamu klik "Setuju/OK".
+app.post("/api/contracts/:id/external-review/mark-approved", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
+  if (contract.status !== "ReviewEksternal") {
+    return res.status(409).json({ error: "Hanya kontrak yang sedang Review Eksternal yang bisa ditandai disetujui eksternal." });
+  }
+  const name = String(req.body?.name || "").trim().slice(0, 80) || contract.party2Name || "Pihak Eksternal";
+  if (!contract.externalApprovals) contract.externalApprovals = [];
+  contract.externalApprovals.push({ name, approvedAt: new Date().toISOString(), note: `Dicatat oleh ${req.user!.name}${req.body?.note ? ` — ${String(req.body.note).slice(0, 250)}` : ""}` });
+  contract.externalReviewLocked = true;
+  contract.status = "FullyApproved";
+  contract.updatedAt = new Date().toISOString();
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Disetujui Eksternal (Dicatat Manual)", details: `${req.user!.name} mencatat persetujuan pihak eksternal (${name}) — kontrak masuk Proses TTD.` });
+  pushNotif(db, tid, { title: "Kontrak Disetujui Penuh", message: `Kontrak ${contract.contractNumber} disetujui internal & eksternal — siap diunduh untuk TTD basah.`, type: "success", contractId: contract.id });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Lewati Review Eksternal (mis. dokumen tidak perlu ditinjau pihak kedua).
+// Dibatasi admin/legal/manager & wajib alasan — tercatat jelas di audit.
+app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole("admin", "legal", "manager"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
+  if (contract.status !== "ApprovedInternal") {
+    return res.status(409).json({ error: "Review eksternal hanya bisa dilewati saat kontrak berstatus Disetujui Internal." });
+  }
+  const reason = String(req.body?.reason || "").trim();
+  if (!reason) return res.status(400).json({ error: "Alasan wajib diisi untuk melewati review eksternal." });
+  contract.status = "FullyApproved";
+  contract.updatedAt = new Date().toISOString();
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Lewati Review Eksternal", details: `${req.user!.name} melewati review eksternal: ${reason.slice(0, 500)}` });
+  saveDB(db);
+  res.json({ success: true, contract });
 });
 
 // Matikan token (link lama langsung tidak berlaku).
@@ -6255,6 +6404,14 @@ function resolveExternalReview(token: string): Contract | null {
   if (contract.externalReviewExpiresAt && new Date(contract.externalReviewExpiresAt) < new Date()) return null;
   return contract;
 }
+// Alur baru: selama dokumen direvisi / ditinjau ulang internal (setelah
+// pernah dibuka ke eksternal), tamu TIDAK boleh melihat dokumen — akses baru
+// diberikan lagi saat staf membuka Review Eksternal ronde berikutnya.
+function externalReviewPaused(contract: Contract): boolean {
+  if (!contract.externalRoundCount) return false; // kontrak alur lama
+  return contract.status === "Draft" || contract.status === "OnReview" || contract.status === "ApprovedInternal";
+}
+const EXTERNAL_PAUSED_MSG = "Dokumen sedang direvisi dan ditinjau ulang secara internal. Akses akan dibuka kembali lewat link yang sama setelah revisi disetujui.";
 
 // PUBLIK (tanpa auth) — pratinjau klausul + komentar. Rate-limited via apiLimiter.
 // Sama PERSIS dengan DEFAULT_PREAMBLE_TEMPLATE di src/App.tsx (renderPreambleParagraphs)
@@ -6641,6 +6798,7 @@ app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staf
 app.get("/api/external-review/:token", apiLimiter, (req, res) => {
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
   const db = loadDB();
   const comments = (db.clauseComments as ClauseComment[] || [])
     .filter((c) => c.contractId === contract.id)
@@ -6670,6 +6828,10 @@ app.get("/api/external-review/:token", apiLimiter, (req, res) => {
     comments,
     alreadyApproved: (contract.externalApprovals || []).length > 0,
     locked: !!contract.externalReviewLocked,
+    // Alur baru: tamu boleh "Ajukan Revisi" (bukan cuma komentar) selama
+    // Review Eksternal berjalan.
+    canRequestRevision: contract.status === "ReviewEksternal" && !contract.externalReviewLocked,
+    round: contract.externalRoundCount || 0,
   });
 });
 
@@ -6678,6 +6840,7 @@ app.get("/api/external-review/:token", apiLimiter, (req, res) => {
 app.post("/api/external-review/:token/comments", apiLimiter, (req, res) => {
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
   if (contract.externalReviewLocked) {
     return res.status(403).json({ error: "Review ini sudah terkunci sejak Anda menyetujui (Setuju/OK). Hubungi pemilik dokumen untuk membuka akses kembali." });
   }
@@ -6718,6 +6881,7 @@ app.post("/api/external-review/:token/comments", apiLimiter, (req, res) => {
 app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => {
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
   if (resolveDocumentSource(contract) !== "upload") {
     return res.status(409).json({ error: "Kontrak ini dibuat dari template — tidak punya berkas dokumen upload." });
   }
@@ -6751,6 +6915,7 @@ app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => 
 app.post("/api/external-review/:token/approve", apiLimiter, (req, res) => {
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
   if (contract.externalReviewLocked) {
     return res.status(403).json({ error: "Review ini sudah terkunci. Hubungi pemilik dokumen untuk membuka akses kembali." });
   }
@@ -6761,12 +6926,41 @@ app.post("/api/external-review/:token/approve", apiLimiter, (req, res) => {
   if (!live.externalApprovals) live.externalApprovals = [];
   live.externalApprovals.push({ name: name.slice(0, 80), approvedAt: new Date().toISOString(), note: String(req.body?.note || "").slice(0, 300) || undefined });
   live.externalReviewLocked = true;
+  // Alur baru: persetujuan eksternal di tahap Review Eksternal = tahap
+  // review terakhir selesai → Proses TTD.
+  const finalStage = live.status === "ReviewEksternal";
+  if (finalStage) live.status = "FullyApproved";
   live.updatedAt = new Date().toISOString();
   pushNotif(db, contract.tenantId, {
-    title: "Pihak Eksternal Menyetujui",
-    message: `${name} menyetujui (OK) isi klausul kontrak "${contract.title}" via review eksternal.`,
+    title: finalStage ? "Disetujui Eksternal — Siap TTD" : "Pihak Eksternal Menyetujui",
+    message: finalStage
+      ? `${name} menyetujui kontrak "${contract.title}" via review eksternal — kontrak masuk Proses TTD.`
+      : `${name} menyetujui (OK) isi klausul kontrak "${contract.title}" via review eksternal.`,
     type: "success", contractId: contract.id,
   });
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// PUBLIK — tamu eksternal mengajukan REVISI (setelah memberi komentar/usulan).
+// Dokumen kembali ke Draft (Revisi Eksternal) & akses tamu dijeda sampai
+// hasil revisinya lolos Review Internal dan dibuka lagi oleh pemilik dokumen.
+app.post("/api/external-review/:token/request-revision", apiLimiter, (req, res) => {
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
+  if (contract.status !== "ReviewEksternal") {
+    return res.status(409).json({ error: "Pengajuan revisi hanya tersedia selama dokumen dalam tahap review eksternal." });
+  }
+  if (contract.externalReviewLocked) {
+    return res.status(403).json({ error: "Review ini sudah terkunci. Hubungi pemilik dokumen untuk membuka akses kembali." });
+  }
+  const name = String(req.body?.name || "").trim().slice(0, 80);
+  if (!name) return res.status(400).json({ error: "Nama wajib diisi." });
+  const note = String(req.body?.note || "").trim().slice(0, 1000);
+  const db = loadDB();
+  const live = (db.contracts as Contract[]).find((c) => c.id === contract.id)!;
+  startExternalRevision(db, live, note, name);
   saveDB(db);
   res.json({ success: true });
 });

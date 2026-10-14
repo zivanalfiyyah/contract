@@ -1,5 +1,29 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #9] — Sidebar Eksternal/Internal, alur revisi kontrak, tabel addendum
+
+### Ringkasan
+
+- **Sidebar disusun ulang**: Menu Utama (Dashboard) → **Dokumen Eksternal** (Dashboard Legal, Pekerjaan Legal, **Kontrak Eksternal** — dulu "Monitoring Kontrak", Library Klausul & Template, **Arsip Eksternal**) → **Dokumen Internal** (Kontrak Karyawan, Dokumen DCS, **Arsip Internal**) → Daftar & Pengaturan.
+- **Arsip per Folder dipecah dua**: Arsip Eksternal hanya kontrak vendor/mitra; Arsip Internal hanya kontrak karyawan + dokumen DCS full sign. Folder/sub-folder tetap satu master kategori. Hak akses keduanya tetap memakai id menu `arsip`.
+- **Alur kontrak baru**: Draft → Review Internal → Disetujui Internal → **Review Eksternal** → Proses TTD → Aktif. Dulu acc internal langsung ke Proses TTD dan review eksternal hanya bisa dibuka saat Draft (bug).
+  - Approver kini punya tombol **Minta Revisi** (pengganti "Tolak"): status otomatis **Revisi Internal**; begitu diajukan ulang otomatis kembali **Review Internal**.
+  - Pihak eksternal bisa **Ajukan Revisi** dari halaman review (atau staf mencatat "Ada Revisi Eksternal"): status **Revisi Eksternal**, akses tamu **dijeda** (HTTP 423). Hasil revisi wajib lolos Review Internal dulu, baru dibuka lagi ke eksternal lewat **link yang sama**.
+  - Tamu klik **Setuju/OK** (atau staf "Disetujui Eksternal") → Proses TTD. Admin/Legal/Manager bisa **Lewati Review Eksternal** dengan alasan (tercatat di audit).
+  - Riwayat revisi per kontrak (`revisionHistory`) dan stepper alur di panel Status & Siklus Kontrak.
+- **Tabel Addendum** di halaman tinjau kontrak (No., Addendum, Jenis, Dibuat, Mulai, Berakhir, Nilai, Status, Dokumen, Aksi). Tombol **Tinjau** membuka halaman tinjau yang sama untuk addendum; dari addendum ada tombol **Tinjau Kontrak Induk**.
+
+### Endpoint baru / berubah
+
+- `POST /api/contracts/:id/external-review/enable` — hanya untuk status `ApprovedInternal` (membuka ronde → `ReviewEksternal`) atau `ReviewEksternal` (ambil ulang link).
+- `POST /api/contracts/:id/external-review/request-revision`, `.../external-review/mark-approved`, `POST /api/contracts/:id/skip-external-review`.
+- `POST /api/external-review/:token/request-revision` (publik, berbasis token).
+
+### Migrasi
+
+- Status kontrak baru `ApprovedInternal` & `ReviewEksternal`; field baru `revisionStage`, `revisionHistory`, `externalRoundCount`. Tidak perlu migrasi data.
+- Kontrak lama yang sudah disetujui pihak eksternal sebelum matriks (alur lama) tetap langsung ke Proses TTD setelah acc internal.
+
 ## [Unreleased #8] — "Edit seperti Word" untuk kontrak hasil Upload PDF
 
 ### Ringkasan

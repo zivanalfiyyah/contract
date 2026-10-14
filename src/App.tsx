@@ -1069,6 +1069,11 @@ function ExternalReviewPage({ token }: { token: string }) {
   const [draftReplacement, setDraftReplacement] = useState(""); // teks pengganti (usulan "Ganti" pada pasal)
   const [activeId, setActiveId] = useState<string | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
+  // Alur baru: tamu bisa "Ajukan Revisi" → dokumen kembali ke tim internal.
+  const [paused, setPaused] = useState(false);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [revisionNote, setRevisionNote] = useState("");
+  const [revisionSent, setRevisionSent] = useState(false);
   // Markup dokumen Word (.docx): usulan yang sedang ditulis tamu.
   const [mkSeed, setMkSeed] = useState<MarkupSeed | null>(null);
   const [mkText, setMkText] = useState("");
@@ -1080,8 +1085,8 @@ function ExternalReviewPage({ token }: { token: string }) {
     try {
       const res = await fetch(`/api/external-review/${token}`);
       const j = await res.json();
-      if (!res.ok) { setErr(j.error || "Link tidak valid."); setData(null); }
-      else { setData(j); setErr(""); }
+      if (!res.ok) { setErr(j.error || "Link tidak valid."); setPaused(res.status === 423 || !!j.paused); setData(null); }
+      else { setData(j); setErr(""); setPaused(false); }
     } catch { setErr("Gagal memuat. Periksa koneksi."); }
     finally { setLoading(false); }
   };
@@ -1174,6 +1179,19 @@ function ExternalReviewPage({ token }: { token: string }) {
     if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
     setConfirmApprove(true);
   };
+  const doRequestRevision = async () => {
+    if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/external-review/${token}/request-revision`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, note: revisionNote }),
+      });
+      const j = await res.json();
+      if (!res.ok) notify(j.error || "Gagal mengajukan revisi.");
+      else { setRevisionOpen(false); setRevisionSent(true); }
+    } catch { notify("Gagal mengajukan revisi."); }
+    finally { setBusy(false); }
+  };
   const doApprove = async () => {
     setBusy(true);
     try {
@@ -1188,11 +1206,20 @@ function ExternalReviewPage({ token }: { token: string }) {
   };
 
   if (loading) return <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-300 text-sm">Memuat dokumen…</div>;
+  if (revisionSent) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
+      <div className="max-w-md text-center space-y-2">
+        <p className="text-4xl">📝</p>
+        <h1 className="text-lg font-bold text-slate-100">Permintaan Revisi Terkirim</h1>
+        <p className="text-sm text-slate-400">Terima kasih. Tim kami akan merevisi dokumen sesuai komentar Anda. Setelah revisi disetujui internal, dokumen versi baru bisa dibuka lagi lewat link yang sama.</p>
+      </div>
+    </div>
+  );
   if (err) return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center p-6">
       <div className="max-w-md text-center space-y-2">
-        <p className="text-4xl">🔒</p>
-        <h1 className="text-lg font-bold text-slate-100">Link Review Tidak Berlaku</h1>
+        <p className="text-4xl">{paused ? "⏳" : "🔒"}</p>
+        <h1 className="text-lg font-bold text-slate-100">{paused ? "Dokumen Sedang Direvisi" : "Link Review Tidak Berlaku"}</h1>
         <p className="text-sm text-slate-400">{err}</p>
       </div>
     </div>
@@ -1294,6 +1321,23 @@ function ExternalReviewPage({ token }: { token: string }) {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 font-sans">
       <GuestNotice notice={notice} onDismiss={dismissNotice} />
+      {revisionOpen && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-3">
+            <h3 className="text-base font-bold text-slate-100">Ajukan Revisi</h3>
+            <p className="text-[12px] text-slate-400 leading-relaxed">
+              Komentar &amp; usulan yang sudah Anda tulis ({((data?.comments as any[]) || []).filter((x) => x.external && !x.parentId).length}) ikut terkirim. Setelah diajukan, akses review dijeda sampai tim kami selesai merevisi dan menyetujuinya secara internal.
+            </p>
+            <textarea value={revisionNote} onChange={(e) => setRevisionNote(e.target.value)} rows={4}
+              placeholder="Ringkasan revisi yang diminta (opsional)…"
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRevisionOpen(false)} className="px-4 py-2 text-sm text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg cursor-pointer">Batal</button>
+              <button onClick={doRequestRevision} disabled={busy} className="px-4 py-2 text-sm font-bold text-white bg-rose-600 hover:bg-rose-500 disabled:opacity-50 rounded-lg cursor-pointer">Kirim Permintaan Revisi</button>
+            </div>
+          </div>
+        </div>
+      )}
       <GuestConfirmDialog
         open={confirmApprove}
         title="Setujui isi kontrak ini?"
@@ -1316,6 +1360,13 @@ function ExternalReviewPage({ token }: { token: string }) {
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
               {okDone || data.locked ? "✓ Sudah Disetujui" : "Setuju / OK"}
             </button>
+            {data.canRequestRevision && !okDone && (
+              <button onClick={() => { if (!name.trim()) { notify("Isi nama Anda dulu."); return; } setRevisionOpen(true); }} disabled={busy}
+                title="Kembalikan dokumen ke tim kami untuk direvisi sesuai komentar Anda."
+                className="px-4 py-2 bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 disabled:opacity-50 text-rose-600 text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
+                Ajukan Revisi
+              </button>
+            )}
           </div>
           {data.locked ? (
             <p className="text-[11px] text-amber-400 mt-2 flex items-center gap-1.5">
@@ -1330,7 +1381,7 @@ function ExternalReviewPage({ token }: { token: string }) {
               ) : (
                 <>
                   <b>Sorot (block) kalimat</b> pada klausul di bawah → muncul tombol <b>✎ Komentar</b> / <b>✂ Coret</b> / <b>⇄ Ganti</b> (usulan teks pengganti).
-                  Komentar tampil sebagai kartu di margin kanan, tersambung garis ke kalimatnya. Bila sudah sesuai, klik <b>Setuju / OK</b>.
+                  Komentar tampil sebagai kartu di margin kanan, tersambung garis ke kalimatnya. Bila sudah sesuai, klik <b>Setuju / OK</b>{data.canRequestRevision ? <>; bila perlu perubahan, tulis komentar lalu klik <b>Ajukan Revisi</b></> : null}.
                 </>
               )}
             </p>
@@ -2897,7 +2948,9 @@ const LEGAL_BTN_PRIMARY = "px-6 py-2.5 rounded-full btn-grad-primary text-white 
 // SUDAH TERTAUT ke Kontrak — supaya labelnya identik dengan yang tampil di
 // Monitoring Kontrak, bukan cuma "mirip".
 const CONTRACT_STATUS_LABEL_ID: Record<string, string> = {
-  Draft: "Draft", OnReview: "Sedang Ditinjau", FullyApproved: "Disetujui Penuh",
+  Draft: "Draft", OnReview: "Review Internal", FullyApproved: "Disetujui Penuh",
+  ApprovedInternal: "Disetujui Internal", ReviewEksternal: "Review Eksternal",
+  ReviewInternal: "Review Internal", RevisiInternal: "Revisi Internal", RevisiEksternal: "Revisi Eksternal",
   Aktif: "Aktif", TidakAktif: "Tidak Aktif", Archived: "Diarsipkan", Terminated: "Diakhiri",
   ReviewInternalEksternal: "Review Internal/Eksternal", RevisiNegosiasi: "Revisi/Negosiasi",
   Finalisasi: "Finalisasi", ProsesTTD: "Proses TTD", DokumenKembali: "Dokumen Kembali",
@@ -2908,6 +2961,11 @@ const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
   TidakAktif: "bg-slate-800 text-slate-400 border-transparent",
   Draft: "bg-slate-800 text-slate-300 border-transparent",
   OnReview: "bg-peach text-brand-orange border-transparent",
+  ReviewInternal: "bg-peach text-brand-orange border-transparent",
+  RevisiInternal: "bg-rose-500/15 text-rose-400 border-transparent",
+  RevisiEksternal: "bg-rose-500/15 text-rose-400 border-transparent",
+  ApprovedInternal: "bg-teal-500/15 text-teal-400 border-transparent",
+  ReviewEksternal: "bg-violet-500/15 text-violet-400 border-transparent",
   FullyApproved: "bg-mist text-indigo-400 border-transparent",
   Archived: "bg-slate-800 text-slate-400 border-transparent",
   Terminated: "bg-peach text-brand-orange border-transparent",
@@ -3750,7 +3808,7 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
             onChange={(e) => { const f = e.target.files?.[0]; if (f) setProof(f); e.target.value = ""; }} />
         </div>
         <button disabled={!received || !proof || busy}
-          onClick={() => { const fd = new FormData(); fd.append("file", proof!); post("activate", fd, "Kontrak diaktifkan dan masuk Monitoring Kontrak."); }}
+          onClick={() => { const fd = new FormData(); fd.append("file", proof!); post("activate", fd, "Kontrak diaktifkan dan masuk Kontrak Eksternal."); }}
           className="w-full flex items-center justify-center gap-2 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[12.5px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
           <CheckCircle className="w-3.5 h-3.5" /> Aktifkan Kontrak
         </button>
@@ -3814,7 +3872,7 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
         </LegalPanel>
 
         {/* Monitoring Kontrak */}
-        <LegalPanel Icon={FileCheck} title="Monitoring Kontrak" subtitle="Masa berlaku kontrak berjalan">
+        <LegalPanel Icon={FileCheck} title="Kontrak Eksternal" subtitle="Masa berlaku kontrak berjalan">
           <div className="grid grid-cols-3 gap-2.5 text-center">
             {[
               { v: data.monitoringKontrak.aktif, l: "Aktif", c: "bg-mist text-indigo-400" },
@@ -4474,11 +4532,11 @@ export default function App() {
     { id: "dashboard", label: "Dashboard" },
     { id: "dashboard-legal", label: "Dashboard Legal" },
     { id: "pekerjaan-legal", label: "Pekerjaan Legal" },
-    { id: "monitoring", label: "Monitoring Kontrak" },
+    { id: "monitoring", label: "Kontrak Eksternal" },
     { id: "kontrak-karyawan", label: "Kontrak Karyawan" },
     { id: "clauses", label: "Library Klausul & Template" },
-    { id: "internal-docs", label: "Dokumen Internal (DCS)" },
-    { id: "arsip", label: "Arsip per Folder" },
+    { id: "internal-docs", label: "Dokumen DCS" },
+    { id: "arsip", label: "Arsip Folder (Eksternal & Internal)" },
     { id: "all-docs", label: "Tabel Semua Dokumen" },
     { id: "konfigurasi", label: "Konfigurasi & Master Data" },
     { id: "audits", label: "Audit Trail" },
@@ -5371,6 +5429,8 @@ export default function App() {
       : status === "TidakAktif" ? "bg-orange-500/15 text-orange-400"
       : status === "Draft" ? "bg-amber-500/15 text-amber-400"
       : status === "OnReview" ? "bg-indigo-500/15 text-indigo-400"
+      : status === "ApprovedInternal" ? "bg-teal-500/15 text-teal-400"
+      : status === "ReviewEksternal" ? "bg-violet-500/15 text-violet-400"
       : status === "FullyApproved" ? "bg-teal-500/15 text-teal-400"
       : status === "Archived" ? "bg-purple-500/15 text-purple-400"
       : "bg-rose-500/15 text-rose-400"
@@ -5379,7 +5439,9 @@ export default function App() {
   // dst.) tetap dipakai sebagai value/pembanding di seluruh kode; ini murni
   // teks yang ditampilkan ke user, satu sumber kebenaran sama seperti badge.
   const contractStatusLabel = (status: ContractStatus) =>
-    status === "OnReview" ? "Sedang Ditinjau"
+    status === "OnReview" ? "Review Internal"
+    : status === "ApprovedInternal" ? "Disetujui Internal"
+    : status === "ReviewEksternal" ? "Review Eksternal"
     : status === "TidakAktif" ? "Tidak Aktif"
     : status === "FullyApproved" ? "Disetujui Penuh"
     : status === "Archived" ? "Diarsipkan"
@@ -5398,11 +5460,17 @@ export default function App() {
   // TAPI TTD basah belum diunggah, makanya di tabel disebut "Proses TTD").
   const computeUnifiedContractStatusClient = (c: Contract): string => {
     if (c.status === "Draft") {
-      if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
-      if (c.externalReviewToken) return "ReviewInternalEksternal";
+      if (c.revisionStage === "internal") return "RevisiInternal";
+      if (c.revisionStage === "eksternal") return "RevisiEksternal";
+      if (!c.externalRoundCount) {
+        if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
+        if (c.externalReviewToken) return "ReviewInternalEksternal";
+      }
       return "Draft";
     }
-    if (c.status === "OnReview") return "Finalisasi";
+    if (c.status === "OnReview") return "ReviewInternal";
+    if (c.status === "ApprovedInternal") return "ApprovedInternal";
+    if (c.status === "ReviewEksternal") return "ReviewEksternal";
     if (c.status === "FullyApproved") return c.signingReceipt ? "DokumenKembali" : "ProsesTTD";
     return c.status;
   };
@@ -6202,7 +6270,9 @@ export default function App() {
       // Sinkronkan state kontrak di client: tanpa ini polling komentar eksternal
       // & tombol "Buka Akses Kembali" baru aktif setelah halaman di-refresh.
       if (shareLinkModal.kind === "contract") {
-        const patch = { externalReviewToken: data.token, externalReviewExpiresAt: data.expiresAt ?? null };
+        const patch = data.contract
+          ? { ...data.contract, unifiedStatus: undefined }
+          : { externalReviewToken: data.token, externalReviewExpiresAt: data.expiresAt ?? null };
         setContracts((prev) => prev.map((c) => c.id === shareLinkModal.targetId ? { ...c, ...patch } : c));
         setSelectedContract((prev: any) => prev && prev.id === shareLinkModal.targetId ? { ...prev, ...patch } : prev);
       }
@@ -6228,6 +6298,47 @@ export default function App() {
       showToast("Akses review eksternal dibuka kembali — tamu bisa komentar/setuju lagi lewat link yang sama.", "success");
     } catch { showToast("Gagal membuka akses kembali", "warning"); }
   };
+
+  // ===== Alur Review Eksternal (setelah acc internal) =====
+  // Satu helper untuk aksi POST sederhana yang mengembalikan `contract` terbaru.
+  const postContractFlowAction = async (path: string, body: any, okMsg: string) => {
+    if (!selectedContract) return;
+    try {
+      const res = await fetch(`/api/contracts/${selectedContract.id}/${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) { showToast(data.error || "Gagal memproses aksi", "warning"); return; }
+      if (data.contract) {
+        setSelectedContract(data.contract);
+        setDraftSavedSnapshot(JSON.stringify(data.contract));
+      }
+      showToast(okMsg, "success");
+      fetchInitialData();
+    } catch { showToast("Gagal memproses aksi", "warning"); }
+  };
+  // Pihak eksternal minta revisi (dicatat staf) → Revisi Eksternal; akses tamu dijeda.
+  const handleStartExternalRevision = () => askText({
+    title: "Catat Revisi dari Pihak Eksternal",
+    label: "Ringkasan revisi yang diminta (komentar detail tetap ada di Mode Tinjau)",
+    placeholder: "mis. Pasal 5 nilai denda minta diturunkan, termin pembayaran jadi 3x",
+    onConfirm: (note) => postContractFlowAction("external-review/request-revision", { note },
+      "Kontrak masuk Revisi Eksternal — edit dokumennya, lalu ajukan ulang ke review internal."),
+  });
+  const handleMarkExternalApproved = () => askText({
+    title: "Catat Persetujuan Pihak Eksternal",
+    label: "Nama yang menyetujui (pihak eksternal)",
+    initial: selectedContract?.party2Name || "",
+    onConfirm: (name) => postContractFlowAction("external-review/mark-approved", { name },
+      "Disetujui eksternal — kontrak masuk Proses TTD."),
+  });
+  const handleSkipExternalReview = () => askText({
+    title: "Lewati Review Eksternal",
+    label: "Alasan (wajib, tercatat di audit)",
+    placeholder: "mis. Pihak kedua sudah menyetujui draf versi ini lewat rapat",
+    onConfirm: (reason) => postContractFlowAction("skip-external-review", { reason },
+      "Review eksternal dilewati — kontrak masuk Proses TTD."),
+  });
 
   // Gaya MS Word: reviewer memblok kalimat di klausul, lalu memilih apakah itu
   // komentar biasa (sorot kuning) atau usulan coret (strikethrough merah).
@@ -7549,7 +7660,7 @@ export default function App() {
   const handleApprovalDecision = async (decision: "approved" | "rejected") => {
     if (!selectedContract) return;
     if (decision === "rejected" && !approvalDecisionComment.trim()) {
-      showToast("Komentar wajib diisi saat menolak", "warning");
+      showToast("Catatan revisi wajib diisi saat meminta revisi", "warning");
       return;
     }
     setIsDecidingApproval(true);
@@ -7561,7 +7672,12 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
-        showToast(decision === "approved" ? "Kontrak disetujui" : "Kontrak ditolak — dikembalikan ke Draft", "success");
+        showToast(
+          decision === "approved"
+            ? (data.contract?.status === "ApprovedInternal" ? "Disetujui internal — kontrak siap dikirim ke Review Eksternal" : "Kontrak disetujui")
+            : "Revisi diminta — kontrak masuk Revisi Internal",
+          "success",
+        );
         setSelectedContract(data.contract);
         setDraftSavedSnapshot(JSON.stringify(data.contract));
         setApprovalDecisionComment("");
@@ -12141,8 +12257,8 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5">
-                Legal
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua (vendor/mitra) — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
+                Dokumen Eksternal
               </p>
               {canSee("dashboard-legal") && (
               <button
@@ -12171,9 +12287,6 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
-                Dokumen Eksternal &middot; Kontrak
-              </p>
               {canSee("monitoring") && (
               <button
                 onClick={() => {
@@ -12188,7 +12301,7 @@ export default function App() {
               >
                 <div className="flex items-center gap-3">
                   <Bell className="w-4 h-4" />
-                  <span>Monitoring Kontrak</span>
+                  <span>Kontrak Eksternal</span>
                 </div>
                 {(() => {
                   const now = new Date();
@@ -12207,6 +12320,47 @@ export default function App() {
               </button>
               )}
 
+              {canSee("clauses") && (
+              <button
+                onClick={() => {
+                  setActiveTab("clauses");
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "clauses"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+              >
+                <Sliders className="w-4 h-4" />
+                Library Klausul & Template
+              </button>
+              )}
+
+              {canSee("arsip") && (
+              <button
+                onClick={() => {
+                  setActiveTab("arsip-eksternal");
+                  setArsipFolder(null);
+                  setArsipStatusBucket(null);
+                  setArsipSubPath([]);
+                  setSelectedContract(null);
+                }}
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                  activeTab === "arsip-eksternal"
+                    ? "bg-soft-blue text-white"
+                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                }`}
+                title="Arsip folder khusus kontrak eksternal (vendor/mitra)."
+              >
+                <FolderOpen className="w-4 h-4" />
+                Arsip Eksternal
+              </button>
+              )}
+
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Kontrak karyawan dan dokumen terkontrol DCS (SOP, Instruksi Kerja, Memo, Kebijakan).">
+                Dokumen Internal
+              </p>
               {canSee("kontrak-karyawan") && (
               <button
                 onClick={() => {
@@ -12233,26 +12387,6 @@ export default function App() {
               </button>
               )}
 
-              {canSee("clauses") && (
-              <button
-                onClick={() => {
-                  setActiveTab("clauses");
-                  setSelectedContract(null);
-                }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
-                  activeTab === "clauses"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
-                }`}
-              >
-                <Sliders className="w-4 h-4" />
-                Library Klausul & Tpl
-              </button>
-              )}
-
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="SOP, Instruksi Kerja, Memo, Kebijakan — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem, tidak perlu meterai.">
-                Dokumen Internal &middot; DCS
-              </p>
               {canSee("internal-docs") && (
               <button
                 onClick={() => {
@@ -12266,30 +12400,34 @@ export default function App() {
                 }`}
               >
                 <Workflow className="w-4 h-4" />
-                Dokumen Internal (DCS)
+                Dokumen DCS
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Gabungan dokumen dari kedua jalur — menampilkan kontrak eksternal maupun dokumen DCS bersama-sama.">
-                Arsip &amp; Daftar &middot; Gabungan
-              </p>
               {canSee("arsip") && (
               <button
                 onClick={() => {
-                  setActiveTab("arsip");
+                  setActiveTab("arsip-internal");
+                  setArsipFolder(null);
+                  setArsipStatusBucket(null);
+                  setArsipSubPath([]);
                   setSelectedContract(null);
                 }}
                 className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
-                  activeTab === "arsip"
+                  activeTab === "arsip-internal"
                     ? "bg-soft-blue text-white"
                     : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
-                title="Dokumen tersusun per folder & subfolder — untuk menelusuri berdasarkan pengelompokan."
+                title="Arsip folder khusus dokumen internal — kontrak karyawan & dokumen DCS yang sudah full sign."
               >
                 <FolderOpen className="w-4 h-4" />
-                Arsip per Folder
+                Arsip Internal
               </button>
               )}
+
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Tabel gabungan semua dokumen, konfigurasi, audit, dan alat bantu lainnya.">
+                Daftar &amp; Pengaturan
+              </p>
 
               {canSee("all-docs") && (
               <button
@@ -14594,7 +14732,7 @@ export default function App() {
               )}
               <DashPager page={apprPg} total={myApprovalQueue.length} pageSize={PAGE} onChange={setApprPage} />
               {myApprovalQueue.length > PAGE && (
-                <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("OnReview"); }} className="text-[11px] text-indigo-400 hover:underline font-medium cursor-pointer text-left">
+                <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("ReviewInternal"); }} className="text-[11px] text-indigo-400 hover:underline font-medium cursor-pointer text-left">
                   Buka semua di Monitoring →
                 </button>
               )}
@@ -16885,12 +17023,12 @@ export default function App() {
                   </span>
                   <div>
                     <h2 className="text-xl font-bold text-slate-100">
-                      {activeTab === "kontrak-karyawan" ? "Kontrak Karyawan" : "Monitoring & Reminder Kontrak"}
+                      {activeTab === "kontrak-karyawan" ? "Kontrak Karyawan" : "Kontrak Eksternal"}
                     </h2>
                     <p className="text-sm text-slate-400 mt-0.5">
                       {activeTab === "kontrak-karyawan"
                         ? "Kontrak kerja karyawan (pihak kedua = Karyawan) dipantau terpisah dari kontrak vendor/mitra."
-                        : "Semua kontrak (dibuat di sistem maupun dokumen upload) dipantau masa berlakunya di sini."}
+                        : "Kontrak dengan vendor/mitra (dibuat di sistem maupun dokumen upload) dipantau masa berlakunya di sini."}
                     </p>
                   </div>
                 </div>
@@ -18483,16 +18621,27 @@ export default function App() {
             );
           })()}
 
-          {activeTab === "arsip" && !selectedContract && (
+          {(activeTab === "arsip-eksternal" || activeTab === "arsip-internal") && !selectedContract && (() => {
+            // Arsip dipisah dua: Eksternal (kontrak vendor/mitra) di menu
+            // Dokumen Eksternal, Internal (kontrak karyawan + dokumen DCS) di
+            // menu Dokumen Internal. Folder/sub-folder-nya tetap sama (satu
+            // master kategori), cuma isinya yang disaring per cakupan.
+            const arsipIsInternal = activeTab === "arsip-internal";
+            const isEmpArsip = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
+            const arsipContracts = contracts.filter((c) => (arsipIsInternal ? isEmpArsip(c) : !isEmpArsip(c)));
+            const arsipDcsDocs = arsipIsInternal ? dcsDocs : [];
+            return (
             <div className="space-y-6">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
                   <h2 className="text-xl font-bold flex items-center gap-2">
                     <FolderOpen className="w-5 h-5 text-indigo-400" />
-                    Arsip Dokumen Kontrak
+                    {arsipIsInternal ? "Arsip Dokumen Internal" : "Arsip Dokumen Eksternal"}
                   </h2>
                   <p className="text-sm text-slate-400 mt-1">
-                    Dokumen dikelompokkan per folder kategori. Upload PDF hardcopy/softcopy dan daftarkan agar masuk monitoring.
+                    {arsipIsInternal
+                      ? "Kontrak karyawan & dokumen DCS yang sudah full sign, dikelompokkan per folder kategori."
+                      : "Kontrak eksternal (vendor/mitra) dikelompokkan per folder kategori. Upload PDF hardcopy/softcopy dan daftarkan agar masuk monitoring."}
                   </p>
                 </div>
                 <button
@@ -18507,11 +18656,11 @@ export default function App() {
               {!arsipFolder ? (
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {clauseCategories.filter(canSeeFolder).map((cat) => {
-                    const docsIn = contracts.filter((c) => c.category === cat);
+                    const docsIn = arsipContracts.filter((c) => c.category === cat);
                     const withPdf = docsIn.filter((c) => !!c.masterPdfUrl);
                     const draftCount = docsIn.filter((c) => !isSignedContract(c)).length;
                     const approveCount = docsIn.filter((c) => isSignedContract(c)).length;
-                    const dcsIn = dcsDocs.filter((d) => d.archiveCategory === cat && d.versions.some((v) => v.status === "effective"));
+                    const dcsIn = arsipDcsDocs.filter((d) => d.archiveCategory === cat && d.versions.some((v) => v.status === "effective"));
                     return (
                       <button
                         key={cat}
@@ -18549,7 +18698,7 @@ export default function App() {
                 // dipecah otomatis berdasarkan status (belum vs sudah ada bukti TTD
                 // basah) — bukan sub-folder manual, jadi tidak bisa salah taruh.
                 (() => {
-                  const inCategory = contracts.filter((c) => c.category === arsipFolder);
+                  const inCategory = arsipContracts.filter((c) => c.category === arsipFolder);
                   const draftDocs = inCategory.filter((c) => !isSignedContract(c));
                   const approveDocs = inCategory.filter((c) => isSignedContract(c));
                   return (
@@ -18598,7 +18747,7 @@ export default function App() {
                 const childFolders = subFolders.filter(
                   (f) => f.category === arsipFolder && f.parentId === currentFolderId,
                 );
-                const docsHere = contracts.filter(
+                const docsHere = arsipContracts.filter(
                   (c) => c.category === arsipFolder && (c.subFolderId || null) === currentFolderId
                     && isSignedContract(c) === (arsipStatusBucket === "approve"),
                 );
@@ -18608,7 +18757,7 @@ export default function App() {
                 // Query-time saja (tidak ada penulisan/duplikasi data ke
                 // db.contracts) — DCS tetap satu-satunya sumber kebenaran untuk
                 // dokumennya sendiri, folder ini cuma menampilkan gabungannya.
-                const dcsDocsHere = arsipStatusBucket === "approve" ? dcsDocs.filter(
+                const dcsDocsHere = arsipStatusBucket === "approve" ? arsipDcsDocs.filter(
                   (d) => d.archiveCategory === arsipFolder && (d.archiveSubFolderId || null) === currentFolderId
                     && d.versions.some((v) => v.status === "effective"),
                 ) : [];
@@ -18684,7 +18833,7 @@ export default function App() {
                               <FolderOpen className="w-6 h-6 text-amber-400 mb-2 group-hover:scale-110 transition-transform" />
                               <p className="font-bold text-slate-200 text-xs leading-snug">{f.name}</p>
                               <p className="text-[10px] text-slate-500 mt-1">
-                                {contracts.filter((c) => c.subFolderId === f.id && isSignedContract(c) === (arsipStatusBucket === "approve")).length} dokumen
+                                {arsipContracts.filter((c) => c.subFolderId === f.id && isSignedContract(c) === (arsipStatusBucket === "approve")).length} dokumen
                               </p>
                             </button>
                             <div className="absolute top-2 right-2 hidden group-hover:flex gap-1">
@@ -18819,7 +18968,8 @@ export default function App() {
                 );
               })()}
             </div>
-          )}
+            );
+          })()}
 
           {/* WORKSPACE MODE: THE CONTRACT LIFECYCLE MANAGEMENT WORKSPACE */}
           {selectedContract && (
@@ -20352,6 +20502,149 @@ export default function App() {
                 />
               )}
 
+              {/* TABEL ADDENDUM — daftar addendum milik kontrak ini, mirip
+                  tabel utama Kontrak Eksternal: tiap baris punya tombol
+                  "Tinjau" yang membuka halaman tinjau yang SAMA (workspace)
+                  untuk addendum tsb. Saat yang dibuka adalah addendum, kartu
+                  ini menampilkan kontrak induknya + addendum saudaranya. */}
+              {(() => {
+                const parentId = selectedContract.amendsContractId || selectedContract.id;
+                const parent = selectedContract.amendsContractId ? contracts.find((c) => c.id === parentId) : selectedContract;
+                const addenda = contracts
+                  .filter((c) => c.amendsContractId === parentId)
+                  .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+                const viewingAddendum = !!selectedContract.amendsContractId;
+                if (!viewingAddendum && addenda.length === 0 && !isContractAmendable(selectedContract)) return null;
+                const fmtDate = (d?: string) => (d ? new Date(d).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "numeric" }) : "—");
+                const fmtMoney = (v: number | undefined, cur?: string) =>
+                  v ? `${cur || "IDR"} ${Number(v).toLocaleString("id-ID")}` : "—";
+                return (
+                  <div className="table-card card-soft bg-slate-900 rounded-[28px] p-5">
+                    <div className="flex items-center justify-between gap-3 flex-wrap px-2 pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className="w-9 h-9 rounded-full bg-violet-500/15 flex items-center justify-center shrink-0">
+                          <FileDigit className="w-4 h-4 text-violet-400" />
+                        </span>
+                        <div>
+                          <p className="text-sm font-bold text-slate-100">
+                            Tabel Addendum <span className="text-xs font-medium text-slate-500 ml-1">{addenda.length} addendum</span>
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            {viewingAddendum && parent
+                              ? <>Addendum dari kontrak induk <b className="text-slate-300">{parent.contractNumber}</b> — {parent.title}</>
+                              : "Dokumen tambahan untuk pasal yang berubah. Klik Tinjau untuk membuka & meninjau addendum."}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {viewingAddendum && parent && (
+                          <button
+                            onClick={() => handleOpenWorkspace(parent)}
+                            className="px-3.5 py-2 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-200 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
+                          >
+                            <ChevronLeft className="w-3.5 h-3.5" /> Tinjau Kontrak Induk
+                          </button>
+                        )}
+                        {!viewingAddendum && isContractAmendable(selectedContract) && (
+                          <button
+                            onClick={() => handleOpenAddendumModal(selectedContract)}
+                            className="px-3.5 py-2 bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 text-xs font-semibold rounded-full border border-violet-600/30 transition flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> Buat Addendum
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr>
+                            <th className="px-2 py-3">No.</th>
+                            <th className="px-2 py-3">Addendum</th>
+                            <th className="px-2 py-3">Jenis</th>
+                            <th className="px-2 py-3">Dibuat</th>
+                            <th className="px-2 py-3">Mulai</th>
+                            <th className="px-2 py-3">Berakhir</th>
+                            <th className="px-2 py-3">Nilai</th>
+                            <th className="px-2 py-3">Status</th>
+                            <th className="px-2 py-3">Dokumen</th>
+                            <th className="px-2 py-3 text-right">Aksi</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {addenda.length === 0 && (
+                            <tr>
+                              <td colSpan={10} className="px-4 py-8 text-center text-slate-500 italic">
+                                Belum ada addendum untuk kontrak ini.
+                              </td>
+                            </tr>
+                          )}
+                          {addenda.map((add, i) => {
+                            const isCurrent = add.id === selectedContract.id;
+                            const uni = unifiedContractStatusOf(add);
+                            const kind = contractDocKind(add);
+                            return (
+                              <tr
+                                key={add.id}
+                                onClick={() => { if (!isCurrent) handleOpenWorkspace(add); }}
+                                title={isCurrent ? "Sedang dibuka" : "Klik baris untuk buka & tinjau addendum"}
+                                className={isCurrent ? "bg-violet-500/5" : "cursor-pointer"}
+                              >
+                                <td className="px-2 py-3 text-slate-400 tabular-nums">{i + 1}</td>
+                                <td className="px-2 py-3">
+                                  <p className="font-bold text-slate-200 min-w-[140px]">{add.title}</p>
+                                  <p className="font-mono text-[10px] text-slate-500">{add.contractNumber}</p>
+                                </td>
+                                <td className="px-2 py-3 text-slate-300">{add.docType || "Addendum"}</td>
+                                <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{fmtDate(add.createdAt)}</td>
+                                <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{add.startDate || "—"}</td>
+                                <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{add.endDate || "—"}</td>
+                                <td className="px-2 py-3 text-slate-300 whitespace-nowrap">{fmtMoney(add.contractValue, add.currency)}</td>
+                                <td className="px-2 py-3">
+                                  <span className={`inline-flex items-center gap-1.5 text-[10.5px] px-2 py-1 rounded-full border font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[uni] || "bg-slate-950 text-slate-400 border-transparent"}`}>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-current" />
+                                    {CONTRACT_STATUS_LABEL_ID[uni] || contractStatusLabel(add.status)}
+                                  </span>
+                                </td>
+                                <td className="px-2 py-3">
+                                  {kind === "PDF" && add.masterPdfUrl ? (
+                                    <a
+                                      href={`/api/contracts/${add.id}/view-pdf`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-semibold"
+                                    >
+                                      <FileText className="w-3.5 h-3.5" /> PDF
+                                    </a>
+                                  ) : (
+                                    <span className="text-slate-500">{kind}</span>
+                                  )}
+                                </td>
+                                <td className="px-2 py-3">
+                                  <div className="flex items-center justify-end">
+                                    {isCurrent ? (
+                                      <span className="px-2.5 py-1.5 text-[10.5px] font-semibold text-violet-300">Sedang dibuka</span>
+                                    ) : (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleOpenWorkspace(add); }}
+                                        className="px-2.5 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-200 font-semibold transition cursor-pointer"
+                                      >
+                                        Tinjau
+                                      </button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Status & Siklus Kontrak + Riwayat Addendum — dipindah ke
                   bawah (lebar penuh), atas permintaan user. Dulu jadi kolom
                   kanan sebelahan preview; sekarang di bawah grid preview+
@@ -20367,10 +20660,54 @@ export default function App() {
                           <CheckCircle className="w-4 h-4 text-emerald-400" />
                           Status & Siklus Kontrak
                         </h4>
-                        <span className={contractStatusBadgeClass(selectedContract.status)}>
-                          {contractStatusLabel(selectedContract.status)}
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase border ${CONTRACT_STATUS_BADGE_CLASS[computeUnifiedContractStatusClient(selectedContract)] || "bg-slate-800 text-slate-300 border-transparent"}`}>
+                          {CONTRACT_STATUS_LABEL_ID[computeUnifiedContractStatusClient(selectedContract)] || contractStatusLabel(selectedContract.status)}
                         </span>
                       </div>
+
+                      {/* Alur: Draft → Review Internal → Disetujui Internal →
+                          Review Eksternal → Proses TTD → Aktif. Revisi (internal
+                          maupun eksternal) ditandai merah di tahap asalnya. */}
+                      {(() => {
+                        const st = selectedContract.status;
+                        const rev = selectedContract.revisionStage;
+                        const stages: { key: string; label: string }[] = [
+                          { key: "draft", label: "Draft" },
+                          { key: "ri", label: "Review Internal" },
+                          { key: "ai", label: "Acc Internal" },
+                          { key: "re", label: "Review Eksternal" },
+                          { key: "ttd", label: "Proses TTD" },
+                          { key: "aktif", label: "Aktif" },
+                        ];
+                        const currentIdx =
+                          st === "Draft" ? (rev === "internal" ? 1 : rev === "eksternal" ? 3 : 0)
+                          : st === "OnReview" ? 1
+                          : st === "ApprovedInternal" ? 2
+                          : st === "ReviewEksternal" ? 3
+                          : st === "FullyApproved" ? 4
+                          : 5;
+                        const isRevising = st === "Draft" && !!rev;
+                        return (
+                          <div className="flex items-center gap-1 overflow-x-auto pb-1">
+                            {stages.map((stg, i) => {
+                              const done = i < currentIdx;
+                              const cur = i === currentIdx;
+                              const cls = cur && isRevising ? "bg-rose-500 text-white border-rose-500"
+                                : cur ? "bg-soft-blue text-white border-transparent"
+                                : done ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                : "bg-slate-950 text-slate-500 border-slate-800";
+                              return (
+                                <React.Fragment key={stg.key}>
+                                  <span className={`text-[10px] font-semibold px-2 py-1 rounded-full border whitespace-nowrap ${cls}`}>
+                                    {cur && isRevising ? `Revisi ${rev === "internal" ? "Internal" : "Eksternal"}` : stg.label}
+                                  </span>
+                                  {i < stages.length - 1 && <span className={`w-3 h-px shrink-0 ${done ? "bg-emerald-500/40" : "bg-slate-800"}`} />}
+                                </React.Fragment>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
 
                       {/* Panel Approval Matrix — tampil selama ada ronde approval
                           (aktif ATAU sudah selesai, disimpan untuk audit). Ini
@@ -20417,7 +20754,7 @@ export default function App() {
                                     : s.decision === "rejected" ? "bg-rose-500/15 text-rose-400"
                                     : "bg-slate-800 text-slate-400"
                                   }`}>
-                                    {s.decision === "approved" ? "Disetujui" : s.decision === "rejected" ? "Ditolak" : "Menunggu"}
+                                    {s.decision === "approved" ? "Disetujui" : s.decision === "rejected" ? "Minta Revisi" : "Menunggu"}
                                   </span>
                                 </div>
                               ))}
@@ -20433,7 +20770,7 @@ export default function App() {
                                 <textarea
                                   value={approvalDecisionComment}
                                   onChange={(e) => setApprovalDecisionComment(e.target.value)}
-                                  placeholder="Komentar (wajib diisi kalau menolak)"
+                                  placeholder="Komentar (wajib diisi kalau meminta revisi — jelaskan apa yang perlu diperbaiki)"
                                   rows={2}
                                   className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
                                 />
@@ -20443,7 +20780,7 @@ export default function App() {
                                     disabled={isDecidingApproval}
                                     className="py-2 bg-slate-900 card-soft text-rose-400 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer disabled:opacity-50"
                                   >
-                                    Tolak
+                                    Minta Revisi
                                   </button>
                                   <button
                                     onClick={() => handleApprovalDecision("approved")}
@@ -20471,7 +20808,7 @@ export default function App() {
                                         <div className="flex items-center justify-between mb-1">
                                           <span className="font-semibold text-slate-300">Ronde {round.round} — diajukan {round.submittedByName}</span>
                                           <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${round.outcome === "approved" ? "bg-emerald-500/15 text-emerald-400" : "bg-rose-500/15 text-rose-400"}`}>
-                                            {round.outcome === "approved" ? "Disetujui" : "Ditolak"}
+                                            {round.outcome === "approved" ? "Disetujui" : "Revisi"}
                                           </span>
                                         </div>
                                         {round.steps.map((s) => (
@@ -20489,6 +20826,25 @@ export default function App() {
 
                       {selectedContract.status === "Draft" && (
                         <div className="space-y-2">
+                          {selectedContract.revisionStage && (() => {
+                            const lastRev = (selectedContract.revisionHistory || []).slice().reverse().find((r) => r.stage === selectedContract.revisionStage && !r.resubmittedAt);
+                            const isExt = selectedContract.revisionStage === "eksternal";
+                            return (
+                              <div className="p-3 bg-rose-500/10 border border-rose-500/25 rounded-lg text-[11px] text-rose-500 space-y-1">
+                                <p className="font-bold flex items-center gap-1.5">
+                                  <AlertTriangle className="w-3.5 h-3.5" />
+                                  {isExt ? "Revisi Eksternal" : "Revisi Internal"}
+                                  {lastRev ? <span className="font-normal text-slate-400">— diminta {lastRev.requestedBy}, {new Date(lastRev.requestedAt).toLocaleDateString("id-ID")}</span> : null}
+                                </p>
+                                {lastRev?.note && <p className="italic text-slate-200">"{lastRev.note}"</p>}
+                                <p className="text-slate-400">
+                                  {isExt
+                                    ? "Perbaiki dokumen sesuai komentar pihak eksternal (lihat Mode Tinjau). Akses pihak eksternal DIJEDA — hasil revisi wajib disetujui internal dulu, baru dibuka lagi ke pihak eksternal lewat link yang sama."
+                                    : "Perbaiki dokumen sesuai catatan approver, lalu ajukan persetujuan lagi — status otomatis kembali ke Review Internal."}
+                                </p>
+                              </div>
+                            );
+                          })()}
                           {selectedContract.amendsContractId ? (
                             <p className="text-[11px] text-slate-400 leading-relaxed">
                               Addendum ini dapat diedit bebas selama masih Draft. Sebelum diunduh untuk TTD basah, addendum ini harus diajukan & disetujui seluruh penanggung jawab yang dipilih. Setelah diaktifkan, addendum <b>terkunci</b> dari editing, dan tanggal berakhir/nilai kontrak induk akan <b>otomatis diperbarui</b> mengikuti addendum ini jika berbeda.
@@ -20513,15 +20869,104 @@ export default function App() {
                             }}
                             className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                           >
-                            <Send className="w-4 h-4" /> Ajukan untuk Persetujuan
+                            <Send className="w-4 h-4" /> {selectedContract.revisionStage ? "Ajukan Ulang ke Review Internal" : "Ajukan untuk Persetujuan"}
                           </button>
                         </div>
                       )}
 
                       {selectedContract.status === "OnReview" && (
                         <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-[11px] text-indigo-300">
-                          Menunggu persetujuan — lihat panel approval matrix di atas.
+                          Review Internal{(selectedContract.approvalRound || 1) > 1 ? ` (ronde ${selectedContract.approvalRound})` : ""} — menunggu persetujuan, lihat panel approval matrix di atas. Approver bisa <b>Setujui</b> atau <b>Minta Revisi</b>.
                         </div>
+                      )}
+
+                      {selectedContract.status === "ApprovedInternal" && (
+                        <div className="space-y-2">
+                          <div className="p-2.5 bg-teal-500/10 border border-teal-500/20 rounded-lg text-[11px] text-teal-600">
+                            Disetujui internal. Langkah berikutnya: buka dokumen ke <b>pihak eksternal</b> untuk direview{(selectedContract.externalRoundCount || 0) > 0 ? ` — link yang sama dengan ronde sebelumnya akan aktif lagi (ronde ${(selectedContract.externalRoundCount || 0) + 1})` : ""}.
+                          </div>
+                          <button
+                            onClick={handleShareExternalReview}
+                            className="w-full py-2 bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <ExternalLink className="w-4 h-4" /> Kirim ke Review Eksternal
+                          </button>
+                          {(currentUser?.role === "admin" || currentUser?.role === "super_admin" || currentUser?.role === "legal" || currentUser?.role === "manager") && (
+                            <button
+                              onClick={handleSkipExternalReview}
+                              title="Untuk dokumen yang tidak perlu ditinjau pihak kedua. Wajib alasan, tercatat di audit."
+                              className="w-full py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer"
+                            >
+                              Lewati Review Eksternal → Proses TTD
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {selectedContract.status === "ReviewEksternal" && (() => {
+                        const extOpen = clauseComments.filter((cm) => cm.contractId === selectedContract.id && cm.external && !cm.parentId && !cm.resolved).length;
+                        return (
+                          <div className="space-y-2">
+                            <div className="p-2.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-[11px] text-violet-600 space-y-1">
+                              <p>Review Eksternal{(selectedContract.externalRoundCount || 1) > 1 ? ` (ronde ${selectedContract.externalRoundCount})` : ""} — menunggu pihak eksternal. Mereka bisa <b>Setuju/OK</b> (→ Proses TTD) atau <b>Ajukan Revisi</b> (→ Revisi Eksternal).</p>
+                              {extOpen > 0 && (
+                                <p className="font-semibold text-amber-600">⚠ {extOpen} komentar eksternal belum ditindaklanjuti — kemungkinan ada revisi.</p>
+                              )}
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                onClick={handleShareExternalReview}
+                                className="py-2 bg-slate-950 border border-slate-800 hover:border-violet-500/50 text-violet-600 text-[11px] font-bold rounded-xl cursor-pointer flex items-center justify-center gap-1"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" /> Salin Link
+                              </button>
+                              <button
+                                onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
+                                className="py-2 bg-slate-950 border border-slate-800 hover:border-amber-500/50 text-amber-600 text-[11px] font-bold rounded-xl cursor-pointer flex items-center justify-center gap-1"
+                              >
+                                <MessageSquare className="w-3.5 h-3.5" /> Lihat Komentar
+                              </button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                onClick={handleStartExternalRevision}
+                                title="Pihak eksternal minta perubahan (lewat komentar, email, atau rapat). Dokumen kembali bisa diedit; akses eksternal dijeda sampai revisi lolos review internal."
+                                className="py-2 bg-rose-500/10 border border-rose-500/25 hover:bg-rose-500/20 text-rose-600 text-[11px] font-bold rounded-xl cursor-pointer"
+                              >
+                                Ada Revisi Eksternal
+                              </button>
+                              <button
+                                onClick={handleMarkExternalApproved}
+                                title="Pihak eksternal sudah setuju di luar sistem (email/rapat)."
+                                className="py-2 bg-emerald-600/20 border border-emerald-600/30 hover:bg-emerald-600/30 text-emerald-600 text-[11px] font-bold rounded-xl cursor-pointer"
+                              >
+                                Disetujui Eksternal
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {(selectedContract.revisionHistory || []).length > 0 && (
+                        <details className="p-2.5 bg-slate-950 border border-slate-800 rounded-lg text-[10px] text-slate-400">
+                          <summary className="cursor-pointer font-semibold text-slate-300">Riwayat Revisi ({selectedContract.revisionHistory!.length})</summary>
+                          <div className="mt-2 space-y-1.5">
+                            {selectedContract.revisionHistory!.slice().reverse().map((r) => (
+                              <div key={r.id} className="p-2 bg-slate-900 border border-slate-850 rounded-lg">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${r.stage === "eksternal" ? "bg-violet-500/15 text-violet-600" : "bg-rose-500/15 text-rose-600"}`}>
+                                    Revisi {r.stage === "eksternal" ? "Eksternal" : "Internal"}
+                                  </span>
+                                  <span>{new Date(r.requestedAt).toLocaleString("id-ID", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+                                </div>
+                                <p className="mt-1">Diminta: <b className="text-slate-300">{r.requestedBy}</b>{r.note ? ` — "${r.note}"` : ""}</p>
+                                <p className={r.resubmittedAt ? "text-emerald-400" : "text-amber-400"}>
+                                  {r.resubmittedAt ? `✓ Diajukan ulang ${r.resubmittedBy ? `oleh ${r.resubmittedBy} ` : ""}${new Date(r.resubmittedAt).toLocaleDateString("id-ID")}` : "● Sedang direvisi"}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       )}
 
                       {selectedContract.status === "FullyApproved" && (
@@ -20603,40 +21048,6 @@ export default function App() {
                       )}
                     </div>
 
-                    {/* Riwayat Addendum — hanya render kalau ada minimal 1
-                        addendum untuk kontrak ini (kosong = section tidak
-                        muncul sama sekali, konsisten dgn prinsip "tidak semua
-                        harus ada"). Addendum ITU SENDIRI juga bisa punya
-                        induk (kalau amendsContractId terisi) — tidak ditampilkan
-                        di sini untuk menghindari rekursi tampilan. */}
-                    {!selectedContract.amendsContractId && contracts.some((c) => c.amendsContractId === selectedContract.id) && (
-                      <div className="p-4 bg-slate-900 rounded-xl border border-slate-800 space-y-3">
-                        <h4 className="font-bold text-xs flex items-center gap-1.5">
-                          <FileDigit className="w-4 h-4 text-violet-400" />
-                          Riwayat Addendum
-                        </h4>
-                        <div className="space-y-1.5">
-                          {contracts
-                            .filter((c) => c.amendsContractId === selectedContract.id)
-                            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-                            .map((add) => (
-                              <button
-                                key={add.id}
-                                onClick={() => handleOpenWorkspace(add)}
-                                className="w-full text-left p-2.5 bg-slate-950 border border-slate-800 hover:border-violet-500/50 rounded-lg transition cursor-pointer flex items-center justify-between gap-2"
-                              >
-                                <div className="min-w-0">
-                                  <p className="text-[11px] font-semibold text-slate-200 truncate">{add.title}</p>
-                                  <p className="text-[10px] font-mono text-slate-500">{add.contractNumber} · {new Date(add.createdAt).toLocaleDateString("id-ID")}</p>
-                                </div>
-                                <span className={`shrink-0 ${contractStatusBadgeClass(add.status)}`}>
-                                  {contractStatusLabel(add.status)}
-                                </span>
-                              </button>
-                            ))}
-                        </div>
-                      </div>
-                    )}
                 </div>
               </div>
             </div>
@@ -25940,12 +26351,21 @@ export default function App() {
                 <input type="checkbox" checked={marginShowResolved} onChange={(e) => setMarginShowResolved(e.target.checked)} className="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-indigo-600" />
                 Tampilkan yang selesai
               </label>
-              <button
-                onClick={handleShareExternalReview}
-                title="Buat & salin link review untuk PIHAK KEDUA (tanpa akun). Mereka melihat klausul yang sama dan bisa menyorot, mengomentari, atau klik Setuju/OK."
-                className="text-[10px] font-semibold px-2.5 py-1.5 rounded-lg bg-violet-600/20 text-violet-300 border border-violet-500/30 hover:bg-violet-600/30 cursor-pointer whitespace-nowrap"
-              >🔗 Link Review Eksternal</button>
-              {selectedContract.externalReviewToken && selectedContract.externalReviewLocked && (
+              {(() => {
+                // Alur baru: link eksternal baru boleh dibagikan setelah acc
+                // internal (Disetujui Internal / sedang Review Eksternal).
+                const canShareExt = selectedContract.status === "ApprovedInternal" || selectedContract.status === "ReviewEksternal";
+                return (
+                  <button
+                    onClick={canShareExt ? handleShareExternalReview : () => showToast("Link review eksternal baru bisa dibagikan setelah dokumen disetujui internal.", "info")}
+                    title={canShareExt
+                      ? (selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Eksternal: buat & salin link untuk PIHAK KEDUA (tanpa akun)." : "Salin link review eksternal yang sedang berjalan.")
+                      : "Tersedia setelah dokumen disetujui internal (Draft → Review Internal → Acc Internal → Review Eksternal)."}
+                    className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border whitespace-nowrap ${canShareExt ? "bg-violet-600/20 text-violet-300 border-violet-500/30 hover:bg-violet-600/30 cursor-pointer" : "bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed"}`}
+                  >🔗 {selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Eksternal" : "Link Review Eksternal"}</button>
+                );
+              })()}
+              {selectedContract.externalReviewToken && selectedContract.externalReviewLocked && !selectedContract.externalRoundCount && (
                 <button
                   onClick={handleUnlockExternalReview}
                   title="Review eksternal terkunci sejak tamu klik Setuju/OK — buka lagi agar bisa komentar/setuju lewat link yang sama."
@@ -26086,11 +26506,13 @@ export default function App() {
                 )}
               </div>
               <div className="flex items-center gap-2">
+                {(selectedContract.status === "ApprovedInternal" || selectedContract.status === "ReviewEksternal") && (
                 <button
                   onClick={handleShareExternalReview}
                   title="Buat & salin link review untuk PIHAK KEDUA (tanpa akun). Mereka bisa melihat klausul, menyorot & mengomentari, atau klik Setuju/OK."
                   className="text-[10px] font-semibold px-2 py-1 rounded-lg bg-violet-600/20 text-violet-300 border border-violet-500/30 hover:bg-violet-600/30 cursor-pointer whitespace-nowrap"
                 >🔗 Link Review Eksternal</button>
+                )}
                 <button onClick={() => setShowCommentPanel(false)} className="text-slate-400 hover:text-slate-100 cursor-pointer font-bold">✕</button>
               </div>
             </div>

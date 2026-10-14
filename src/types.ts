@@ -150,7 +150,27 @@ export interface ContractTemplateSnapshot {
 // Archived/Terminated (yang selalu keputusan manusia eksplisit): TidakAktif
 // murni penanda "sudah lewat masa berlaku, belum ada tindak lanjut" — dari
 // sini manusia baru memutuskan mau di-renew, Archived, atau Terminated.
-export type ContractStatus = "Draft" | "OnReview" | "FullyApproved" | "Aktif" | "TidakAktif" | "Archived" | "Terminated";
+// Alur revisi (Okt 2026): Draft → OnReview (Review Internal) → ApprovedInternal
+// (Disetujui Internal, siap dikirim ke pihak eksternal) → ReviewEksternal (link
+// review eksternal dibuka) → FullyApproved (Proses TTD) → Aktif. Revisi TIDAK
+// punya status sendiri: dokumen kembali ke "Draft" (supaya bisa diedit) dengan
+// penanda `revisionStage` ("internal" = ditolak/diminta revisi approver,
+// "eksternal" = pihak eksternal minta revisi). Dari revisi mana pun dokumen
+// WAJIB lewat Review Internal lagi sebelum akses eksternal dibuka kembali.
+export type ContractStatus = "Draft" | "OnReview" | "ApprovedInternal" | "ReviewEksternal" | "FullyApproved" | "Aktif" | "TidakAktif" | "Archived" | "Terminated";
+
+export type ContractRevisionStage = "internal" | "eksternal";
+
+export interface ContractRevisionEntry {
+  id: string;
+  stage: ContractRevisionStage;
+  note: string;
+  requestedBy: string; // nama approver / nama pihak eksternal
+  requestedAt: string;
+  // Diisi saat dokumen hasil revisi diajukan kembali ke Review Internal.
+  resubmittedAt?: string;
+  resubmittedBy?: string;
+}
 
 export interface ContractParty {
   role: string; // dari Template.parties
@@ -421,6 +441,13 @@ export interface Contract {
   // externalApprovals) — pemilik dokumen harus klik "Buka Akses Kembali"
   // secara eksplisit sebelum tamu bisa komentar/setuju lagi lewat token yg sama.
   externalReviewLocked?: boolean;
+  // Siklus revisi (lihat komentar ContractStatus). revisionStage terisi selama
+  // dokumen sedang direvisi (status Draft) dan dikosongkan saat diajukan ulang.
+  revisionStage?: ContractRevisionStage | null;
+  revisionHistory?: ContractRevisionEntry[];
+  // Berapa kali dokumen sudah dibuka ke pihak eksternal lewat alur baru —
+  // > 0 berarti kontrak ini memakai alur Review Eksternal SETELAH acc internal.
+  externalRoundCount?: number;
   // Detail pihak (opsional, per-kontrak) untuk narasi pembuka & tanda tangan —
   // bukan cuma nama, tapi alamat/jabatan/nomor identitas penandatangan. Party1
   // kosong = pakai default appSettings.company* (companyAddress dst); Party2

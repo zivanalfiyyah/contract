@@ -13,3 +13,7 @@ backups/
 uploads/
 logs/
 .claude/
+env 
+.env 
+env 
+.env 

@@ -1,5 +1,20 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #10] — Pengumuman Rilis Internal & Eksternal
+
+### Ringkasan
+
+- Kartu **Pengumuman Rilis Kontrak** kini punya dua tombol: **Umumkan Rilis untuk Internal** (alur lama: pilih penerima per nama + keterangan) dan **Umumkan Rilis untuk Eksternal** (baru).
+- **Rilis Eksternal** membuat **link publik tanpa login** (`/api/public/release/:token`) yang langsung menampilkan PDF resmi kontrak. Link bisa disalin, atau disalin bersama keterangan sebagai pesan siap tempel (WA/email). Token dipakai ulang (link lama tetap hidup) dan link otomatis tidak berlaku bila kontrak tidak lagi berstatus **Aktif**. Setiap pembukaan link dicatat di Audit Trail.
+- Notifikasi **"Kontrak Telah Rilis"** (internal) kini membuka **PDF resmi kontrak** di tab baru saat diklik (field baru `linkUrl` di notifikasi).
+- Riwayat pengumuman menampilkan label **Internal / Eksternal** (field baru `audience`; data lama dianggap Internal).
+- Logika pengambilan berkas di `/view-pdf` diekstrak ke `loadContractFileForView()` dan dipakai bersama oleh link publik, sehingga dokumen yang dilihat internal & eksternal selalu sama.
+
+### Migrasi
+
+- Tidak perlu migrasi data. Field baru opsional: `Contract.releaseShareToken`, `ReleaseAnnouncement.audience`, `SystemNotification.linkUrl`.
+- Pastikan `APP_URL` di-set di produksi agar link eksternal memakai domain publik, bukan `localhost`.
+
 ## [Unreleased #9] — Sidebar Eksternal/Internal, alur revisi kontrak, tabel addendum
 
 ### Ringkasan

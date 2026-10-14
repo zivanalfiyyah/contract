@@ -3827,9 +3827,8 @@ function InfoField({ label, value }: { label: string; value: React.ReactNode }) 
 
 // Halaman "Dashboard Legal" — ringkasan real-time semua data Pekerjaan Legal
 // + Monitoring Kontrak (pakai data kontrak yang sudah ada), berdasar
-// /api/legal-dashboard di server.ts. Kartu "Surat-Menyurat" ditandai belum
-// tersedia apa adanya — modul itu belum ada di sistem ini, di luar cakupan
-// 2 halaman yang diminta, sehingga TIDAK ditampilkan sbg angka nol palsu.
+// /api/legal-dashboard di server.ts. Kartu "Surat-Menyurat" dihapus dari
+// tampilan (modulnya belum ada); kartu Kontrak Eksternal kini selebar penuh.
 function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser: any; onOpenPekerjaanLegal: () => void }) {
   const [data, setData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -3861,19 +3860,10 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
         ))}
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-5">
-        {/* Surat-Menyurat */}
-        <LegalPanel Icon={Send} title="Surat-Menyurat" subtitle="Modul surat masuk & keluar">
-          {data.suratMenyurat.available === false ? (
-            <p className="text-[12px] text-slate-500 italic py-3 px-1">Modul Surat-Menyurat belum tersedia di sistem ini.</p>
-          ) : (
-            <p className="text-[12px] text-slate-500">—</p>
-          )}
-        </LegalPanel>
-
-        {/* Monitoring Kontrak */}
+      {/* Monitoring Kontrak — lebar penuh (kartu Surat-Menyurat dihapus) */}
+      <div>
         <LegalPanel Icon={FileCheck} title="Kontrak Eksternal" subtitle="Masa berlaku kontrak berjalan">
-          <div className="grid grid-cols-3 gap-2.5 text-center">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-center">
             {[
               { v: data.monitoringKontrak.aktif, l: "Aktif", c: "bg-mist text-indigo-400" },
               { v: data.monitoringKontrak.akanBerakhir30, l: "< 30 hari", c: "bg-peach text-brand-orange" },
@@ -4152,7 +4142,7 @@ function ReleaseAnnounceModal({
         <div className="flex items-start gap-3 pr-10">
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Bell className="w-5 h-5 text-slate-300" /></span>
           <div className="min-w-0">
-            <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">Umumkan Rilis Kontrak</h3>
+            <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">Umumkan Rilis untuk Internal</h3>
             <p className="text-xs text-slate-500 mt-0.5 truncate">{contract.contractNumber} · {contract.title}</p>
           </div>
         </div>
@@ -4228,46 +4218,187 @@ function ReleaseAnnounceModal({
   );
 }
 
+// Pengumuman rilis EKSTERNAL — tidak memilih penerima: sistem membuat link
+// publik (tanpa login) ke PDF resmi kontrak, lalu user menyalin & membagikannya
+// sendiri (WA/email). Keterangan opsional ikut dicatat di riwayat dan bisa
+// disalin bersama link sebagai pesan siap tempel.
+function ReleaseExternalModal({
+  contract, saving, onClose, onCreate,
+}: {
+  contract: Contract;
+  saving: boolean;
+  onClose: () => void;
+  onCreate: (note: string) => Promise<string | null>;
+}) {
+  const [note, setNote] = useState("");
+  const [url, setUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState<"link" | "msg" | null>(null);
+  const QUICK = [
+    "Kontrak sudah ditandatangani kedua pihak dan resmi berlaku.",
+    "Berikut salinan resmi kontrak untuk arsip Anda.",
+  ];
+  const message = url ? `${note ? note + "\n\n" : ""}Dokumen kontrak ${contract.contractNumber} (${contract.title}):\n${url}` : "";
+  const copy = async (text: string, which: "link" | "msg") => {
+    try { await navigator.clipboard.writeText(text); setCopied(which); window.setTimeout(() => setCopied(null), 2000); }
+    catch { window.prompt("Salin manual:", text); }
+  };
+  return (
+    <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <form
+        onSubmit={async (e) => { e.preventDefault(); if (saving || url) return; const u = await onCreate(note); if (u) setUrl(u); }}
+        onClick={(e) => e.stopPropagation()}
+        className="modal-panel relative w-full max-w-xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-5"
+      >
+        <button type="button" onClick={onClose} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer text-lg leading-none">×</button>
+        <div className="flex items-start gap-3 pr-10">
+          <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center shrink-0"><Building2 className="w-5 h-5 text-slate-300" /></span>
+          <div className="min-w-0">
+            <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">Umumkan Rilis untuk Eksternal</h3>
+            <p className="text-xs text-slate-500 mt-0.5 truncate">{contract.contractNumber} · {contract.title}</p>
+          </div>
+        </div>
+
+        {!url ? (
+          <>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Sistem akan membuat <b className="text-slate-200">link publik</b> ke PDF resmi kontrak ini. Siapa pun yang membuka link bisa langsung melihat dokumennya <b className="text-slate-200">tanpa login</b>. Link tetap sama setiap kali dibuat ulang dan otomatis tidak berlaku bila kontrak tidak lagi Aktif.
+            </p>
+            <div className="space-y-2.5">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Keterangan (opsional)</p>
+              <textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value.slice(0, 1000))}
+                rows={4}
+                placeholder="Pesan pengantar untuk pihak eksternal — ikut tersalin bersama link…"
+                className="w-full px-4 py-3 bg-slate-950 rounded-[18px] text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none resize-none"
+              />
+              <div className="flex flex-wrap gap-1.5">
+                {QUICK.map((t) => (
+                  <button key={t} type="button" onClick={() => setNote(t)} className="text-[10.5px] px-3 py-1.5 rounded-full bg-soft-blue/15 text-[#3a7fa8] hover:bg-soft-blue/25 transition cursor-pointer text-left">{t}</button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 text-right">{note.length}/1000</p>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button type="button" onClick={onClose} className="px-5 py-2.5 rounded-full text-xs font-semibold text-slate-400 hover:text-slate-100 bg-slate-950 cursor-pointer">Batal</button>
+              <button type="submit" disabled={saving} className="px-6 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer disabled:opacity-50 disabled:cursor-default flex items-center gap-1.5">
+                <Link2 className="w-3.5 h-3.5" /> {saving ? "Membuat link…" : "Buat Link Rilis"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Link publik PDF kontrak</p>
+              <div className="flex items-center gap-2 bg-slate-950 rounded-full pl-4 pr-1.5 py-1.5">
+                <Link2 className="w-4 h-4 text-slate-500 shrink-0" />
+                <input readOnly value={url} onFocus={(e) => e.currentTarget.select()} className="bg-transparent border-none outline-none text-xs text-slate-200 w-full" style={{ border: "none", boxShadow: "none" }} />
+                <button type="button" onClick={() => copy(url, "link")} className="shrink-0 px-4 py-2 rounded-full btn-grad-primary text-white text-[11px] font-bold cursor-pointer flex items-center gap-1.5">
+                  {copied === "link" ? <><Check className="w-3.5 h-3.5" /> Tersalin</> : <><Copy className="w-3.5 h-3.5" /> Salin Link</>}
+                </button>
+              </div>
+            </div>
+            <div className="rounded-[18px] bg-slate-950 p-4 space-y-2">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Pesan siap tempel (WA / email)</p>
+              <p className="text-xs text-slate-300 whitespace-pre-wrap break-all leading-relaxed">{message}</p>
+              <button type="button" onClick={() => copy(message, "msg")} className="text-[11px] font-semibold text-[#3a7fa8] hover:underline cursor-pointer flex items-center gap-1">
+                {copied === "msg" ? <><Check className="w-3 h-3" /> Pesan tersalin</> : <><Copy className="w-3 h-3" /> Salin pesan + link</>}
+              </button>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <a href={url} target="_blank" rel="noopener noreferrer" className="px-5 py-2.5 rounded-full text-xs font-semibold text-slate-300 hover:text-slate-100 bg-slate-950 cursor-pointer flex items-center gap-1.5">
+                <ExternalLink className="w-3.5 h-3.5" /> Buka PDF
+              </a>
+              <button type="button" onClick={onClose} className="px-6 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer">Selesai</button>
+            </div>
+          </>
+        )}
+      </form>
+    </div>
+  );
+}
+
 // Riwayat pengumuman rilis — kartu di bawah preview dokumen (hanya setelah kontrak Aktif).
-function ReleaseAnnouncementsCard({ contract, canEdit, onOpen }: { contract: Contract; canEdit: boolean; onOpen: () => void }) {
+function ReleaseAnnouncementsCard({
+  contract, canEdit, onOpenInternal, onOpenExternal,
+}: {
+  contract: Contract;
+  canEdit: boolean;
+  onOpenInternal: () => void;
+  onOpenExternal: () => void;
+}) {
   const list = contract.releaseAnnouncements || [];
+  const externalUrl = contract.releaseShareToken ? `${window.location.origin}/api/public/release/${contract.releaseShareToken}` : null;
+  const [copied, setCopied] = useState(false);
+  const copyLink = async () => {
+    if (!externalUrl) return;
+    try { await navigator.clipboard.writeText(externalUrl); setCopied(true); window.setTimeout(() => setCopied(false), 2000); }
+    catch { window.prompt("Salin manual:", externalUrl); }
+  };
   return (
     <div className="card-grad card-soft bg-slate-900 rounded-[28px] p-6 relative overflow-hidden">
       <Bell aria-hidden className="pointer-events-none absolute -right-3 -top-6 w-32 h-32 text-soft-blue opacity-[0.12] rotate-12" strokeWidth={1.2} />
       <Sparkles aria-hidden className="pointer-events-none absolute right-48 -bottom-5 w-20 h-20 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
-      <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div className="flex items-start gap-3 min-w-0">
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Bell className="w-5 h-5 text-slate-300" /></span>
           <div className="min-w-0">
             <h3 className="text-[17px] font-semibold text-slate-100 leading-tight">Pengumuman Rilis Kontrak</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Kontrak ini sudah aktif 100%. Beri tahu orang-orang terkait (per nama) bahwa kontrak sudah rilis.</p>
+            <p className="text-xs text-slate-500 mt-0.5">Kontrak ini sudah aktif 100%. Beri tahu tim internal (per nama) atau bagikan link PDF resmi ke pihak eksternal.</p>
           </div>
         </div>
         {canEdit && (
-          <button onClick={onOpen} className="shrink-0 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer flex items-center gap-1.5">
-            <Bell className="w-3.5 h-3.5" /> Umumkan Rilis
-          </button>
+          <div className="shrink-0 flex flex-wrap gap-2">
+            <button onClick={onOpenInternal} className="px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5" /> Umumkan Rilis untuk Internal
+            </button>
+            <button onClick={onOpenExternal} className="px-5 py-2.5 rounded-full bg-slate-950 hover:bg-slate-850 text-slate-200 text-xs font-bold cursor-pointer flex items-center gap-1.5 transition">
+              <Building2 className="w-3.5 h-3.5" /> Umumkan Rilis untuk Eksternal
+            </button>
+          </div>
         )}
       </div>
       <div className="relative mt-4 space-y-2.5">
         {list.length === 0 ? (
-          <p className="text-xs text-slate-500 italic px-1">Belum ada pengumuman yang dikirim.{canEdit ? " Klik “Umumkan Rilis” untuk memilih penerima & menulis keterangan." : ""}</p>
-        ) : list.map((a) => (
-          <div key={a.id} className="rounded-[22px] bg-slate-900 card-soft p-4 space-y-2">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
-              <span>Diumumkan oleh <b className="text-slate-300">{a.byName}</b></span>
-              <span>{new Date(a.createdAt).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}</span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {a.names.map((n, i) => (
-                <span key={n + i} className="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-soft-blue/15 text-xs text-slate-200">
-                  <span className="w-5 h-5 rounded-full bg-peach flex items-center justify-center text-[9px] font-bold text-slate-300">{releaseInitials(n)}</span>{n}
+          <p className="text-xs text-slate-500 italic px-1">Belum ada pengumuman yang dikirim.{canEdit ? " Pilih “Internal” untuk mengirim notifikasi ke orang tertentu, atau “Eksternal” untuk membuat link PDF yang bisa dibagikan." : ""}</p>
+        ) : list.map((a) => {
+          const isExternal = a.audience === "external";
+          return (
+            <div key={a.id} className="rounded-[22px] bg-slate-900 card-soft p-4 space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                <span className="flex items-center gap-2">
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${isExternal ? "bg-mist text-slate-200" : "bg-soft-blue/15 text-[#3a7fa8]"}`}>{isExternal ? "Eksternal" : "Internal"}</span>
+                  <span>Diumumkan oleh <b className="text-slate-300">{a.byName}</b></span>
                 </span>
-              ))}
+                <span>{new Date(a.createdAt).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}</span>
+              </div>
+              {isExternal ? (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="inline-flex items-center gap-1.5 text-slate-400"><Link2 className="w-3.5 h-3.5" /> Link publik PDF dibagikan</span>
+                  {externalUrl && contract.status === "Aktif" && (
+                    <>
+                      <button type="button" onClick={copyLink} className="text-[11px] font-semibold text-[#3a7fa8] hover:underline cursor-pointer inline-flex items-center gap-1">
+                        {copied ? <><Check className="w-3 h-3" /> Tersalin</> : <><Copy className="w-3 h-3" /> Salin link</>}
+                      </button>
+                      <a href={externalUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] font-semibold text-[#3a7fa8] hover:underline inline-flex items-center gap-1">
+                        <ExternalLink className="w-3 h-3" /> Buka
+                      </a>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-1.5">
+                  {a.names.map((n, i) => (
+                    <span key={n + i} className="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-soft-blue/15 text-xs text-slate-200">
+                      <span className="w-5 h-5 rounded-full bg-peach flex items-center justify-center text-[9px] font-bold text-slate-300">{releaseInitials(n)}</span>{n}
+                    </span>
+                  ))}
+                </div>
+              )}
+              {a.note && <p className="text-xs text-slate-400 leading-relaxed">“{a.note}”</p>}
             </div>
-            {a.note && <p className="text-xs text-slate-400 leading-relaxed">“{a.note}”</p>}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -4712,6 +4843,21 @@ export default function App() {
   // Platform kerja sama milik perusahaan yang sedang login (tenant.platforms,
   // diatur di Kelola Perusahaan) — isi dropdown "Kerjasama Platform" di wizard.
   const [tenantPlatforms, setTenantPlatforms] = useState<string[]>([]);
+  // Daftar perusahaan (Kelola Perusahaan) — isi dropdown "Perusahaan" di
+  // wizard kontrak & token {Company} di nomor dokumen (lihat /api/number-companies).
+  const [numberCompanies, setNumberCompanies] = useState<{ id: string; name: string; code: string }[]>([]);
+  const [defaultNumberCompanyId, setDefaultNumberCompanyId] = useState("");
+  const fetchNumberCompanies = async () => {
+    try {
+      const res = await fetch("/api/number-companies");
+      if (!res.ok) return;
+      const data = await res.json();
+      setNumberCompanies(data.companies || []);
+      setDefaultNumberCompanyId(data.defaultCompanyId || "");
+    } catch {
+      setNumberCompanies([]);
+    }
+  };
   const fetchTenantPlatforms = async () => {
     try {
       const res = await fetch("/api/tenant-platforms");
@@ -5267,6 +5413,22 @@ export default function App() {
   const platformCode = (name: string | undefined): string =>
     String(name || "").trim().toUpperCase().replace(/[\s/]+/g, "-").replace(/[^A-Z0-9-]/g, "");
 
+  // Cerminan deriveCompanyCode()/companyCodeOf() di server.ts — kode perusahaan
+  // utk token {Company}: kode manual bila diisi, else dari nama tanpa PT/CV/Tbk.
+  const companyCodeFromName = (name: string): string => {
+    let words = String(name || "").split(/[^A-Za-z0-9]+/).filter(Boolean);
+    const strip = (forms: string[]) => {
+      const rest = words.filter((w) => !forms.includes(w.toUpperCase()));
+      if (rest.length) words = rest;
+    };
+    strip(["PT", "CV", "UD", "PERUM", "KOPERASI", "FIRMA", "FA", "YAYASAN"]);
+    strip(["TBK", "PERSERO"]);
+    if (words.length === 0) return "";
+    if (words.length === 1) return words[0].toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
+    return words.slice(0, 5).map((w) => w[0]).join("").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  };
+  const sampleCompanyCode = (numberCompanies.find((c) => c.id === defaultNumberCompanyId) || numberCompanies[0])?.code || "";
+
   const previewNumberMask = (mask: string, tokens: Record<string, string>): string => {
     const roman = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
     try {
@@ -5623,6 +5785,8 @@ export default function App() {
     docType: "" as string,
     // Platform kerja sama (opsional) — lihat tenantPlatforms (Kelola Perusahaan).
     platform: "" as string,
+    // Perusahaan (Kelola Perusahaan) — kodenya mengisi token {Company} di nomor.
+    companyId: "" as string,
     creationMode: "smart" as "smart" | "upload",
     parties: [
       { role: "Pihak Pertama", name: appSettings.companyName || "[Nama perusahaan belum diisi]", type: "Company" },
@@ -6812,11 +6976,19 @@ export default function App() {
   // PDF murni → nomor diisi BEBAS user (nomor vendor/dokumen asli), jadi TIDAK
   // di-auto-fetch (agar tak menimpa ketikan user). Saat beralih ke upload,
   // nomor auto sebelumnya dikosongkan supaya field mulai bersih untuk diisi.
+  // Wizard dibuka tanpa perusahaan terpilih → default perusahaan pengguna sendiri.
+  useEffect(() => {
+    if (isCreating && !newContractForm.companyId && defaultNumberCompanyId && numberCompanies.some((c) => c.id === defaultNumberCompanyId)) {
+      setNewContractForm((prev) => (prev.companyId ? prev : { ...prev, companyId: defaultNumberCompanyId }));
+    }
+  }, [isCreating, newContractForm.companyId, defaultNumberCompanyId, numberCompanies]);
+
   useEffect(() => {
     if (isCreating && newContractForm.category && newContractForm.creationMode === "smart") {
       const params = new URLSearchParams({ category: newContractForm.category });
       if (newContractForm.docType) params.set("docType", newContractForm.docType);
       if (newContractForm.platform) params.set("platform", newContractForm.platform);
+      if (newContractForm.companyId) params.set("companyId", newContractForm.companyId);
       fetch(`/api/contracts/generate-number?${params.toString()}`)
         .then(r => r.json())
         .then(data => {
@@ -6826,7 +6998,7 @@ export default function App() {
         })
         .catch(err => console.error("Error fetching contract number:", err));
     }
-  }, [isCreating, newContractForm.category, newContractForm.docType, newContractForm.platform, newContractForm.creationMode]);
+  }, [isCreating, newContractForm.category, newContractForm.docType, newContractForm.platform, newContractForm.companyId, newContractForm.creationMode]);
 
   // CATATAN: form Pendaftaran Dokumen (arsip) & mode Upload di wizard = murni
   // unggah PDF, jadi nomornya DIISI BEBAS oleh user (nomor dari vendor/dokumen
@@ -6845,11 +7017,12 @@ export default function App() {
     const params = new URLSearchParams({ category: newContractForm.category });
     if (newContractForm.docType) params.set("docType", newContractForm.docType);
     if (newContractForm.platform) params.set("platform", newContractForm.platform);
+    if (newContractForm.companyId) params.set("companyId", newContractForm.companyId);
     fetch(`/api/contracts/generate-number?${params.toString()}`)
       .then((r) => r.json())
       .then((data) => setUploadNumberPreview(data.contractNumber || ""))
       .catch((err) => console.error("Error fetching upload number preview:", err));
-  }, [isCreating, newContractForm.creationMode, newContractForm.category, newContractForm.docType, newContractForm.platform]);
+  }, [isCreating, newContractForm.creationMode, newContractForm.category, newContractForm.docType, newContractForm.platform, newContractForm.companyId]);
 
   const [docRegNumberPreview, setDocRegNumberPreview] = useState("");
   useEffect(() => {
@@ -6872,6 +7045,7 @@ export default function App() {
     const params = new URLSearchParams({ category: renewSource.category });
     if (renewSource.docType) params.set("docType", renewSource.docType);
     if (renewSource.platform) params.set("platform", renewSource.platform);
+    if (renewSource.companyId) params.set("companyId", renewSource.companyId);
     fetch(`/api/contracts/generate-number?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -6887,6 +7061,7 @@ export default function App() {
     if (!addendumSource) return;
     const params = new URLSearchParams({ category: addendumSource.category, docType: "Addendum / Amandemen" });
     if (addendumSource.platform) params.set("platform", addendumSource.platform);
+    if (addendumSource.companyId) params.set("companyId", addendumSource.companyId);
     fetch(`/api/contracts/generate-number?${params.toString()}`)
       .then(r => r.json())
       .then(data => {
@@ -6941,6 +7116,7 @@ export default function App() {
       if (resSettings) setAppSettings(resSettings);
       setSubFolders(resSubFolders || []);
       fetchTenantPlatforms();
+      fetchNumberCompanies();
       fetchDcsDocs();
       fetchDcsDocTypes();
       fetchDcsNumberingRule();
@@ -7415,6 +7591,7 @@ export default function App() {
           category: "Vendor",
           docType: "",
           platform: "",
+          companyId: "",
           creationMode: "smart",
           parties: [
             { role: "Pihak Pertama", name: appSettings.companyName || "[Nama perusahaan belum diisi]", type: "Company" },
@@ -8590,6 +8767,40 @@ export default function App() {
   // komentar showMeteraiPlaceholder di types.ts.
   const [releaseSaving, setReleaseSaving] = useState(false);
   const [releaseModalOpen, setReleaseModalOpen] = useState(false);
+  const [releaseExternalOpen, setReleaseExternalOpen] = useState(false);
+  // Buat (atau ambil ulang) link publik PDF untuk pihak eksternal + catat di
+  // riwayat pengumuman. Mengembalikan URL utk ditampilkan/disalin di modal.
+  const handleAnnounceReleaseExternal = async (note: string): Promise<string | null> => {
+    if (!selectedContract) return null;
+    setReleaseSaving(true);
+    try {
+      const res = await fetch(`/api/contracts/${selectedContract.id}/announce-release-external`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ note }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.url) {
+        showToast(data.error || (res.status === 404
+          ? "Server belum mendukung fitur ini — pasang server.ts terbaru lalu restart server (npm run dev)."
+          : `Gagal membuat link rilis eksternal (HTTP ${res.status}).`), "warning");
+        return null;
+      }
+      const patch = {
+        releaseAnnouncements: data.contract?.releaseAnnouncements || selectedContract.releaseAnnouncements,
+        releaseShareToken: data.contract?.releaseShareToken || selectedContract.releaseShareToken,
+      };
+      const next = { ...selectedContract, ...patch };
+      if (JSON.stringify(selectedContract) === draftSavedSnapshot) setDraftSavedSnapshot(JSON.stringify(next));
+      setSelectedContract(next);
+      setContracts((prev) => prev.map((c) => (c.id === next.id ? { ...c, ...patch } : c)));
+      showToast("Link rilis eksternal siap dibagikan.", "success");
+      return data.url as string;
+    } catch {
+      showToast("Gagal membuat link rilis eksternal.", "warning");
+      return null;
+    } finally {
+      setReleaseSaving(false);
+    }
+  };
   // Kirim pengumuman rilis (penerima per NAMA + keterangan) — hanya utk kontrak Aktif.
   const handleAnnounceRelease = async (ids: string[], note: string) => {
     if (!selectedContract) return;
@@ -10516,6 +10727,7 @@ export default function App() {
         setTenantForm(null);
         setTenantPlatformInput("");
         fetchTenantPlatforms();
+        fetchNumberCompanies();
         showToast(isEdit ? "Perusahaan diperbarui" : `Perusahaan "${data.tenant.name}" dibuat dengan admin ${data.admin?.email}`, "success");
         fetchAllTenants();
       } else {
@@ -12962,7 +13174,12 @@ export default function App() {
                 return `${Math.floor(h / 24)} hari lalu`;
               };
               const openNotif = (n: any) => {
-                if (n.contractId) {
+                if (n.linkUrl) {
+                  // Notifikasi dengan tautan langsung (mis. "Kontrak Telah Rilis")
+                  // → buka PDF resmi di tab baru, sama seperti link eksternal.
+                  setNotifOpen(false);
+                  window.open(n.linkUrl, "_blank", "noopener");
+                } else if (n.contractId) {
                   const c = contracts.find((con) => con.id === n.contractId);
                   if (c) { setNotifOpen(false); handleOpenWorkspace(c); }
                 } else if (n.dcsDocumentId) {
@@ -14910,54 +15127,27 @@ export default function App() {
                 ))}
               </div>
 
-              {/* Baris 1: detail · info · kategori (tinggi sama) */}
+              {/* Baris 1: status · info · kategori (tinggi sama) */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
                 <div className="lg:col-span-3">
-                  <div className={`${CARD} h-full flex flex-col gap-4`}>
-                    <DashCardHeader Icon={FileText} title="Detail Kontrak" subtitle={nextExp ? `${nextExp.category} · berakhir berikutnya` : "Belum ada kontrak aktif"} />
-                    {!nextExp ? (
-                      <p className="text-sm text-slate-500 py-6 text-center">Tidak ada kontrak aktif yang akan berakhir.</p>
-                    ) : (
-                      <>
-                        <div className="grid grid-cols-3 gap-2">
-                          {[
-                            { v: `${getDaysRemaining(nextExp.endDate)} hr`, l: "sisa" },
-                            { v: nextExp.contractValue > 0 ? `${(nextExp.contractValue / 1_000_000).toLocaleString("id-ID", { maximumFractionDigits: 1 })} jt` : "—", l: "nilai" },
-                            { v: `${nextProgress}%`, l: "berjalan" },
-                          ].map((t) => (
-                            <div key={t.l} className="rounded-[16px] bg-slate-950 px-2 py-2.5 text-center min-w-0">
-                              <p className="text-[12px] font-semibold text-slate-100 truncate tabular">{t.v}</p>
-                              <p className="text-[9px] text-slate-500">{t.l}</p>
-                            </div>
-                          ))}
-                        </div>
-                        <div>
-                          <p className="text-[12px] text-slate-500 mb-2">Pihak kedua</p>
-                          <div className="flex items-center gap-3">
-                            <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center text-sm font-semibold text-slate-100 shrink-0">
-                              {(nextExp.party2Name || "?").trim().charAt(0).toUpperCase()}
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="text-[13px] font-medium text-slate-100 truncate">{nextExp.party2Name || "—"}</p>
-                              <p className="text-[11px] text-slate-500 truncate">{nextExp.contractNumber}</p>
-                            </div>
-                            <button
-                              onClick={() => handleOpenWorkspace(nextExp)}
-                              className="w-10 h-10 rounded-full bg-soft-blue text-white flex items-center justify-center shrink-0 hover:opacity-90 transition cursor-pointer"
-                              title="Tinjau kontrak"
-                              aria-label="Tinjau kontrak"
-                            >
-                              <ArrowRight className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-                        <div className="mt-auto">
-                          <div className="flex justify-between text-[11px] text-slate-500 mb-2"><span>Masa berlaku</span><span className="tabular">{nextProgress}%</span></div>
-                          <div className="h-2.5 rounded-full bg-slate-950 overflow-hidden"><div className="h-full rounded-full bg-peach-strong" style={{ width: `${nextProgress}%` }} /></div>
-                          <div className="flex justify-between text-[10px] text-slate-500 mt-1.5 tabular"><span>{nextExp.startDate}</span><span>{nextExp.endDate}</span></div>
-                        </div>
-                      </>
-                    )}
+                  <div className={`${CARD} h-full flex flex-col`} style={{ minHeight: 300 }}>
+                    <DashCardHeader Icon={PieChart} title="Status Kontrak" subtitle={`${contracts.length} kontrak total`} />
+                    <div className="flex items-center justify-center py-3 flex-1">
+                      <StatusRing
+                        segments={[
+                          { value: aktifList.length, color: "var(--color-soft-blue)" },
+                          { value: draftList.length, color: "var(--color-peach-strong)" },
+                          { value: otherCount, color: "var(--color-slate-700)" },
+                        ]}
+                        center={`${aktifPct}%`}
+                        sub="kontrak aktif"
+                      />
+                    </div>
+                    <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 flex-wrap">
+                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-soft-blue" />Aktif {aktifList.length}</span>
+                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-peach-strong" />Draft {draftList.length}</span>
+                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-slate-700" />Lainnya {otherCount}</span>
+                    </div>
                   </div>
                 </div>
                 <div className="lg:col-span-5">
@@ -15014,31 +15204,10 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Baris 2: status · persetujuan · audit (semua tinggi tetap) */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-                <div className="lg:col-span-3">
-                  <div className={`${CARD} flex flex-col`} style={{ height: 340, overflow: "hidden" }}>
-                    <DashCardHeader Icon={PieChart} title="Status Kontrak" subtitle={`${contracts.length} kontrak total`} />
-                    <div className="flex items-center justify-center py-3 flex-1">
-                      <StatusRing
-                        segments={[
-                          { value: aktifList.length, color: "var(--color-soft-blue)" },
-                          { value: draftList.length, color: "var(--color-peach-strong)" },
-                          { value: otherCount, color: "var(--color-slate-700)" },
-                        ]}
-                        center={`${aktifPct}%`}
-                        sub="kontrak aktif"
-                      />
-                    </div>
-                    <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 flex-wrap">
-                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-soft-blue" />Aktif {aktifList.length}</span>
-                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-peach-strong" />Draft {draftList.length}</span>
-                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-slate-700" />Lainnya {otherCount}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="lg:col-span-5">{apprCard}</div>
-                <div className="lg:col-span-4">{auditCard}</div>
+              {/* Baris 2: persetujuan · audit (dibagi rata, tinggi tetap) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+                {apprCard}
+                {auditCard}
               </div>
 
               {/* Baris 3: kadaluwarsa · sharing fee (tinggi tetap) */}
@@ -15474,12 +15643,13 @@ export default function App() {
                               { t: "{Prefix}", l: "Prefix", d: "Prefix kategori, atau Prefix Default bila kategori tak punya prefix sendiri", go: { label: "Isi Prefix Default", anchor: "cfg-prefix-default" } },
                               { t: "{Category}", l: "Kategori", d: "Nama kategori, mis. Vendor", go: { label: "Atur kategori di Folder Dokumen", tab: "folder" } },
                               { t: "{Codes}", l: "Kode tambahan", d: "Kode tambahan jenis dokumen bila diisi, mis. TBK", go: { label: "Isi Kode Tambahan di Jenis Dokumen", tab: "dcsdoctypes" } },
+                              { t: "{Company}", l: "Perusahaan", d: "Kode perusahaan yang dipilih di form buat kontrak, mis. TBK / GKM — contoh 150/PKS-ASMAT/{Company}/X/2026 → 150/PKS-ASMAT/TBK/X/2026. Daftar & kode perusahaan diatur di Kelola Perusahaan (kode kosong = diambil dari nama tanpa PT/CV). Nomor urut tetap satu urutan untuk semua perusahaan.", go: { label: "Atur kode di Kelola Perusahaan", tab: "perusahaan", superOnly: true } },
                               { t: "{Platform}", l: "Platform", d: "Platform kerja sama yang dipilih di form buat kontrak, mis. ASMAT / TIKETUX. Daftar platform tiap perusahaan diatur di Kelola Perusahaan. Tidak dipilih = segmen ini hilang otomatis. Nomor urut tetap satu urutan untuk semua platform." , go: { label: "Atur platform di Kelola Perusahaan", tab: "perusahaan", superOnly: true } },
                             ] },
                           ];
                       const preview = isDcs
                         ? previewNumberMask(dcsNumberingMaskDraft, { DocType: "SOP", Department: "HED", Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1).padStart(2, "0"), Day: String(new Date().getDate()).padStart(2, "0") })
-                        : previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Platform: platformCode(tenantPlatforms[0]), Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) });
+                        : previewNumberMask(masterData.defaultNumberMask, { Prefix: masterData.defaultNumberPrefix, Category: "Vendor", DocType: "", Platform: platformCode(tenantPlatforms[0]), Company: sampleCompanyCode, Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1), Day: String(new Date().getDate()) });
                       const saveDisabled = isDcs && (dcsBusy || dcsNumberingMaskDraft === dcsNumberingRule?.mask);
                       const goTo = (go: TokGo) => {
                         if (go.anchor) {
@@ -16009,7 +16179,7 @@ export default function App() {
                             const preview = previewNumberMask(dt.numberMask || masterData.defaultNumberMask, {
                               Prefix: effCode || masterData.defaultNumberPrefix,
                               Category: cat0, DocType: dt.name || "", DocTypeCode: effCode,
-                              Platform: platformCode(tenantPlatforms[0]), Codes: codes, Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1),
+                              Platform: platformCode(tenantPlatforms[0]), Company: sampleCompanyCode, Codes: codes, Year: String(new Date().getFullYear()), Month: String(new Date().getMonth() + 1),
                               Day: String(new Date().getDate()),
                             });
                             return (
@@ -16920,7 +17090,7 @@ export default function App() {
                             <p className="font-semibold text-slate-100 text-[13px] truncate">{t.name}</p>
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.active ? "bg-emerald-400" : "bg-slate-600"}`} title={t.active ? "Aktif" : "Nonaktif"} />
                           </div>
-                          <p className="text-[12px] text-slate-500 truncate">{t.branch || "Tanpa cabang"} · <span className="font-mono text-slate-600">{t.id}</span></p>
+                          <p className="text-[12px] text-slate-500 truncate">{t.branch || "Tanpa cabang"} · <span className="font-mono text-slate-600">{t.id}</span>{t.codeEffective ? <> · Kode <span className="font-mono text-slate-400">{t.codeEffective}</span></> : null}</p>
                           {Array.isArray(t.platforms) && t.platforms.length > 0 && (
                             <div className="flex flex-wrap items-center gap-1 mt-1">
                               <span className="text-[11px] text-slate-500">Platform:</span>
@@ -16930,7 +17100,7 @@ export default function App() {
                             </div>
                           )}
                         </div>
-                        <button onClick={() => { setTenantPlatformInput(""); setTenantForm({ id: t.id, name: t.name, branch: t.branch, active: t.active, platforms: Array.isArray(t.platforms) ? t.platforms : [] }); }} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer shrink-0 opacity-60 group-hover:opacity-100 transition"><Pencil className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => { setTenantPlatformInput(""); setTenantForm({ id: t.id, name: t.name, branch: t.branch, code: t.code || "", active: t.active, platforms: Array.isArray(t.platforms) ? t.platforms : [] }); }} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer shrink-0 opacity-60 group-hover:opacity-100 transition"><Pencil className="w-3.5 h-3.5" /></button>
                       </div>
                     ))}
                     {allTenants.length === 0 && <p className="text-slate-500 text-[13px] py-10 text-center">Belum ada perusahaan.</p>}
@@ -19227,14 +19397,24 @@ export default function App() {
                     </button>
                   )}
                   {selectedContract.status === "Aktif" && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin") && (
-                    <button
-                      onClick={() => setReleaseModalOpen(true)}
-                      title="Umumkan ke orang-orang tertentu (dipilih per nama) bahwa kontrak ini sudah rilis/aktif, lengkap dengan keterangan."
-                      className="ct-primary px-4 py-2 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 cursor-pointer"
-                    >
-                      <Bell className="w-3.5 h-3.5" />
-                      Umumkan Rilis
-                    </button>
+                    <>
+                      <button
+                        onClick={() => setReleaseModalOpen(true)}
+                        title="Umumkan ke orang-orang internal tertentu (dipilih per nama) bahwa kontrak ini sudah rilis/aktif, lengkap dengan keterangan."
+                        className="ct-primary px-4 py-2 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Bell className="w-3.5 h-3.5" />
+                        Rilis Internal
+                      </button>
+                      <button
+                        onClick={() => setReleaseExternalOpen(true)}
+                        title="Buat link publik (tanpa login) ke PDF resmi kontrak untuk dibagikan ke pihak eksternal."
+                        className="ct-primary px-4 py-2 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <Link2 className="w-3.5 h-3.5" />
+                        Rilis Eksternal
+                      </button>
+                    </>
                   )}
                   {/* "Mode Tinjau (Word)" adalah SATU-SATUNYA pintu tinjau/komentar
                       dokumen — tombol "Komentar" terpisah dulu redundan (data &
@@ -20489,7 +20669,16 @@ export default function App() {
                 <ReleaseAnnouncementsCard
                   contract={selectedContract}
                   canEdit={selectedContract.status === "Aktif" && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin")}
-                  onOpen={() => setReleaseModalOpen(true)}
+                  onOpenInternal={() => setReleaseModalOpen(true)}
+                  onOpenExternal={() => setReleaseExternalOpen(true)}
+                />
+              )}
+              {releaseExternalOpen && (
+                <ReleaseExternalModal
+                  contract={selectedContract}
+                  saving={releaseSaving}
+                  onClose={() => setReleaseExternalOpen(false)}
+                  onCreate={handleAnnounceReleaseExternal}
                 />
               )}
               {releaseModalOpen && (
@@ -23308,6 +23497,34 @@ export default function App() {
                       </p>
                     </div>
                     )}
+
+                    {/* Perusahaan — berlaku untuk mode template MAUPUN upload.
+                        Kodenya mengisi token {Company} di nomor dokumen bila
+                        token itu dipakai di format nomor, mis.
+                        150/PKS-ASMAT/TBK/X/2026. Daftar dari Kelola Perusahaan. */}
+                    {numberCompanies.length > 0 && (() => {
+                      const selCompany = numberCompanies.find((c) => c.id === newContractForm.companyId);
+                      return (
+                    <div className="space-y-1.5">
+                      <label className="block text-sm font-semibold text-slate-300">Perusahaan</label>
+                      <select
+                        value={newContractForm.companyId}
+                        onChange={(e) => setNewContractForm({ ...newContractForm, companyId: e.target.value })}
+                        className="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                      >
+                        <option value="">— Tidak dipilih —</option>
+                        {numberCompanies.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}{c.code ? ` (${c.code})` : ""}</option>
+                        ))}
+                      </select>
+                      <p className="text-[11px] text-slate-500">
+                        Perusahaan pemilik dokumen — tampil di nomor dokumen
+                        {selCompany?.code ? <> sebagai <span className="font-mono text-slate-400">{selCompany.code}</span></> : ""} bila format nomor memakai token <span className="font-mono">{"{Company}"}</span>.
+                        Daftar perusahaan diatur di Konfigurasi &gt; Kelola Perusahaan.
+                      </p>
+                    </div>
+                      );
+                    })()}
 
                     <div className="space-y-1.5">
                       <label className="block text-sm font-semibold text-slate-300 flex items-center gap-1.5">
@@ -26800,6 +27017,18 @@ export default function App() {
               <div className="space-y-1.5">
                 <label className="block text-xs font-semibold text-slate-300">Cabang / Lokasi</label>
                 <input type="text" value={tenantForm.branch || ""} onChange={(e) => setTenantForm({ ...tenantForm, branch: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+              </div>
+              {/* Kode perusahaan → token {Company} di nomor dokumen. */}
+              <div className="space-y-1.5">
+                <label className="block text-xs font-semibold text-slate-300">Kode Perusahaan <span className="font-normal text-slate-500">(untuk nomor dokumen)</span></label>
+                <input
+                  type="text"
+                  value={tenantForm.code || ""}
+                  onChange={(e) => setTenantForm({ ...tenantForm, code: e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "").slice(0, 12) })}
+                  placeholder={companyCodeFromName(tenantForm.name || "") || "mis. TBK"}
+                  className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm font-mono text-slate-100 focus:outline-none focus:border-indigo-500"
+                />
+                <p className="text-[11px] text-slate-500">Mengisi token <span className="font-mono">{"{Company}"}</span> di format nomor, mis. 150/PKS-ASMAT/<b>{(tenantForm.code || companyCodeFromName(tenantForm.name || "")) || "TBK"}</b>/X/2026. Kosongkan = otomatis dari nama perusahaan.</p>
               </div>
               {/* Platform kerja sama milik perusahaan ini → pilihan dropdown
                   "Kerjasama Platform" di wizard kontrak & segmen {Platform}

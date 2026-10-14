@@ -2,6 +2,9 @@ export interface Tenant {
   id: string;
   name: string;
   branch: string;
+  // Kode singkat perusahaan untuk token {Company} di nomor dokumen (mis. TBK).
+  // Kosong = diturunkan otomatis dari nama (buang PT/CV/Tbk).
+  code?: string;
   active?: boolean;
   // Platform kerja sama milik perusahaan (mis. Asmat, Tiketux) — pilihan
   // dropdown "Kerjasama Platform" di wizard kontrak & token {Platform} di
@@ -227,6 +230,9 @@ export interface ReleaseAnnouncement {
   createdAt: string;
   byId: string;
   byName: string;
+  // "internal" = notifikasi ke user per nama; "external" = link publik PDF
+  // (disalin & dibagikan manual). Data lama tanpa field ini = internal.
+  audience?: "internal" | "external";
   userIds: string[];
   names: string[];
   note?: string;
@@ -238,6 +244,9 @@ export interface Contract {
   // Pengumuman rilis kontrak (setelah Aktif): tim Legal/Admin memilih penerima
   // PER NAMA user (bukan role/departemen) + keterangan bebas. Terbaru di depan.
   releaseAnnouncements?: ReleaseAnnouncement[];
+  // Token rahasia link rilis eksternal (/api/public/release/:token) — dibuat
+  // sekali saat "Umumkan Rilis untuk Eksternal" pertama kali, lalu dipakai ulang.
+  releaseShareToken?: string;
   templateId: string;
   contractNumber: string;
   title: string;
@@ -339,6 +348,12 @@ export interface Contract {
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF
   numberSeq?: number; // Nomor urut yang dikonsumsi dari counter persisten (per jenis+tahun) — dipakai sbg baseline anti-duplikat
   docType?: string; // Jenis dokumen saat pendaftaran arsip (Perjanjian, MOU, Addendum, dll)
+  // Perusahaan pilihan form (Kelola Perusahaan) — snapshot id/nama/kode saat
+  // dibuat; kode mengisi token {Company} di nomor dokumen, mis.
+  // 150/PKS-ASMAT/TBK/X/2026. Diwarisi addendum & perpanjangan.
+  companyId?: string;
+  companyName?: string;
+  companyCode?: string;
   platform?: string; // Platform kerja sama (Asmat, Tiketux, dst — masterData.platforms); mengisi token {Platform} di nomor. Kosong = tidak terkait platform
   notes?: string; // Catatan bebas dari form pendaftaran dokumen
   exportedPdfUrl?: string; // Hasil export PDF yang di-host server untuk dibagikan via email/WA
@@ -587,6 +602,9 @@ export interface SystemNotification {
   read: boolean;
   contractId?: string;
   dcsDocumentId?: string;
+  // Bila diisi, klik notifikasi membuka URL ini di tab baru (mis. PDF resmi
+  // kontrak untuk notifikasi "Kontrak Telah Rilis").
+  linkUrl?: string;
   // Bila diisi, notifikasi hanya tampil bagi user-user ini. Kosong/tidak ada =
   // seluruh tenant (perilaku lama, tidak berubah). Dipakai eskalasi SLA supaya
   // teguran keterlambatan tidak disiarkan ke seisi perusahaan.

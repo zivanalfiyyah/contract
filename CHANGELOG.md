@@ -1,5 +1,81 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #15] — Konfigurasi Kategori Kontrak Karyawan
+
+- Tab Konfigurasi › Dokumen & Template › **Kategori Kontrak (Eksternal & Karyawan)** (dulu "Folder Dokumen") kini berisi dua bagian terpisah: **Kategori Kontrak Eksternal** dan **Kategori Kontrak Karyawan** (tambah / ubah nama / hapus, jumlah kontrak per kategori, tersimpan langsung).
+- Kategori karyawan tidak lagi berada di daftar chip "Format Nomor Default & Dropdown".
+- Kategori internal "Employment" (kunci template karyawan) disembunyikan dari daftar kategori eksternal.
+
+## [Unreleased #14] — Pisahkan total Kontrak Karyawan (internal) dari Eksternal
+
+### Ringkasan
+
+- **Form Kontrak Karyawan**: PT (pemberi kerja) → Kategori Kontrak (PKWT, PKWTT, Magang / Internship, Harian Lepas, Freelance / Tenaga Ahli Lepas) → Jenis Dokumen karyawan → Divisi (opsional). Tanpa Platform. Semua punya pilihan "Lainnya" (isi manual). Berlaku di wizard (template & upload), Daftarkan Dokumen di Arsip Internal, dan Klasifikasi.
+- **Daftar terpisah**: Kategori karyawan = master baru `employmentTypes` (Konfigurasi › Daftar Pilihan › Kategori Kontrak Karyawan). Jenis dokumen dipisah lewat modul di Konfigurasi › Jenis Kontrak (Eksternal / Karyawan) — form eksternal hanya menampilkan jenis Eksternal, form karyawan hanya jenis Karyawan.
+- **Arsip Internal** punya dua tab: **Kontrak Karyawan** (PT › Jenis Dokumen › Draft/Aktif, plus Belum Diklasifikasi) dan **Dokumen DCS** (Departemen › Jenis DCS, dokumen yang sudah full sign). Arsip DCS tidak lagi memakai folder kategori kontrak eksternal; pilihan "Folder Arsip Tujuan" di form DCS dihapus.
+- Tabel Kontrak Karyawan menampilkan Kategori Kontrak karyawan.
+
+### Data
+
+- Kontrak: field baru `employmentType` (kategori karyawan) & `division`. `category` kontrak karyawan tetap "Employment" (kunci template & klausul).
+- `POST /api/contracts/:id/classify` menerima `internal: true` (PT/Kategori/Jenis/Divisi, tanpa platform).
+
+### Migrasi (otomatis, sekali per perusahaan)
+
+- Jenis dokumen yang masih "Keduanya" dibagi: yang kategorinya hanya Employment → Karyawan, sisanya → Eksternal.
+- Ditambahkan jenis dokumen karyawan: Surat Penawaran Kerja (OL), Perjanjian Magang (PMG), NDA / Perjanjian Kerahasiaan Karyawan (NDK), Perjanjian Ikatan Dinas (PID), Addendum / Perpanjangan PKWT (APK), Surat Pengangkatan Karyawan Tetap (SPKT), SK Mutasi / Promosi / Rotasi (SKM), Surat Peringatan (SP), Surat Pengunduran Diri (SPD), Surat PHK (PHK), Perjanjian Bersama (PB), Surat Keterangan Kerja (Paklaring) (SKK).
+- Kontrak karyawan lama (tanpa PT/Kategori) muncul di "Belum Diklasifikasi" Arsip Internal.
+
+## [Unreleased #13] — Arsip Eksternal per PT › Platform › Jenis Dokumen
+
+### Ringkasan
+
+- **Form berurutan PT → Platform → Kategori → Jenis Dokumen** di Buat Kontrak (mode template & upload), Daftarkan Dokumen Upload, dan Klasifikasi Arsip. Platform mengikuti PT yang dipilih (platform milik PT di Kelola Perusahaan). Keempatnya wajib untuk dokumen eksternal. Form kontrak karyawan TIDAK berubah (tetap form lama).
+- **Pilihan "Lainnya" (isi manual)** di Platform, Kategori, dan Jenis: nilai ketikan disimpan apa adanya, otomatis jadi folder arsip dan segmen nomor ({Platform}, {DocTypeCode}). Item master bernama "Lainnya" tidak pernah jadi folder.
+- **Arsip Eksternal baru**: PT › Platform › Jenis Dokumen › Draft/Aktif (Kategori tetap diisi di form & tersimpan, tapi bukan level folder). Semua jenis dokumen tampil di setiap platform (walau kosong). Dokumen lama yang belum lengkap klasifikasinya dikumpulkan di "Belum Diklasifikasi" dengan tombol **Klasifikasikan** (nomor dokumen tidak berubah). Arsip Internal tidak berubah.
+- **Kode platform di nomor** mengabaikan keterangan dalam kurung: "PP (Program Promosi)" → `PP`.
+
+### Endpoint baru / berubah
+
+- `GET /api/number-companies` kini menyertakan `platforms` per PT.
+- `POST /api/contracts`: platform divalidasi terhadap PT terpilih; `platformCustom: true` untuk isian manual "Lainnya".
+- `POST /api/contracts/:id/classify` — atur PT/Platform/Kategori/Jenis (filing, status apa pun).
+
+### Migrasi (otomatis, sekali, hanya menambah)
+
+- Kategori: PKS (Perjanjian Kerjasama), Perjanjian Layanan, Perjanjian Integrasi Sistem, Perjanjian Vendor/Pengadaan, Perjanjian Kerahasiaan, Perjanjian Sewa, Perjanjian Promosi.
+- Jenis Dokumen: DAK (DAK), CI Surat Konfirmasi (CI), Surat Penawaran (SPN), Surat Pernyataan (SPY), Surat Pemberitahuan (SPB), Surat Teguran (STG), Surat Pengakhiran/Pemutusan (SPP), Berita Acara (BA). PKS/MOU/NDA/Addendum dilewati bila jenis berkode sama sudah ada.
+- Platform PT yang namanya cocok: PT Trans Berjaya Khatulistiwa (TBK) dan PT Garuda Kreasi Mahendra (GKM), sesuai daftar platform masing-masing.
+- Kategori/jenis lama TIDAK dihapus — hapus manual di Konfigurasi bila tidak dipakai.
+
+## [Unreleased #12] — Dua jalur diskusi, redline & catatan pengantar untuk pihak eksternal
+
+### Ringkasan
+
+- **Mode Tinjau punya dua tab**: "💬 Diskusi Internal" (kamu ↔ approver, tidak pernah terlihat pihak eksternal) dan "🤝 Diskusi dengan Pihak Eksternal" (terlihat kedua pihak). Tab menentukan kartu yang tampil sekaligus visibilitas komentar/balasan baru — toggle 🔒/👁 terpisah dihapus. Tab awal otomatis "Eksternal" saat Review Eksternal / Revisi Eksternal. Ada tombol "Lihat sebagai pihak eksternal".
+- **Redline untuk pihak eksternal**: tiap kali dokumen dibuka ke pihak eksternal, isi yang mereka lihat disimpan sebagai snapshot (`externalRounds`). Mulai ronde ke-2, halaman link menampilkan "Perubahan sejak review Anda sebelumnya" — coretan merah/tambahan hijau per pasal — jadi pihak eksternal tahu apa yang berubah (termasuk karena masukan internal) tanpa melihat diskusi internalnya. Dokumen upload menampilkan perubahan nomor versi berkas.
+- **Catatan pengantar**: saat "Kirim ke Review Eksternal" ada kolom catatan opsional yang tampil di atas dokumen pada halaman link.
+
+### Migrasi
+
+- Tidak perlu migrasi. Kontrak yang sudah di Review Eksternal sebelum update ini tidak punya snapshot ronde lama, jadi redline baru muncul mulai ronde berikutnya setelah snapshot pertama tersimpan.
+
+## [Unreleased #11] — Review lewat Mode Tinjau, Review Final Internal, komentar internal vs eksternal
+
+### Ringkasan
+
+- **Addendum tidak lagi tampil sebagai baris di tabel utama** (Kontrak Eksternal / Kontrak Karyawan) — hanya di Tabel Addendum milik kontrak induk. Baris induk menampilkan chip "N addendum"; mencari nomor/judul addendum tetap menemukan kontrak induknya.
+- **Review internal memakai Mode Tinjau & Komentar**: approver menandai bagian yang perlu diubah (komentar / coret / ganti), lalu **Setujui** atau **Minta Revisi** langsung dari header Mode Tinjau (atau panel status). Komentar & usulan terbuka itulah daftar revisinya (`revisionHistory[].commentIds`); catatan teks kini opsional. Panel revisi menghitung berapa yang belum ditindaklanjuti, dan ada peringatan bila diajukan ulang sebelum tuntas.
+- **Review Final Internal** (status baru `FinalReview`): setelah pihak eksternal Setuju/OK, approver acc internal terakhir otomatis diminta konfirmasi dulu sebelum Proses TTD. Minta Revisi di tahap ini → kembali ke awal (Revisi Internal).
+- **Fix Terima/Tolak di Mode Tinjau**: dulu tombol Terima mati (disabled & pudar) di luar status Draft, padahal usulan biasanya masuk saat Review. Sekarang tombol selalu bisa diklik; bila belum bisa diterapkan, muncul penjelasan (usulan diterapkan saat tahap revisi). Warna tombol diperjelas.
+- **Komentar internal vs eksternal**: tiap komentar punya `visibility` — `internal` (default, hanya tim internal) atau `eksternal` (ikut terlihat pihak eksternal). Header Mode Tinjau punya pilihan 🔒 Internal / 👁 Ke Eksternal untuk komentar baru, filter kartu, dan tombol per kartu untuk membagikan/menyembunyikan. Halaman review eksternal HANYA menerima komentar tamu + komentar internal yang dibagikan (berlabel "Pihak Pertama").
+
+### Migrasi
+
+- Tidak perlu migrasi data. Komentar internal lama (tanpa `visibility`) dianggap internal — sebelumnya ikut terlihat di halaman review eksternal.
+- `POST /api/contracts/:id/approval-decision` (rejected) tidak lagi wajib `comment` bila sudah ada komentar internal terbuka.
+- `POST /api/contracts/:id/submit-review` juga menerima status `FinalReview` tanpa approver tertunda (memilih approver Review Final manual).
+
 ## [Unreleased #10] — Pengumuman Rilis Internal & Eksternal
 
 ### Ringkasan

@@ -160,7 +160,11 @@ export interface ContractTemplateSnapshot {
 // penanda `revisionStage` ("internal" = ditolak/diminta revisi approver,
 // "eksternal" = pihak eksternal minta revisi). Dari revisi mana pun dokumen
 // WAJIB lewat Review Internal lagi sebelum akses eksternal dibuka kembali.
-export type ContractStatus = "Draft" | "OnReview" | "ApprovedInternal" | "ReviewEksternal" | "FullyApproved" | "Aktif" | "TidakAktif" | "Archived" | "Terminated";
+// FinalReview (Review Final Internal): setelah pihak eksternal Setuju/OK,
+// tim internal meninjau sekali lagi (approver yang sama dengan ronde acc
+// internal terakhir) sebelum Proses TTD — supaya benar-benar disetujui DUA
+// pihak. Minta revisi di tahap ini = kembali ke awal (Revisi Internal).
+export type ContractStatus = "Draft" | "OnReview" | "ApprovedInternal" | "ReviewEksternal" | "FinalReview" | "FullyApproved" | "Aktif" | "TidakAktif" | "Archived" | "Terminated";
 
 export type ContractRevisionStage = "internal" | "eksternal";
 
@@ -170,9 +174,24 @@ export interface ContractRevisionEntry {
   note: string;
   requestedBy: string; // nama approver / nama pihak eksternal
   requestedAt: string;
+  // Tahap asal permintaan revisi (Review Internal, Review Final, Eksternal).
+  fromStatus?: string;
+  // Komentar/usulan (Mode Tinjau) yang masih terbuka saat revisi diminta —
+  // inilah "isi" revisinya; catatan `note` hanya ringkasan opsional.
+  commentIds?: string[];
   // Diisi saat dokumen hasil revisi diajukan kembali ke Review Internal.
   resubmittedAt?: string;
   resubmittedBy?: string;
+}
+
+export interface ContractExternalRound {
+  round: number;
+  sentAt: string;
+  sentByName: string;
+  note?: string;
+  clauses?: { id: string; title: string; content: string }[];
+  documentVersion?: number | null;
+  documentName?: string;
 }
 
 export interface ContractParty {
@@ -463,6 +482,17 @@ export interface Contract {
   // Berapa kali dokumen sudah dibuka ke pihak eksternal lewat alur baru —
   // > 0 berarti kontrak ini memakai alur Review Eksternal SETELAH acc internal.
   externalRoundCount?: number;
+  // KONTRAK KARYAWAN (internal) — klasifikasi terpisah dari eksternal:
+  // employmentType = Kategori Kontrak Karyawan (PKWT/PKWTT/Magang/…, master
+  // `employmentTypes`); division = Divisi/Departemen. Platform tidak dipakai.
+  // `category` kontrak karyawan tetap "Employment" (kunci template/klausul).
+  employmentType?: string;
+  division?: string;
+  // Satu entri per ronde Review Eksternal: snapshot isi yang DILIHAT pihak
+  // eksternal saat ronde itu dibuka (untuk redline ronde berikutnya) +
+  // catatan pengantar dari tim internal. Snapshot memakai bentuk yang sama
+  // dengan yang dikirim ke halaman review eksternal (narasi pembuka + pasal).
+  externalRounds?: ContractExternalRound[];
   // Detail pihak (opsional, per-kontrak) untuk narasi pembuka & tanda tangan —
   // bukan cuma nama, tapi alamat/jabatan/nomor identitas penandatangan. Party1
   // kosong = pakai default appSettings.company* (companyAddress dst); Party2
@@ -787,6 +817,12 @@ export interface ClauseComment {
   // userId = "external", userName = externalName yang diisi tamu.
   external?: boolean;
   externalName?: string;
+  // Siapa yang boleh melihat komentar ini. "internal" = hanya pengguna
+  // internal (diskusi user ↔ approver internal, TIDAK pernah dikirim ke
+  // halaman review eksternal). "eksternal" = ikut terlihat pihak eksternal
+  // (komunikasi user ↔ pihak kedua). Komentar tamu selalu "eksternal".
+  // Kosong (data lama) diperlakukan "internal" untuk komentar internal.
+  visibility?: "internal" | "eksternal";
 }
 
 // Push notification subscription (Web Push API)

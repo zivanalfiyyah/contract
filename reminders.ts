@@ -46,7 +46,7 @@ function isActive(contract: Contract): boolean {
 export function checkApprovalSla(db: any, today: string): number {
   let count = 0;
   for (const contract of db.contracts as Contract[]) {
-    if (contract.status !== "OnReview") continue;
+    if (contract.status !== "OnReview" && contract.status !== "FinalReview") continue;
     const settings = (db.settings || []).find((s: any) => s.tenantId === contract.tenantId);
     const slaDays = Number(settings?.approvalSlaDays ?? 3);
     if (!Number.isFinite(slaDays) || slaDays <= 0) continue; // 0 = SLA dimatikan

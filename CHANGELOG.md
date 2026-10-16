@@ -1,5 +1,42 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #16] — Tampilan login baru & pendaftaran mandiri lewat email
+
+### Ringkasan
+
+- **Layar masuk didesain ulang (Opsi A) mengikuti tema aplikasi**: tampilan penuh satu layar. Panel kiri bergradasi biru → peach dengan tepi bergelombang, berisi sapaan "Selamat datang kembali! / Senang melihat Anda lagi!", tiga fitur (Monitoring Kontrak, Keamanan Berlapis, Arsip Rapi) dan ilustrasi map dokumen (layar lebar); di halaman Daftar/kode OTP panel kiri berganti menjadi 3 langkah pendaftaran yang menyorot tahap saat ini. Panel kanan: ikon bulat + judul di tengah, input berikon, tombol utama bergradasi, pemisah "atau" dan tombol "Daftar dengan kode perusahaan". Panel kiri disembunyikan di HP; tombol ganti mode terang/gelap tetap ada. Halaman Lupa Kata Sandi, Kata Sandi Baru, dan Verifikasi 2FA ikut diseragamkan.
+- **Halaman Daftar (Register) — tanpa persetujuan admin**: karyawan mendaftar sendiri dengan **kode pendaftaran** + nama + email kerja + kata sandi + **peran pilihan sendiri** (Staff / Legal / Manager / Viewer — Admin sengaja tidak bisa dipilih). Alurnya:
+  1. Daftar → email berisi **kode OTP 6 angka** (berlaku 10 menit, maks. 5 kali salah, kirim ulang tiap 60 detik).
+  2. Kode benar → akun **langsung aktif** dan pendaftar **langsung masuk**. Admin perusahaan hanya diberi tahu (notifikasi aplikasi + push "Pengguna Baru Bergabung").
+  3. Pendaftar yang belum memasukkan kode tampil di Konfigurasi › Kelola Pengguna › **Belum Verifikasi Email** dengan tombol **Aktifkan** (jalan keluar bila email tidak sampai; tercatat di audit) dan **Hapus**. Pendaftaran yang tidak diverifikasi dihapus otomatis setelah 24 jam.
+- **Kode pendaftaran terpisah dari kode perusahaan**: field baru `Tenant.registrationCode`, diatur admin di kotak "Kode pendaftaran karyawan baru" (Kelola Pengguna) — tombol ganti, "Acak", simpan. Tidak mengubah penomoran dokumen. Harus unik antarperusahaan; kode lama langsung tidak berlaku setelah diganti. Belum diatur = memakai kode perusahaan (perilaku awal). Halaman Daftar publik tetap tidak menampilkan daftar PT.
+- **Keamanan**: respons pendaftaran selalu sama walau email sudah terdaftar (tidak bisa dipakai mengecek email orang); pendaftaran yang belum diverifikasi tidak bisa ditimpa orang lain (nama/sandi/peran tidak ikut diganti saat daftar ulang); OTP disimpan sebagai hash SHA-256 yang diikat ke id user dan dibandingkan dengan `timingSafeEqual`; status "belum verifikasi" baru diungkap setelah kata sandi benar; rate limit khusus pendaftaran (20/jam per IP). Pendaftar belum terverifikasi tetap `active: false`, jadi tidak muncul sebagai approver, penerima notifikasi, kolom TTD DCS, atau distribusi DCS.
+- **Dashboard › kartu "Info Kontrak" = kontrak terbaru**: kotak kiri menampilkan SATU kontrak yang paling baru dibuat (status, judul, nomor, para pihak, tanggal dibuat); kotak kanan "Kontrak Terbaru" berisi 4 kontrak terbaru berikutnya (judul, status, tanggal); "Lihat semua" membuka modal berisi semua kontrak urut dari yang paling baru dengan kolom pencarian. Bar "% Kontrak Aktif · segera berakhir · Perpanjang" dihapus (sudah ada di kartu Status Kontrak & Peringatan Kadaluwarsa).
+- **Template email** diganti ke palet aplikasi (putih/biru/peach) + tautan cadangan bila tombol tidak bisa diklik.
+- **Tinggi layar masuk mengikuti zoom UI global** (`--ui-zoom`): di layar < 1517px aplikasi memakai `zoom`, sehingga `100vh` mentah hanya mengisi ±90% tinggi layar. Kini dikoreksi lewat `.auth-screen`.
+- **Login**: email di-trim & alasan gagal login (`email_not_found` / `wrong_password`) dicatat di log server (pengguna tetap melihat pesan generik) — memudahkan melacak "sudah daftar tapi tidak bisa masuk".
+
+### Endpoint baru / berubah
+
+- `POST /api/auth/register` (`{ registrationCode, name, email, password, role }`), `POST /api/auth/verify-otp` (`{ email, code }` → akun aktif + cookie sesi), `POST /api/auth/resend-verification` (`{ email }`, jeda 60 detik → `429` + `retryAfter`) — publik.
+- `POST /api/users/:id/approve-registration` (aktifkan manual pendaftar yang belum verifikasi), `POST /api/users/:id/reject-registration` (hapus pendaftaran) — admin.
+- `PUT /api/registration-code` (`{ code }`, super_admin boleh `tenantId`) — admin, ganti kode pendaftaran.
+- `POST /api/auth/login` membalas `403` + `code: "EMAIL_UNVERIFIED"` untuk pendaftar yang belum memasukkan kode.
+- `GET /api/users` menyertakan pendaftar `registrationStatus: "pending_email"`; frontend menampilkannya terpisah.
+- `GET /api/auth/me` dan `GET /api/tenants` menyertakan `registrationCodeEffective`.
+- `PUT /api/users/:id` menolak mengubah akun yang belum verifikasi (harus lewat Aktifkan/Hapus).
+
+### Konfigurasi
+
+- **SMTP wajib di produksi** agar pendaftaran aktif (tanpa SMTP, `/api/auth/register` membalas 503). Di lokal/dev tanpa SMTP, kode OTP ditampilkan di layar & ditulis ke log server supaya bisa diuji.
+- Pastikan `APP_URL` di-set agar tautan di email memakai domain publik.
+- Atur **kode pendaftaran unik** per PT di Kelola Pengguna, dan bagikan hanya ke karyawan — kode ini satu-satunya "kunci masuk" pendaftaran.
+
+### Migrasi
+
+- Otomatis saat server mulai: pendaftar lama berstatus `pending_approval` (alur persetujuan admin sebelumnya) diaktifkan dengan peran yang tercatat.
+- Field baru opsional: `User.registrationStatus`, `registeredAt`, `emailVerifiedAt`, `emailOtpHash`, `emailOtpExpiresAt`, `emailOtpAttempts`, `emailOtpSentAt`, `approvedById/Name/At`; `Tenant.registrationCode`. Akun lama tidak terpengaruh.
+
 ## [Unreleased #15] — Konfigurasi Kategori Kontrak Karyawan
 
 - Tab Konfigurasi › Dokumen & Template › **Kategori Kontrak (Eksternal & Karyawan)** (dulu "Folder Dokumen") kini berisi dua bagian terpisah: **Kategori Kontrak Eksternal** dan **Kategori Kontrak Karyawan** (tambah / ubah nama / hapus, jumlah kontrak per kategori, tersimpan langsung).

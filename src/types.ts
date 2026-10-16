@@ -10,6 +10,10 @@ export interface Tenant {
   // dropdown "Kerjasama Platform" di wizard kontrak & token {Platform} di
   // nomor. Diatur di Konfigurasi > Kelola Perusahaan.
   platforms?: string[];
+  // Kode yang diketik karyawan baru di halaman Daftar. TERPISAH dari `code`
+  // (penomoran dokumen) dan bisa diganti admin kapan saja. Kosong = memakai
+  // kode perusahaan (perilaku awal).
+  registrationCode?: string;
   createdAt?: string;
 }
 
@@ -60,10 +64,30 @@ export interface User {
   // pernah ditampilkan sekali ke user saat 2FA diaktifkan, tidak pernah
   // disimpan mentah (pola sama seperti passwordHash).
   totpBackupCodeHashes?: string[];
+  // PENDAFTARAN MANDIRI (halaman Daftar). Akun hasil daftar sendiri berstatus
+  // "pending_email" dengan `active` false sampai pendaftar memasukkan kode
+  // OTP dari emailnya — jadi semua kode lama yang menyaring `u.active`
+  // (approver, penerima notifikasi, kolom TTD DCS, mention) otomatis tidak
+  // melihat akun ini. Kode benar → akun langsung aktif (tanpa persetujuan
+  // admin). Belum diverifikasi > 24 jam → dihapus otomatis. Kosong/undefined
+  // = akun biasa. ("pending_approval" = status alur lama, dimigrasi jadi aktif
+  // saat server mulai.)
+  registrationStatus?: "pending_email" | "pending_approval";
+  registeredAt?: string;
+  emailVerifiedAt?: string;
+  // OTP 6 angka: hanya hash-nya (diikat ke id user) yang disimpan; kode
+  // mentah hanya ada di email.
+  emailOtpHash?: string;
+  emailOtpExpiresAt?: string;
+  emailOtpAttempts?: number;
+  emailOtpSentAt?: string;
+  approvedById?: string;
+  approvedByName?: string;
+  approvedAt?: string;
 }
 
 // Bentuk user yang aman dikirim ke frontend (tanpa passwordHash / reset token)
-export type SafeUser = Omit<User, "passwordHash" | "resetTokenHash" | "resetTokenExpiresAt" | "totpSecret" | "totpBackupCodeHashes">;
+export type SafeUser = Omit<User, "passwordHash" | "resetTokenHash" | "resetTokenExpiresAt" | "totpSecret" | "totpBackupCodeHashes" | "emailOtpHash" | "emailOtpExpiresAt" | "emailOtpAttempts" | "emailOtpSentAt">;
 
 export interface Clause {
   id: string;

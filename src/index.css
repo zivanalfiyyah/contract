@@ -309,6 +309,44 @@ table:has(> thead):not(.plain-table) > tbody > tr > td:last-child { border-top-r
 }
 .btn-grad-primary:hover { filter: brightness(1.05); }
 
+/* ---- LAYAR MASUK / DAFTAR ----
+   Panel identitas memakai biru yang sama dengan tombol & menu aktif, makin
+   ke sudut kanan bawah bergeser ke peach — versi pekat dari .btn-grad-primary,
+   supaya teks putih tetap terbaca. Ikut mode gelap lewat variabel indigo-. */
+.auth-brand {
+  background-color: var(--color-indigo-800);
+  background-image:
+    radial-gradient(70% 55% at 100% 100%, color-mix(in srgb, var(--color-peach-strong) 55%, transparent) 0%, transparent 70%),
+    linear-gradient(150deg, var(--color-indigo-900) 0%, var(--color-indigo-800) 45%, var(--color-indigo-700) 100%);
+}
+.dark .auth-brand {
+  background-image:
+    radial-gradient(70% 55% at 100% 100%, color-mix(in srgb, var(--color-peach-strong) 28%, transparent) 0%, transparent 70%),
+    linear-gradient(150deg, var(--color-indigo-950) 0%, var(--color-indigo-900) 45%, var(--color-indigo-700) 100%);
+}
+/* Tombol utama layar masuk: arah gradasi sama dengan .btn-grad-primary,
+   tapi dimulai dari biru lebih pekat supaya teks putihnya terbaca jelas. */
+.auth-cta {
+  background-image: linear-gradient(135deg, var(--color-indigo-800) 0%, var(--color-indigo-700) 70%, color-mix(in srgb, var(--color-indigo-700) 70%, var(--color-peach-strong)) 130%);
+}
+/* App.tsx menskalakan seluruh UI lewat `zoom` di <html> (variabel --ui-zoom)
+   pada layar < 1517px. `100vh` TIDAK ikut terskala, jadi tingginya harus
+   dibagi zoom — pola yang sama dipakai sidebar aplikasi. Tanpa ini layar
+   masuk hanya terisi ±90% tinggi layar laptop (sisa ruang kosong di bawah). */
+.auth-screen { min-height: calc(100vh / var(--ui-zoom, 1)); }
+/* Tepi gelombang panel kiri (Opsi A): lapisan depan = warna panel form
+   (putih / gelap ikut tema), lapisan belakang = biru muda transparan. */
+.auth-wave-front { fill: var(--color-slate-900); }
+.auth-wave-back { fill: var(--color-soft-blue); fill-opacity: 0.45; }
+/* Ikon bulat di atas judul form: terang = biru tua di atas biru muda,
+   gelap = biru muda di atas biru gelap (kontras terjaga di dua tema). */
+.auth-head-icon { background: #dcedfa; border-color: #eff7fd; color: #2a6293; }
+.dark .auth-head-icon { background: #1f5272; border-color: #174058; color: #a6d2f2; }
+.auth-cta-lift { box-shadow: 0 10px 24px -10px color-mix(in srgb, var(--color-indigo-900) 60%, transparent) !important; }
+/* Tahap yang sedang berjalan: biru → peach, senada dengan tombol utama. */
+.auth-step-current { background-image: linear-gradient(90deg, var(--color-indigo-500), var(--color-peach-strong)); }
+.auth-dot-current { background: var(--color-peach-strong); box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-peach-strong) 35%, transparent); }
+
 /* Modal form: panel melayang di tengah, latar halaman diburamkan */
 .modal-backdrop { background: color-mix(in srgb, var(--color-slate-950) 45%, transparent); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); animation: modal-fade .18s ease-out; }
 .modal-panel { box-shadow: var(--shadow-soft) !important; animation: modal-pop .2s ease-out; }

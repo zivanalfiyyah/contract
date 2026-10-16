@@ -64,7 +64,7 @@ export function hashResetToken(rawToken: string): string {
 }
 
 export function stripUser(u: User): SafeUser {
-  const { passwordHash, resetTokenHash, resetTokenExpiresAt, totpSecret, totpBackupCodeHashes, ...safe } = u;
+  const { passwordHash, resetTokenHash, resetTokenExpiresAt, totpSecret, totpBackupCodeHashes, emailOtpHash, emailOtpExpiresAt, emailOtpAttempts, emailOtpSentAt, ...safe } = u;
   return safe;
 }
 

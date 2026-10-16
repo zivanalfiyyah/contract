@@ -114,6 +114,15 @@ import {
   ThumbsUp,
   ThumbsDown,
   StickyNote,
+  Mail,
+  MailCheck,
+  UserPlus,
+  ArrowLeft,
+  KeyRound,
+  ShieldCheck,
+  UserX,
+  Hourglass,
+  BarChart3,
 } from "lucide-react";
 import {
   Clause,
@@ -5160,6 +5169,10 @@ export default function App() {
   const [notifTab, setNotifTab] = useState<"all" | "unread">("all");
   // Halaman daftar di kartu dashboard (10 item per halaman).
   const [apprPage, setApprPage] = useState(1);
+  // Kartu "Info Kontrak" di dashboard → "Lihat semua" membuka daftar semua
+  // kontrak, diurutkan dari yang paling baru dibuat.
+  const [recentModalOpen, setRecentModalOpen] = useState(false);
+  const [recentQuery, setRecentQuery] = useState("");
   const isDesktop = useMediaQuery("(min-width: 768px)");
   // Skala UI seragam: tampilan di layar/zoom berapa pun SAMA dengan tampilan
   // di lebar acuan 1517px (≈ layar 1366 pada zoom 90%). Di bawah lebar itu
@@ -5278,7 +5291,34 @@ export default function App() {
   // Lupa password: layar login bisa berganti mode tanpa router terpisah
   // (SPA ini tidak pakai react-router) — "reset" dipicu otomatis kalau URL
   // punya ?resetToken=... (dari tautan di email).
-  const [authGateMode, setAuthGateMode] = useState<"login" | "forgot" | "reset">("login");
+  // "register" = halaman Daftar; "otp" = memasukkan kode verifikasi 6 angka
+  // yang dikirim ke email (setelah daftar, atau dari login yang ditolak karena
+  // email belum diverifikasi). Kode benar → akun aktif & langsung masuk.
+  const [authGateMode, setAuthGateMode] = useState<"login" | "forgot" | "reset" | "register" | "otp">("login");
+  const [registerForm, setRegisterForm] = useState({ registrationCode: "", name: "", email: "", password: "", confirmPassword: "", role: "staff" });
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState("");
+  // Email yang sedang diverifikasi + kode OTP (devOtp hanya dikirim server di
+  // lokal/dev tanpa SMTP, supaya alur tetap bisa diuji).
+  const [otpState, setOtpState] = useState<{ email: string; devOtp?: string } | null>(null);
+  const [otpCode, setOtpCode] = useState("");
+  const [otpBusy, setOtpBusy] = useState(false);
+  const [otpError, setOtpError] = useState("");
+  const [resendCooldown, setResendCooldown] = useState(0);
+  // Kode alasan login ditolak dari server: "EMAIL_UNVERIFIED" → tombol
+  // "Masukkan kode verifikasi".
+  const [loginErrorCode, setLoginErrorCode] = useState("");
+  const loginNeedsVerify = loginErrorCode === "EMAIL_UNVERIFIED";
+  const [resendBusy, setResendBusy] = useState(false);
+  const [resendMessage, setResendMessage] = useState<{ text: string; ok: boolean } | null>(null);
+  // Hitung mundur tombol "Kirim ulang kode" (server menolak < 60 detik).
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = window.setTimeout(() => setResendCooldown((n) => n - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [resendCooldown]);
+  // Tautan dari email/push admin (?config=pengguna) — dibuka setelah login.
+  const [pendingDeepLinkConfig, setPendingDeepLinkConfig] = useState<string | null>(null);
   const [forgotEmail, setForgotEmail] = useState("");
   const [isSendingReset, setIsSendingReset] = useState(false);
   const [forgotMessage, setForgotMessage] = useState<{ text: string; ok: boolean } | null>(null);
@@ -6660,6 +6700,13 @@ export default function App() {
       const rest = params.toString();
       window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
     }
+    const configFromUrl = params.get("config");
+    if (configFromUrl) {
+      setPendingDeepLinkConfig(configFromUrl);
+      params.delete("config");
+      const rest = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (rest ? `?${rest}` : ""));
+    }
     // "Ingat saya" hanya mengingat ALAMAT EMAIL (localStorage) supaya tidak
     // perlu diketik ulang — password mentah TIDAK PERNAH disimpan di
     // localStorage/browser storage manapun oleh kode ini; "ingat password"
@@ -6694,6 +6741,9 @@ export default function App() {
               const c = contracts.find((x) => x.id === id);
               if (c) { setSelectedContract(c); setActiveTab("monitoring"); }
             }
+          } else if (url.includes("config=")) {
+            const k = new URLSearchParams(url.split("?")[1]).get("config");
+            if (k) setPendingDeepLinkConfig(k);
           } else if (url.includes("dcsDocument=")) {
             const id = new URLSearchParams(url.split("?")[1]).get("dcsDocument");
             if (id) {
@@ -6784,6 +6834,8 @@ export default function App() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError("");
+    setLoginErrorCode("");
+    setResendMessage(null);
     setIsLoggingIn(true);
     try {
       const res = await fetch("/api/auth/login", {
@@ -6817,6 +6869,7 @@ export default function App() {
         fetchRegulations();
       } else {
         setLoginError(data.error || "Login gagal");
+        setLoginErrorCode(data.code || "");
       }
     } catch (err) {
       setLoginError("Tidak dapat menghubungi server");
@@ -6907,6 +6960,111 @@ export default function App() {
     } finally {
       setIsResettingPassword(false);
     }
+  };
+
+  // ===== PENDAFTARAN MANDIRI =====
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRegisterError("");
+    const f = registerForm;
+    if (!f.registrationCode.trim()) { setRegisterError("Kode pendaftaran wajib diisi. Minta kodenya ke admin perusahaan Anda."); return; }
+    if (f.password.length < 8) { setRegisterError("Kata sandi minimal 8 karakter."); return; }
+    if (f.password !== f.confirmPassword) { setRegisterError("Konfirmasi kata sandi tidak cocok."); return; }
+    setIsRegistering(true);
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ registrationCode: f.registrationCode, name: f.name, email: f.email, password: f.password, role: f.role }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) { setRegisterError(data.error || "Pendaftaran gagal. Coba lagi."); return; }
+      setOtpState({ email: data.email || f.email.trim().toLowerCase(), devOtp: data.devOtp });
+      setOtpCode(""); setOtpError(""); setResendMessage(null);
+      setResendCooldown(60);
+      setAuthGateMode("otp");
+    } catch {
+      setRegisterError("Tidak dapat menghubungi server");
+    } finally {
+      setIsRegistering(false);
+    }
+  };
+
+  // Minta kode OTP baru. Dari layar login (email belum diverifikasi) sekalian
+  // pindah ke layar memasukkan kode.
+  const handleResendVerification = async (email: string) => {
+    const target = email.trim().toLowerCase();
+    if (!target) return;
+    if (authGateMode !== "otp") {
+      setOtpState({ email: target }); setOtpCode(""); setOtpError("");
+      setAuthGateMode("otp");
+    }
+    setResendBusy(true);
+    setResendMessage(null);
+    try {
+      const res = await fetch("/api/auth/resend-verification", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: target }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 429 && data.retryAfter) {
+        setResendCooldown(Number(data.retryAfter) || 60);
+        setResendMessage({ text: data.error, ok: false });
+        return;
+      }
+      setResendMessage({ text: res.ok ? "Kode baru sudah dikirim. Cek email Anda." : (data.error || "Gagal mengirim kode."), ok: res.ok });
+      if (res.ok) { setResendCooldown(60); setOtpState((o) => ({ email: o?.email || target, devOtp: data.devOtp })); }
+    } catch {
+      setResendMessage({ text: "Tidak dapat menghubungi server", ok: false });
+    } finally {
+      setResendBusy(false);
+    }
+  };
+
+  // Kode benar → server mengaktifkan akun & membuka sesi; langsung masuk.
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otpState) return;
+    setOtpError("");
+    setOtpBusy(true);
+    try {
+      const res = await fetch("/api/auth/verify-otp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: otpState.email, code: otpCode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success) { setOtpError(data.error || "Verifikasi gagal."); return; }
+      setOtpState(null); setOtpCode("");
+      setRegisterForm({ registrationCode: "", name: "", email: "", password: "", confirmPassword: "", role: "staff" });
+      setAuthGateMode("login");
+      setCurrentUser(data.user);
+      showToast(`Selamat datang, ${data.user.name}! Akun Anda sudah aktif.`, "success");
+      const meRes = await fetch("/api/auth/me");
+      const meData = await meRes.json();
+      setCurrentTenant(meData.tenant);
+      setDelegatedToMe(meData.delegatedToMe || []);
+      setMyDelegation(meData.myDelegation || null);
+      fetchInitialData();
+      fetchRegulations();
+    } catch {
+      setOtpError("Tidak dapat menghubungi server");
+    } finally {
+      setOtpBusy(false);
+    }
+  };
+
+  // Pindah antar-mode layar masuk sambil membersihkan pesan dari mode lain,
+  // supaya error login lama tidak ikut muncul di halaman Daftar & sebaliknya.
+  // (Isi form Daftar sengaja dipertahankan supaya "Ganti email" dari layar
+  // kode tidak membuat orang mengetik ulang semuanya.)
+  const switchAuthMode = (mode: "login" | "forgot" | "register") => {
+    setAuthGateMode(mode);
+    setLoginError(""); setLoginErrorCode("");
+    setRegisterError(""); setOtpError("");
+    setForgotMessage(null); setResetMessage(null); setResendMessage(null);
+    if (mode === "forgot") setForgotEmail(loginForm.email);
   };
 
   const handleLogout = async () => {
@@ -11281,7 +11439,9 @@ export default function App() {
     setDcsBusy(true);
     try {
       const users = await fetch("/api/users").then((r) => r.json()).catch(() => []);
-      const userIds = Array.isArray(users) ? users.map((u: any) => u.id) : [];
+      // Pendaftar yang belum disetujui admin bukan (belum) anggota perusahaan —
+      // jangan ikut menerima distribusi "wajib baca".
+      const userIds = Array.isArray(users) ? users.filter((u: any) => !u.registrationStatus).map((u: any) => u.id) : [];
       if (userIds.length === 0) { showToast("Tidak ada pengguna untuk didistribusikan", "warning"); return; }
       const res = await fetch(`/api/dcs/versions/${versionId}/distribute`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userIds, mandatory: true }),
@@ -11390,6 +11550,71 @@ export default function App() {
     }
   };
 
+  // ===== PENDAFTAR BELUM VERIFIKASI & KODE PENDAFTARAN =====
+  // Pendaftaran kini langsung aktif setelah kode OTP benar — tanpa persetujuan
+  // admin. Yang tersisa di sini hanya jalan keluar untuk pendaftar yang belum
+  // memasukkan kode (email tidak sampai): Aktifkan manual atau Hapus.
+  const [registrationBusyId, setRegistrationBusyId] = useState<string | null>(null);
+  const tenantQS = userMgmtTenantId ? `?tenantId=${encodeURIComponent(userMgmtTenantId)}` : "";
+  // null = tidak sedang mengedit kode pendaftaran.
+  const [regCodeDraft, setRegCodeDraft] = useState<string | null>(null);
+  const [regCodeSaving, setRegCodeSaving] = useState(false);
+
+  const handleApproveRegistration = async (u: any) => {
+    if (!(await askConfirm(`${u.name} (${u.email}) belum memasukkan kode verifikasi email. Aktifkan sekarang sebagai ${roleLabel(u.role)}? Lakukan hanya bila Anda yakin email & orangnya benar.`, { title: "Aktifkan Tanpa Verifikasi", confirmLabel: "Ya, Aktifkan", danger: false }))) return;
+    setRegistrationBusyId(u.id);
+    try {
+      const res = await fetch(`/api/users/${u.id}/approve-registration${tenantQS}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) { showToast(`${u.name} diaktifkan sebagai ${roleLabel(u.role)}.`, "success"); fetchTenantUsers(); }
+      else showToast(data.error || "Gagal mengaktifkan pendaftar", "warning");
+    } catch { showToast("Gagal mengaktifkan pendaftar", "warning"); }
+    finally { setRegistrationBusyId(null); }
+  };
+
+  const handleRejectRegistration = async (u: any) => {
+    if (!(await askConfirm(`Pendaftaran ${u.name} (${u.email}) yang belum diverifikasi akan dihapus. Email itu bisa dipakai mendaftar ulang.`, { title: "Hapus Pendaftaran", confirmLabel: "Hapus" }))) return;
+    setRegistrationBusyId(u.id);
+    try {
+      const res = await fetch(`/api/users/${u.id}/reject-registration${tenantQS}`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (data.success) { showToast(`Pendaftaran ${u.name} dihapus.`, "success"); fetchTenantUsers(); }
+      else showToast(data.error || "Gagal menghapus pendaftaran", "warning");
+    } catch { showToast("Gagal menghapus pendaftaran", "warning"); }
+    finally { setRegistrationBusyId(null); }
+  };
+
+  // Kode acak yang mudah dibacakan: tanpa huruf/angka yang mirip (0/O, 1/I).
+  const randomRegistrationCode = (prefix: string) => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let tail = "";
+    for (let i = 0; i < 4; i++) tail += chars.charAt(Math.floor(Math.random() * chars.length));
+    return `${(prefix || "KODE").replace(/[^A-Z0-9]/g, "").slice(0, 8) || "KODE"}-${tail}`;
+  };
+
+  const handleSaveRegistrationCode = async () => {
+    if (regCodeDraft === null) return;
+    setRegCodeSaving(true);
+    try {
+      const res = await fetch(`/api/registration-code${tenantQS}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: regCodeDraft, ...(userMgmtTenantId ? { tenantId: userMgmtTenantId } : {}) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!data.success) { showToast(data.error || "Gagal menyimpan kode pendaftaran", "warning"); return; }
+      showToast(`Kode pendaftaran diganti menjadi ${data.code}. Kode lama tidak berlaku lagi.`, "success");
+      setRegCodeDraft(null);
+      if (userMgmtTenantId) {
+        setAllTenants((list) => list.map((t) => (t.id === userMgmtTenantId ? { ...t, registrationCode: data.code, registrationCodeEffective: data.code } : t)));
+      } else {
+        setCurrentTenant((t: any) => (t ? { ...t, registrationCode: data.code, registrationCodeEffective: data.code } : t));
+      }
+    } catch { showToast("Gagal menyimpan kode pendaftaran", "warning"); }
+    finally { setRegCodeSaving(false); }
+  };
+
   // ===== TENANT MANAGEMENT (super_admin, lintas perusahaan) =====
   const fetchAllTenants = async () => {
     try {
@@ -11493,6 +11718,19 @@ export default function App() {
     if (k === "masterdata") fetchDcsNumberingRule();
     if (k === "dcsclauses") fetchDcsClauses();
   };
+
+  // Buka tab Konfigurasi dari tautan email/push (mis. "Tinjau Pendaftaran"
+  // → ?config=pengguna) begitu sesi login sudah ada. Tab Pengguna hanya untuk
+  // admin; peran lain cukup diabaikan.
+  useEffect(() => {
+    if (!currentUser || !pendingDeepLinkConfig) return;
+    const k = pendingDeepLinkConfig;
+    setPendingDeepLinkConfig(null);
+    if (k !== "pengguna") return;
+    if (currentUser.role !== "admin" && currentUser.role !== "super_admin") return;
+    goConfig(k);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, pendingDeepLinkConfig]);
 
   // Indeks pencarian pengaturan (beranda berpandu): tiap entri punya kata kunci
   // + tujuan. Sengaja statis (bukan di-scan otomatis) supaya labelnya ramah
@@ -12828,255 +13066,577 @@ export default function App() {
   }
 
   if (!currentUser) {
+    // ===== LAYAR MASUK (login / daftar / lupa & reset sandi / verifikasi) =====
+    // Mengikuti tema aplikasi: kartu putih bersudut 28px + bayangan lembut
+    // (sama dengan .table-card), panel identitas bergradasi biru → peach, tombol
+    // utama btn-grad-primary seperti tombol utama di halaman lain. Semua warna
+    // lewat variabel slate-/indigo- di index.css, jadi mode gelap ikut otomatis.
+    const inputCls = "w-full h-12 px-4 bg-slate-950 border border-slate-800 rounded-[14px] text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/15 transition";
+    const iconInputCls = inputCls + " pl-11";
+    const labelCls = "block text-[13px] font-bold text-slate-200";
+    const primaryBtnCls = "w-full h-[50px] px-4 rounded-full btn-grad-primary auth-cta auth-cta-lift text-white text-[15px] font-bold transition disabled:opacity-60 disabled:cursor-default flex items-center justify-center gap-2 cursor-pointer";
+    const linkCls = "text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer";
+    const fieldIconCls = "absolute left-4 top-1/2 -translate-y-1/2 w-[18px] h-[18px] text-slate-500 pointer-events-none";
+    const Alert = ({ kind, children }: { kind: "error" | "success" | "info" | "warn"; children: any }) => {
+      const tone = {
+        error: "bg-rose-500/10 border-rose-500/25 text-rose-400",
+        success: "bg-emerald-500/10 border-emerald-500/25 text-emerald-400",
+        info: "bg-indigo-500/10 border-indigo-500/25 text-indigo-400",
+        warn: "bg-amber-500/10 border-amber-500/25 text-amber-400",
+      }[kind];
+      return <div role={kind === "error" ? "alert" : "status"} className={`p-3 rounded-xl text-xs leading-relaxed border ${tone}`}>{children}</div>;
+    };
+    // Tiga tahap pendaftaran — ditampilkan di halaman Daftar & layar kode OTP.
+    const RegisterSteps = ({ done }: { done: number }) => (
+      <ol className="grid grid-cols-3 gap-2">
+        {["Isi data", "Verifikasi email", "Mulai bekerja"].map((label, i) => {
+          const state = i < done ? "done" : i === done ? "current" : "todo";
+          return (
+            <li key={label} className="space-y-1.5">
+              <div className={`h-1 rounded-full ${state === "done" ? "bg-indigo-500" : state === "current" ? "auth-step-current" : "bg-slate-800"}`} />
+              <p className={`text-[11px] font-medium ${state === "todo" ? "text-slate-500" : "text-slate-300"}`}>
+                {state === "done" && <Check className="inline w-3 h-3 mr-0.5 -mt-0.5 text-indigo-400" />}{label}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+    );
+    // Pilihan peran saat mendaftar. Admin sengaja TIDAK ada: tanpa persetujuan
+    // admin, siapa pun yang tahu kode pendaftaran bisa masuk — peran Admin
+    // hanya boleh diberikan admin lain lewat Kelola Pengguna.
+    const SELF_ROLE_OPTIONS = [
+      { value: "staff", label: "Staff", desc: "Buat & ajukan draf dokumen" },
+      { value: "legal", label: "Legal", desc: "Susun & tinjau kontrak" },
+      { value: "manager", label: "Manager", desc: "Setujui dokumen tim" },
+      { value: "viewer", label: "Viewer", desc: "Hanya melihat dokumen" },
+    ];
+
+    // Judul + ikon bulat di atas form (gaya Opsi A), per mode layar.
+    const heading: Record<typeof authGateMode, { Icon: any; title: string; sub: string }> = {
+      login: { Icon: Lock, title: "Masuk ke akun Anda", sub: "Masukkan email kerja & kata sandi untuk melanjutkan." },
+      register: { Icon: UserPlus, title: "Daftar akun baru", sub: "Gunakan kode pendaftaran dari admin perusahaan Anda." },
+      forgot: { Icon: KeyRound, title: "Reset kata sandi", sub: "Kami kirim tautan reset ke email yang terdaftar." },
+      reset: { Icon: KeyRound, title: "Buat kata sandi baru", sub: "Minimal 8 karakter. Gunakan kombinasi yang tidak mudah ditebak." },
+      otp: { Icon: MailCheck, title: "Masukkan kode verifikasi", sub: "Kami mengirim 6 angka ke email Anda. Kode berlaku 10 menit." },
+    };
+    const h = totpChallenge && authGateMode === "login"
+      ? { Icon: ShieldCheck, title: "Verifikasi dua langkah", sub: "Masukkan kode dari aplikasi authenticator Anda." }
+      : heading[authGateMode];
+    const HeadIcon = h.Icon;
+
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 font-sans">
-        <div className="w-full max-w-sm space-y-7">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-lg bg-indigo-500/10 border border-indigo-500/25 flex items-center justify-center">
-                <FileText className="text-indigo-400 w-[18px] h-[18px]" strokeWidth={2.25} />
-              </div>
-              <span className="text-[13px] font-semibold text-slate-300 tracking-tight">Smart CLM Enterprise</span>
-            </div>
-            <div className="space-y-1 pt-1">
-              <h1 className="font-bold text-2xl text-slate-100 tracking-tight">
-                {authGateMode === "login" && "Masuk"}
-                {authGateMode === "forgot" && "Reset kata sandi"}
-                {authGateMode === "reset" && "Kata sandi baru"}
-              </h1>
-              <p className="text-sm text-slate-400">
-                {authGateMode === "login" && "Portal kontrak perusahaan Anda."}
-                {authGateMode === "forgot" && "Kirim tautan reset ke email terdaftar."}
-                {authGateMode === "reset" && "Buat kata sandi baru untuk akun Anda."}
-              </p>
-            </div>
-          </div>
+      <div className="auth-screen text-slate-100 font-sans grid md:grid-cols-[minmax(0,1.05fr)_minmax(0,1fr)] bg-slate-900">
+          {/* Layar penuh: panel identitas mengisi setengah kiri dari atas sampai
+              bawah, panel form setengah kanan — tanpa kartu melayang. Tinggi lewat
+              .auth-screen (index.css) yang mengoreksi zoom UI global (100vh mentah
+              tidak ikut terskala). Di HP hanya panel form yang tampil. */}
+          {/* ---- Panel identitas (desktop/tablet) ---- */}
+          <aside className="auth-brand relative hidden md:flex text-white overflow-hidden">
+            {/* Ornamen lingkaran tipis (kanan atas) */}
+            <svg aria-hidden="true" viewBox="0 0 600 600" className="absolute right-16 -top-36 w-[460px] h-[460px] opacity-[0.18]" fill="none" stroke="#ffffff" strokeWidth="1.2"><circle cx="300" cy="300" r="290" /><circle cx="300" cy="300" r="210" /><circle cx="300" cy="300" r="130" /></svg>
+            {/* Tepi kanan bergelombang dua lapis: lapisan depan berwarna sama
+                dengan panel form, jadi kedua panel tampak "mengalir". */}
+            <svg aria-hidden="true" viewBox="0 0 140 900" preserveAspectRatio="none" className="absolute top-0 right-0 h-full w-[120px] lg:w-[140px]">
+              <path d="M140 0 L70 0 C 20 120, 120 260, 80 420 C 40 580, 10 700, 90 900 L140 900 Z" className="auth-wave-back" />
+              <path d="M140 0 L104 0 C 50 140, 140 280, 100 440 C 64 590, 44 720, 120 900 L140 900 Z" className="auth-wave-front" />
+            </svg>
 
-          {authGateMode === "login" && totpChallenge && (
-            <form onSubmit={handleTotpLoginVerify} className="space-y-4">
-              <div className="p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl text-xs text-indigo-300 flex items-center gap-2">
-                <ShieldAlert className="w-4 h-4 shrink-0" />
-                Akun ini memakai verifikasi dua langkah. Masukkan kode dari aplikasi authenticator Anda.
+            <div className="relative flex flex-col w-full pl-10 pr-32 py-10 lg:pl-16 lg:pr-40 lg:py-14">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-[14px] bg-white/15 border border-white/30 flex items-center justify-center">
+                  <FileText className="w-[22px] h-[22px] text-white" strokeWidth={2} />
+                </div>
+                <div className="flex flex-col gap-0.5 leading-tight">
+                  <span className="text-base font-bold tracking-tight">Smart CLM Enterprise</span>
+                  <span className="text-xs text-white/75">Contract Lifecycle Management</span>
+                </div>
               </div>
-              {totpLoginError && (
-                <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-400">{totpLoginError}</div>
-              )}
-              <div className="space-y-1.5">
-                <label className="block text-xs font-semibold text-slate-300">
-                  {totpLoginUseBackup ? "Kode Cadangan" : "Kode 6-Digit"}
-                </label>
-                <input
-                  type="text" required autoFocus
-                  inputMode={totpLoginUseBackup ? "text" : "numeric"}
-                  value={totpLoginCode}
-                  onChange={(e) => setTotpLoginCode(e.target.value)}
-                  placeholder={totpLoginUseBackup ? "XXXXX-XXXXX" : "123456"}
-                  maxLength={totpLoginUseBackup ? 11 : 6}
-                  className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 tracking-[0.3em] text-center font-mono focus:outline-none focus:border-indigo-500"
-                />
-              </div>
-              <button type="submit" disabled={isLoggingIn || !totpLoginCode.trim()}
-                className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer">
-                {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                Verifikasi
-              </button>
-              <div className="flex items-center justify-between text-xs">
-                <button type="button" onClick={() => { setTotpLoginUseBackup((v) => !v); setTotpLoginCode(""); setTotpLoginError(""); }}
-                  className="text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer">
-                  {totpLoginUseBackup ? "Pakai kode authenticator" : "Kehilangan HP? Pakai kode cadangan"}
-                </button>
-                <button type="button" onClick={() => { setTotpChallenge(null); setTotpLoginCode(""); setTotpLoginError(""); setTotpLoginUseBackup(false); }}
-                  className="text-slate-500 hover:text-slate-300 font-semibold cursor-pointer">
-                  ← Login ulang
-                </button>
-              </div>
-            </form>
-          )}
 
-          {authGateMode === "login" && !totpChallenge && (
-            <>
-              <form onSubmit={handleLogin} className="space-y-4">
-                {loginError && (
-                  <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-xs text-rose-400">
-                    {loginError}
-                  </div>
+              <div className="flex-1 flex flex-col justify-center gap-9 py-10">
+                {authGateMode === "register" || authGateMode === "otp" ? (
+                  <>
+                    <div className="space-y-2.5">
+                      <p className="text-lg font-semibold text-white/85">Bergabung dengan tim Anda</p>
+                      <h2 className="text-[40px] lg:text-[44px] leading-[1.12] font-extrabold tracking-tight">Buat akun dalam<br />3 langkah mudah</h2>
+                      <p className="pt-1 max-w-[420px] text-[15px] leading-relaxed text-white/80">Akun langsung aktif begitu email Anda terverifikasi dengan kode 6 angka.</p>
+                    </div>
+                    <ol className="space-y-5">
+                      {[
+                        { title: "Isi data diri", desc: "Kode pendaftaran, nama, email kerja, kata sandi & peran" },
+                        { title: "Verifikasi email", desc: "Masukkan kode 6 angka yang kami kirim ke email Anda" },
+                        { title: "Mulai bekerja", desc: "Akun langsung aktif — tanpa menunggu persetujuan" },
+                      ].map((s, i) => {
+                        // Tahap yang sedang dijalani disorot putih.
+                        const current = authGateMode === "otp" ? 1 : 0;
+                        return (
+                          <li key={s.title} className="flex items-center gap-3.5">
+                            <span className={`w-[46px] h-[46px] shrink-0 rounded-xl flex items-center justify-center text-[17px] font-extrabold ${i === current ? "bg-white text-[#2a6293]" : i < current ? "bg-white/25 text-white" : "bg-white/[0.14] border border-white/30"}`}>
+                              {i < current ? <Check className="w-5 h-5" strokeWidth={3} /> : i + 1}
+                            </span>
+                            <span className="flex flex-col gap-0.5">
+                              <span className="text-base font-bold">{s.title}</span>
+                              <span className="text-[13px] text-white/80">{s.desc}</span>
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-2.5">
+                      <p className="text-lg font-semibold text-white/85">Selamat datang kembali!</p>
+                      <h2 className="text-[40px] lg:text-[44px] leading-[1.12] font-extrabold tracking-tight">Senang melihat<br />Anda lagi!</h2>
+                      <p className="pt-1 max-w-[420px] text-[15px] leading-relaxed text-white/80">Kelola seluruh siklus kontrak perusahaan — dari draft, review, tanda tangan, sampai arsip — di satu tempat.</p>
+                    </div>
+                    <div className="flex items-end gap-6">
+                      <ul className="flex-1 space-y-5">
+                        {[
+                          { Icon: BarChart3, title: "Monitoring Kontrak", desc: "Pantau status & jatuh tempo secara real-time" },
+                          { Icon: ShieldCheck, title: "Keamanan Berlapis", desc: "Akses per peran & verifikasi dua langkah" },
+                          { Icon: Archive, title: "Arsip Rapi", desc: "Tersusun per PT, platform & jenis dokumen" },
+                        ].map(({ Icon, title, desc }) => (
+                          <li key={title} className="flex items-center gap-3.5">
+                            <span className="w-[46px] h-[46px] shrink-0 rounded-xl bg-white/[0.14] border border-white/30 flex items-center justify-center"><Icon className="w-[22px] h-[22px]" /></span>
+                            <span className="flex flex-col gap-0.5">
+                              <span className="text-base font-bold">{title}</span>
+                              <span className="text-[13px] text-white/80">{desc}</span>
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      {/* Ilustrasi map dokumen + kaca pembesar — hanya di layar lebar, supaya teks fitur di laptop tidak sesak */}
+                      <svg role="img" aria-label="Ilustrasi map dokumen kontrak dengan kaca pembesar" viewBox="0 0 300 260" className="hidden 2xl:block w-[240px] h-[208px] shrink-0">
+                        <ellipse cx="150" cy="244" rx="118" ry="12" fill="#1b4568" fillOpacity="0.35" />
+                        <path d="M40 78 a14 14 0 0 1 14 -14 h52 l16 16 h124 a14 14 0 0 1 14 14 v126 a14 14 0 0 1 -14 14 H54 a14 14 0 0 1 -14 -14 Z" fill="#234b6d" />
+                        <g transform="rotate(-9 120 120)"><rect x="70" y="40" width="104" height="132" rx="10" fill="#ffffff" /><rect x="84" y="58" width="60" height="8" rx="4" fill="#bddcf4" /><rect x="84" y="76" width="76" height="6" rx="3" fill="#dcedfa" /><rect x="84" y="90" width="70" height="6" rx="3" fill="#dcedfa" /><rect x="84" y="104" width="74" height="6" rx="3" fill="#dcedfa" /><circle cx="96" cy="140" r="14" fill="#f9cfa8" /><path d="M90 140 l4 4 l8 -8" fill="none" stroke="#e2691f" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></g>
+                        <g transform="rotate(8 190 110)"><rect x="140" y="34" width="100" height="128" rx="10" fill="#f6f9fd" /><rect x="154" y="50" width="72" height="44" rx="8" fill="#94c6ec" /><circle cx="170" cy="66" r="7" fill="#ffffff" fillOpacity="0.85" /><path d="M158 90 l18 -16 l14 12 l10 -8 l22 12 Z" fill="#5ba6dc" /><rect x="154" y="104" width="62" height="6" rx="3" fill="#dcedfa" /><rect x="154" y="118" width="70" height="6" rx="3" fill="#dcedfa" /></g>
+                        <path d="M30 118 a14 14 0 0 1 14 -14 h212 a14 14 0 0 1 14 14 l-12 98 a14 14 0 0 1 -14 12 H56 a14 14 0 0 1 -14 -12 Z" fill="#72b6e6" />
+                        <path d="M30 118 a14 14 0 0 1 14 -14 h212 a14 14 0 0 1 14 14 l-2 14 H32 Z" fill="#a9d3f0" fillOpacity="0.7" />
+                        <g transform="rotate(-38 236 186)"><rect x="228" y="196" width="18" height="52" rx="9" fill="#f9cfa8" /></g>
+                        <circle cx="214" cy="168" r="36" fill="#ffffff" fillOpacity="0.28" stroke="#ffffff" strokeWidth="10" />
+                      </svg>
+                    </div>
+                  </>
                 )}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-300">Email</label>
-                  <input
-                    type="email"
-                    required
-                    autoFocus
-                    autoComplete="username"
-                    value={loginForm.email}
-                    onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
-                    placeholder="nama@perusahaan.co"
-                    className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                  />
+              </div>
+
+              <p className="text-xs text-white/65">© {new Date().getFullYear()} Smart CLM Enterprise</p>
+            </div>
+          </aside>
+
+          {/* ---- Panel form ---- */}
+          <main className="relative min-h-full px-5 py-10 sm:px-10 lg:px-16 flex flex-col justify-center">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="absolute right-4 top-4 sm:right-5 sm:top-5 w-9 h-9 rounded-full bg-slate-950 hover:bg-slate-800 flex items-center justify-center transition cursor-pointer"
+              title={theme === "dark" ? "Ganti ke mode terang" : "Ganti ke mode gelap"}
+              aria-label={theme === "dark" ? "Ganti ke mode terang" : "Ganti ke mode gelap"}
+            >
+              {theme === "dark" ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-400" />}
+            </button>
+
+            <div className="w-full max-w-[420px] mx-auto space-y-6">
+              {/* Identitas ringkas untuk layar kecil (panel kiri disembunyikan) */}
+              <div className="md:hidden flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl auth-brand flex items-center justify-center">
+                  <FileText className="w-[18px] h-[18px] text-white" strokeWidth={2.25} />
                 </div>
+                <span className="text-[13px] font-bold text-slate-200 tracking-tight">Smart CLM Enterprise</span>
+              </div>
+
+              <div className="flex flex-col items-center gap-3.5 text-center">
+                <span className="auth-head-icon w-16 h-16 rounded-full border-[6px] flex items-center justify-center">
+                  <HeadIcon className="w-[26px] h-[26px]" />
+                </span>
                 <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-300">Kata Sandi</label>
-                  <div className="relative">
+                  <h1 className="font-extrabold text-[28px] leading-tight text-slate-100 tracking-tight">{h.title}</h1>
+                  <p className="text-sm text-slate-400 leading-relaxed">{h.sub}</p>
+                </div>
+              </div>
+
+              {/* ---------- LOGIN: langkah 2FA ---------- */}
+              {authGateMode === "login" && totpChallenge && (
+                <form onSubmit={handleTotpLoginVerify} className="space-y-4">
+                  <Alert kind="info">
+                    <span className="flex items-start gap-2"><ShieldAlert className="w-4 h-4 shrink-0 mt-px" />Masukkan kode dari aplikasi authenticator Anda.</span>
+                  </Alert>
+                  {totpLoginError && <Alert kind="error">{totpLoginError}</Alert>}
+                  <div className="space-y-1.5">
+                    <label htmlFor="auth-totp" className={labelCls}>{totpLoginUseBackup ? "Kode Cadangan" : "Kode 6-Digit"}</label>
                     <input
-                      type={showLoginPassword ? "text" : "password"}
-                      required
-                      autoComplete="current-password"
-                      value={loginForm.password}
-                      onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
-                      placeholder="••••••••"
-                      className="w-full px-4 py-2.5 pr-10 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                      id="auth-totp"
+                      type="text" required autoFocus
+                      autoComplete="one-time-code"
+                      inputMode={totpLoginUseBackup ? "text" : "numeric"}
+                      value={totpLoginCode}
+                      onChange={(e) => setTotpLoginCode(e.target.value)}
+                      placeholder={totpLoginUseBackup ? "XXXXX-XXXXX" : "123456"}
+                      maxLength={totpLoginUseBackup ? 11 : 6}
+                      className={inputCls + " h-12 tracking-[0.35em] text-center font-mono text-base"}
                     />
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      onClick={() => setShowLoginPassword((v) => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
-                      title={showLoginPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
-                    >
-                      {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
                   </div>
-                </div>
-                <div className="flex items-center justify-between">
-                  <label className="flex items-center gap-2 text-xs text-slate-400 cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={rememberMe}
-                      onChange={(e) => setRememberMe(e.target.checked)}
-                      className="w-3.5 h-3.5 rounded border-slate-700 bg-slate-900 accent-indigo-600 cursor-pointer"
-                    />
-                    Ingat saya
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => { setAuthGateMode("forgot"); setForgotMessage(null); setForgotEmail(loginForm.email); }}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
-                  >
-                    Lupa kata sandi?
+                  <button type="submit" disabled={isLoggingIn || !totpLoginCode.trim()} className={primaryBtnCls}>
+                    {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                    Verifikasi
                   </button>
-                </div>
-                <button
-                  type="submit"
-                  disabled={isLoggingIn}
-                  className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  Masuk
-                </button>
-              </form>
-              <p className="text-center text-[11px] text-slate-500">
-                Lupa akun atau tidak bisa reset sendiri? Hubungi admin perusahaan Anda.
-              </p>
-            </>
-          )}
-
-          {authGateMode === "forgot" && (
-            <>
-              <form onSubmit={handleForgotPassword} className="space-y-4">
-                {forgotMessage && (
-                  <div className={`p-3 rounded-xl text-xs border ${forgotMessage.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-rose-500/10 border-rose-500/30 text-rose-400"}`}>
-                    {forgotMessage.text}
-                  </div>
-                )}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-300">Email</label>
-                  <input
-                    type="email"
-                    required
-                    autoFocus
-                    autoComplete="email"
-                    value={forgotEmail}
-                    onChange={(e) => setForgotEmail(e.target.value)}
-                    placeholder="nama@perusahaan.co"
-                    className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={isSendingReset}
-                  className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {isSendingReset ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  Kirim Tautan Reset
-                </button>
-              </form>
-              <p className="text-center text-[11px] text-slate-500">
-                <button
-                  onClick={() => { setAuthGateMode("login"); setForgotMessage(null); }}
-                  className="text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
-                >
-                  ← Kembali ke halaman login
-                </button>
-              </p>
-            </>
-          )}
-
-          {authGateMode === "reset" && (
-            <>
-              <form onSubmit={handleResetPassword} className="space-y-4">
-                {resetMessage && (
-                  <div className={`p-3 rounded-xl text-xs border ${resetMessage.ok ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400" : "bg-rose-500/10 border-rose-500/30 text-rose-400"}`}>
-                    {resetMessage.text}
-                  </div>
-                )}
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-300">Password Baru</label>
-                  <div className="relative">
-                    <input
-                      type={showResetPassword ? "text" : "password"}
-                      required
-                      autoFocus
-                      autoComplete="new-password"
-                      minLength={8}
-                      value={resetForm.newPassword}
-                      onChange={(e) => setResetForm({ ...resetForm, newPassword: e.target.value })}
-                      placeholder="Minimal 8 karakter"
-                      className="w-full px-4 py-2.5 pr-10 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                    />
-                    <button
-                      type="button"
-                      tabIndex={-1}
-                      onClick={() => setShowResetPassword((v) => !v)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
-                      title={showResetPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
-                    >
-                      {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  <div className="flex items-center justify-between text-xs">
+                    <button type="button" onClick={() => { setTotpLoginUseBackup((v) => !v); setTotpLoginCode(""); setTotpLoginError(""); }} className={linkCls}>
+                      {totpLoginUseBackup ? "Pakai kode authenticator" : "Kehilangan HP? Pakai kode cadangan"}
+                    </button>
+                    <button type="button" onClick={() => { setTotpChallenge(null); setTotpLoginCode(""); setTotpLoginError(""); setTotpLoginUseBackup(false); }} className="text-slate-500 hover:text-slate-300 font-semibold cursor-pointer">
+                      ← Login ulang
                     </button>
                   </div>
+                </form>
+              )}
+
+              {/* ---------- LOGIN: email + kata sandi ---------- */}
+              {authGateMode === "login" && !totpChallenge && (
+                <>
+                  <form onSubmit={handleLogin} className="space-y-4">
+                    {loginError && (
+                      <Alert kind={loginNeedsVerify ? "warn" : "error"}>
+                        <p>{loginError}</p>
+                        {loginNeedsVerify && (
+                          <button type="button" disabled={resendBusy} onClick={() => handleResendVerification(loginForm.email)} className={`${linkCls} mt-2 inline-flex items-center gap-1.5 disabled:opacity-60`}>
+                            {resendBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <KeyRound className="w-3.5 h-3.5" />}
+                            Kirim kode baru &amp; masukkan kode verifikasi
+                          </button>
+                        )}
+                      </Alert>
+                    )}
+                    <div className="space-y-1.5">
+                      <label htmlFor="auth-email" className={labelCls}>Email</label>
+                      <div className="relative">
+                        <Mail className={fieldIconCls} />
+                        <input
+                          id="auth-email"
+                          type="email" required autoFocus autoComplete="username"
+                          value={loginForm.email}
+                          onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })}
+                          placeholder="nama@perusahaan.co"
+                          className={iconInputCls}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="auth-password" className={labelCls}>Kata Sandi</label>
+                      <div className="relative">
+                        <Lock className={fieldIconCls} />
+                        <input
+                          id="auth-password"
+                          type={showLoginPassword ? "text" : "password"}
+                          required autoComplete="current-password"
+                          value={loginForm.password}
+                          onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })}
+                          placeholder="Masukkan kata sandi"
+                          className={iconInputCls + " pr-11"}
+                        />
+                        <button
+                          type="button" tabIndex={-1}
+                          onClick={() => setShowLoginPassword((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                          title={showLoginPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
+                        >
+                          {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-[13px] text-slate-300 cursor-pointer select-none">
+                        <input type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className="cursor-pointer" />
+                        Ingat saya
+                      </label>
+                      <button type="button" onClick={() => switchAuthMode("forgot")} className={`text-[13px] ${linkCls} font-bold`}>Lupa kata sandi?</button>
+                    </div>
+                    <button type="submit" disabled={isLoggingIn} className={primaryBtnCls + " !mt-6"}>
+                      {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : null}
+                      Masuk
+                    </button>
+                  </form>
+                  <div className="flex items-center gap-3" aria-hidden="true">
+                    <span className="flex-1 h-px bg-slate-800" />
+                    <span className="text-xs text-slate-500">atau</span>
+                    <span className="flex-1 h-px bg-slate-800" />
+                  </div>
+                  <button type="button" onClick={() => switchAuthMode("register")} className="w-full h-[50px] rounded-full border border-slate-700 bg-slate-900 hover:bg-slate-950 text-slate-200 text-sm font-bold flex items-center justify-center gap-2.5 transition cursor-pointer">
+                    <UserPlus className="w-[18px] h-[18px] text-indigo-400" /> Daftar dengan kode perusahaan
+                  </button>
+                  <p className="text-center text-[13px] text-slate-400">Butuh bantuan? <span className="font-bold text-indigo-400">Hubungi admin perusahaan</span></p>
+                </>
+              )}
+
+              {/* ---------- DAFTAR ---------- */}
+              {authGateMode === "register" && (
+                <>
+                  <RegisterSteps done={0} />
+                  <form onSubmit={handleRegister} className="space-y-4">
+                    {registerError && <Alert kind="error">{registerError}</Alert>}
+                    <div className="space-y-1.5">
+                      <label htmlFor="reg-code" className={labelCls}>Kode Pendaftaran</label>
+                      <div className="relative">
+                        <Building2 className={fieldIconCls} />
+                        <input
+                          id="reg-code"
+                          type="text" required autoFocus autoComplete="off" spellCheck={false}
+                          maxLength={20}
+                          value={registerForm.registrationCode}
+                          onChange={(e) => setRegisterForm({ ...registerForm, registrationCode: e.target.value.toUpperCase() })}
+                          placeholder="Contoh: TBK-2026"
+                          className={iconInputCls + " uppercase tracking-wider font-semibold placeholder:normal-case placeholder:tracking-normal placeholder:font-normal"}
+                        />
+                      </div>
+                      <p className="text-[11px] text-slate-500">Didapat dari admin perusahaan tempat Anda bekerja.</p>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="reg-name" className={labelCls}>Nama Lengkap</label>
+                      <div className="relative">
+                        <User className={fieldIconCls} />
+                        <input
+                          id="reg-name"
+                          type="text" required autoComplete="name" maxLength={100}
+                          value={registerForm.name}
+                          onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
+                          placeholder="Sesuai data karyawan"
+                          className={iconInputCls}
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="reg-email" className={labelCls}>Email Kerja</label>
+                      <div className="relative">
+                        <Mail className={fieldIconCls} />
+                        <input
+                          id="reg-email"
+                          type="email" required autoComplete="email"
+                          value={registerForm.email}
+                          onChange={(e) => setRegisterForm({ ...registerForm, email: e.target.value })}
+                          placeholder="nama@perusahaan.co"
+                          className={iconInputCls}
+                        />
+                      </div>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <label htmlFor="reg-password" className={labelCls}>Kata Sandi</label>
+                        <div className="relative">
+                          <input
+                            id="reg-password"
+                            type={showLoginPassword ? "text" : "password"}
+                            required minLength={8} autoComplete="new-password"
+                            value={registerForm.password}
+                            onChange={(e) => setRegisterForm({ ...registerForm, password: e.target.value })}
+                            placeholder="Min. 8 karakter"
+                            className={inputCls + " pr-10"}
+                          />
+                          <button
+                            type="button" tabIndex={-1}
+                            onClick={() => setShowLoginPassword((v) => !v)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                            title={showLoginPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
+                          >
+                            {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <label htmlFor="reg-password2" className={labelCls}>Ulangi Kata Sandi</label>
+                        <input
+                          id="reg-password2"
+                          type={showLoginPassword ? "text" : "password"}
+                          required minLength={8} autoComplete="new-password"
+                          value={registerForm.confirmPassword}
+                          onChange={(e) => setRegisterForm({ ...registerForm, confirmPassword: e.target.value })}
+                          placeholder="Ketik ulang"
+                          className={inputCls + (registerForm.confirmPassword && registerForm.confirmPassword !== registerForm.password ? " !border-rose-400" : "")}
+                        />
+                      </div>
+                    </div>
+                    <fieldset className="space-y-1.5">
+                      <legend className={labelCls + " mb-1.5"}>Peran Anda</legend>
+                      <div className="grid grid-cols-2 gap-2">
+                        {SELF_ROLE_OPTIONS.map((r) => {
+                          const on = registerForm.role === r.value;
+                          return (
+                            <label key={r.value} className={`flex items-start gap-2.5 p-3 rounded-[14px] border cursor-pointer transition ${on ? "border-indigo-500 bg-indigo-500/10" : "border-slate-800 bg-slate-950 hover:border-slate-700"}`}>
+                              <input type="radio" name="reg-role" value={r.value} checked={on} onChange={() => setRegisterForm({ ...registerForm, role: r.value })} className="mt-0.5 accent-[#3b7fb6] cursor-pointer" />
+                              <span className="flex flex-col gap-0.5 min-w-0">
+                                <span className="text-[13px] font-bold text-slate-100">{r.label}</span>
+                                <span className="text-[11px] leading-snug text-slate-400">{r.desc}</span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[11px] text-slate-500">Peran Admin hanya bisa diberikan oleh admin perusahaan.</p>
+                    </fieldset>
+                    <button type="submit" disabled={isRegistering} className={primaryBtnCls}>
+                      {isRegistering ? <RefreshCw className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
+                      Daftar &amp; kirim kode verifikasi
+                    </button>
+                  </form>
+                  <p className="pt-5 border-t border-slate-800 text-center text-xs text-slate-400">
+                    Sudah punya akun?{" "}
+                    <button type="button" onClick={() => switchAuthMode("login")} className={linkCls}>Masuk</button>
+                  </p>
+                </>
+              )}
+
+              {/* ---------- KODE OTP (verifikasi email) ---------- */}
+              {authGateMode === "otp" && otpState && (
+                <div className="space-y-5">
+                  <RegisterSteps done={1} />
+                  <div className="flex gap-3.5 p-4 rounded-2xl bg-slate-950">
+                    <div className="w-11 h-11 shrink-0 rounded-xl btn-grad-soft flex items-center justify-center">
+                      <Mail className="w-5 h-5 text-indigo-400" />
+                    </div>
+                    <div className="space-y-1 min-w-0">
+                      <p className="text-sm text-slate-300">Kode dikirim ke</p>
+                      <p className="text-sm font-bold text-slate-100 break-all">{otpState.email}</p>
+                      <p className="text-xs text-slate-400 leading-relaxed">Tidak ada di kotak masuk? Cek folder Spam/Promosi.</p>
+                    </div>
+                  </div>
+                  {otpState.devOtp && (
+                    <div className="p-3 rounded-xl border border-dashed border-amber-500/40 bg-amber-500/5 text-[11px] text-amber-400 space-y-1">
+                      <p className="font-semibold">Mode pengembangan — SMTP belum diatur</p>
+                      <p className="text-slate-400">Email tidak benar-benar terkirim. Kode untuk uji coba: <b className="font-mono text-[13px] tracking-[0.2em] text-slate-100">{otpState.devOtp}</b></p>
+                    </div>
+                  )}
+                  <form onSubmit={handleVerifyOtp} className="space-y-4">
+                    {otpError && <Alert kind="error">{otpError}</Alert>}
+                    {resendMessage && <Alert kind={resendMessage.ok ? "success" : "warn"}>{resendMessage.text}</Alert>}
+                    <div className="space-y-1.5">
+                      <label htmlFor="otp-code" className={labelCls}>Kode Verifikasi</label>
+                      <input
+                        id="otp-code"
+                        type="text" required autoFocus
+                        inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}"
+                        maxLength={6}
+                        value={otpCode}
+                        onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        placeholder="••••••"
+                        className={inputCls + " !h-14 text-center font-mono text-2xl font-bold tracking-[0.5em] placeholder:tracking-[0.5em]"}
+                      />
+                    </div>
+                    <button type="submit" disabled={otpBusy || otpCode.length !== 6} className={primaryBtnCls}>
+                      {otpBusy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                      Verifikasi &amp; masuk
+                    </button>
+                  </form>
+                  <div className="flex items-center justify-between text-[13px]">
+                    <button
+                      type="button"
+                      disabled={resendBusy || resendCooldown > 0}
+                      onClick={() => handleResendVerification(otpState.email)}
+                      className={`${linkCls} font-bold inline-flex items-center gap-1.5 disabled:text-slate-500 disabled:cursor-default`}
+                    >
+                      {resendBusy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                      {resendCooldown > 0 ? `Kirim ulang kode (${resendCooldown} dtk)` : "Kirim ulang kode"}
+                    </button>
+                    <button type="button" onClick={() => switchAuthMode("register")} className="text-slate-400 hover:text-slate-200 font-semibold cursor-pointer inline-flex items-center gap-1">
+                      <ArrowLeft className="w-3.5 h-3.5" /> Ganti email
+                    </button>
+                  </div>
+                  <p className="pt-5 border-t border-slate-800 text-center text-xs text-slate-400">
+                    Sudah punya akun aktif?{" "}
+                    <button type="button" onClick={() => switchAuthMode("login")} className={linkCls}>Masuk</button>
+                  </p>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold text-slate-300">Konfirmasi Password Baru</label>
-                  <input
-                    type={showResetPassword ? "text" : "password"}
-                    required
-                    autoComplete="new-password"
-                    minLength={8}
-                    value={resetForm.confirmPassword}
-                    onChange={(e) => setResetForm({ ...resetForm, confirmPassword: e.target.value })}
-                    placeholder="Ulangi password baru"
-                    className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  disabled={isResettingPassword}
-                  className="w-full px-4 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-xl transition shadow-lg flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  {isResettingPassword ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  Simpan Password Baru
-                </button>
-              </form>
-              <p className="text-center text-[11px] text-slate-500">
-                <button
-                  onClick={() => { setAuthGateMode("login"); setResetMessage(null); }}
-                  className="text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
-                >
-                  ← Kembali ke halaman login
-                </button>
-              </p>
-            </>
-          )}
-        </div>
+              )}
+
+              {/* ---------- LUPA KATA SANDI ---------- */}
+              {authGateMode === "forgot" && (
+                <>
+                  <form onSubmit={handleForgotPassword} className="space-y-4">
+                    {forgotMessage && <Alert kind={forgotMessage.ok ? "success" : "error"}>{forgotMessage.text}</Alert>}
+                    <div className="space-y-1.5">
+                      <label htmlFor="forgot-email" className={labelCls}>Email</label>
+                      <div className="relative">
+                        <Mail className={fieldIconCls} />
+                        <input
+                          id="forgot-email"
+                          type="email" required autoFocus autoComplete="email"
+                          value={forgotEmail}
+                          onChange={(e) => setForgotEmail(e.target.value)}
+                          placeholder="nama@perusahaan.co"
+                          className={iconInputCls}
+                        />
+                      </div>
+                    </div>
+                    <button type="submit" disabled={isSendingReset} className={primaryBtnCls}>
+                      {isSendingReset ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      Kirim Tautan Reset
+                    </button>
+                  </form>
+                  <div className="pt-5 border-t border-slate-800 text-center space-y-1">
+                    <button type="button" onClick={() => switchAuthMode("login")} className={`text-xs ${linkCls} inline-flex items-center gap-1`}>
+                      <ArrowLeft className="w-3.5 h-3.5" /> Kembali ke halaman login
+                    </button>
+                    <p className="text-[11px] text-slate-500">Tidak bisa reset sendiri? Hubungi admin perusahaan Anda.</p>
+                  </div>
+                </>
+              )}
+
+              {/* ---------- KATA SANDI BARU (dari tautan reset) ---------- */}
+              {authGateMode === "reset" && (
+                <>
+                  <form onSubmit={handleResetPassword} className="space-y-4">
+                    {resetMessage && <Alert kind={resetMessage.ok ? "success" : "error"}>{resetMessage.text}</Alert>}
+                    <div className="space-y-1.5">
+                      <label htmlFor="reset-password" className={labelCls}>Kata Sandi Baru</label>
+                      <div className="relative">
+                        <KeyRound className={fieldIconCls} />
+                        <input
+                          id="reset-password"
+                          type={showResetPassword ? "text" : "password"}
+                          required autoFocus autoComplete="new-password" minLength={8}
+                          value={resetForm.newPassword}
+                          onChange={(e) => setResetForm({ ...resetForm, newPassword: e.target.value })}
+                          placeholder="Minimal 8 karakter"
+                          className={iconInputCls + " pr-10"}
+                        />
+                        <button
+                          type="button" tabIndex={-1}
+                          onClick={() => setShowResetPassword((v) => !v)}
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
+                          title={showResetPassword ? "Sembunyikan kata sandi" : "Tampilkan kata sandi"}
+                        >
+                          {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label htmlFor="reset-password2" className={labelCls}>Konfirmasi Kata Sandi Baru</label>
+                      <div className="relative">
+                        <KeyRound className={fieldIconCls} />
+                        <input
+                          id="reset-password2"
+                          type={showResetPassword ? "text" : "password"}
+                          required autoComplete="new-password" minLength={8}
+                          value={resetForm.confirmPassword}
+                          onChange={(e) => setResetForm({ ...resetForm, confirmPassword: e.target.value })}
+                          placeholder="Ulangi kata sandi baru"
+                          className={iconInputCls}
+                        />
+                      </div>
+                    </div>
+                    <button type="submit" disabled={isResettingPassword} className={primaryBtnCls}>
+                      {isResettingPassword ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                      Simpan Kata Sandi Baru
+                    </button>
+                  </form>
+                  <div className="pt-5 border-t border-slate-800 text-center">
+                    <button type="button" onClick={() => switchAuthMode("login")} className={`text-xs ${linkCls} inline-flex items-center gap-1`}>
+                      <ArrowLeft className="w-3.5 h-3.5" /> Kembali ke halaman login
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </main>
       </div>
     );
   }
@@ -15542,18 +16102,29 @@ export default function App() {
             aktifList.filter((c) => { const dl = getDaysRemaining(c.endDate); return dl >= w * 7 && dl < (w + 1) * 7 + (w === 3 ? 2 : 0); }).length);
           const otherCount = Math.max(0, contracts.length - aktifList.length - draftList.length);
           const aktifPct = contracts.length ? Math.round((aktifList.length / contracts.length) * 100) : 0;
-          const nextExp = aktifList
-            .filter((c) => c.endDate && getDaysRemaining(c.endDate) >= 0)
-            .sort((x, y) => getDaysRemaining(x.endDate) - getDaysRemaining(y.endDate))[0];
-          const nextProgress = (() => {
-            if (!nextExp) return 0;
-            const st = parseD(nextExp.startDate), en = parseD(nextExp.endDate);
-            if (!st || !en || en <= st) return 0;
-            return Math.min(100, Math.max(0, Math.round(((today.getTime() - st.getTime()) / (en.getTime() - st.getTime())) * 100)));
-          })();
-          const recent = [...contracts]
-            .sort((x: any, y: any) => String(y.updatedAt || y.createdAt || y.startDate || "").localeCompare(String(x.updatedAt || x.createdAt || x.startDate || "")))
-            .slice(0, 4);
+          // ===== KARTU "INFO KONTRAK" = KONTRAK TERBARU =====
+          // Diurutkan dari yang paling baru DIBUAT (createdAt). Kiri = satu
+          // kontrak paling baru; kanan = kontrak terbaru berikutnya; "Lihat
+          // semua" = modal berisi semua kontrak dengan urutan yang sama.
+          // (Kontrak yang akan berakhir sudah punya kartu sendiri di bawah.)
+          const createdKey = (c: any) => String(c.createdAt || c.updatedAt || c.startDate || "");
+          const byNewest = [...contracts].sort((x: any, y: any) => createdKey(y).localeCompare(createdKey(x)));
+          const latest = byNewest[0];
+          const recentRest = byNewest.slice(1, 5);
+          const fmtTanggal = (d?: string, withYear = true) => {
+            const t = d ? new Date(d) : null;
+            return t && !isNaN(t.getTime())
+              ? t.toLocaleDateString("id-ID", withYear ? { day: "numeric", month: "short", year: "numeric" } : { day: "numeric", month: "short" })
+              : "—";
+          };
+          const statusPill = (c: any, small = false) => {
+            const st = unifiedContractStatusOf(c);
+            return (
+              <span className={`shrink-0 ${small ? "text-[9.5px] px-2 py-0.5" : "text-[10.5px] px-2.5 py-0.5"} font-semibold rounded-full border ${CONTRACT_STATUS_BADGE_CLASS[st] || "bg-slate-800 text-slate-300 border-transparent"}`}>
+                {CONTRACT_STATUS_LABEL_ID[st] || st}
+              </span>
+            );
+          };
           const valueFull = `Rp ${totalValueActive.toLocaleString("id-ID")}`;
           // Ringkas agar muat sejajar dengan grafik: 3,6 M / 877 jt (nilai lengkap di tooltip).
           const valueText = totalValueActive >= 1e12
@@ -15790,8 +16361,64 @@ export default function App() {
             </div>
           );
 
+          // Modal "Lihat semua" — semua kontrak, paling baru di atas, bisa dicari.
+          const recentQ = recentQuery.trim().toLowerCase();
+          const recentModalList = recentQ
+            ? byNewest.filter((c: any) => [c.title, c.contractNumber, c.party1Name, c.party2Name].some((v) => String(v || "").toLowerCase().includes(recentQ)))
+            : byNewest;
+          const recentModal = recentModalOpen ? (
+            <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={() => setRecentModalOpen(false)}>
+              <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Semua kontrak terbaru" className="modal-panel relative w-full max-w-2xl max-h-[85vh] flex flex-col bg-slate-900 rounded-[28px] overflow-hidden">
+                <div className="p-6 pb-4 space-y-4 border-b border-slate-800">
+                  <button type="button" onClick={() => setRecentModalOpen(false)} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer"><X className="w-4 h-4" /></button>
+                  <div className="flex items-start gap-3 pr-10">
+                    <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><FileText className="w-5 h-5 text-slate-300" /></span>
+                    <div className="min-w-0">
+                      <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">Semua Kontrak Terbaru</h3>
+                      <p className="text-xs text-slate-500 mt-0.5">{byNewest.length} kontrak · diurutkan dari yang paling baru dibuat</p>
+                    </div>
+                  </div>
+                  <div className="relative">
+                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                    <input
+                      autoFocus
+                      value={recentQuery}
+                      onChange={(e) => setRecentQuery(e.target.value)}
+                      placeholder="Cari judul, nomor, atau pihak…"
+                      aria-label="Cari kontrak"
+                      className="w-full h-10 pl-10 pr-4 rounded-full bg-slate-950 border border-slate-800 text-[13px] text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto px-3 py-2">
+                  {recentModalList.length === 0 ? (
+                    <p className="text-[13px] text-slate-500 text-center py-10">Tidak ada kontrak yang cocok.</p>
+                  ) : recentModalList.map((c: any) => (
+                    <button
+                      key={c.id}
+                      onClick={() => { setRecentModalOpen(false); handleOpenWorkspace(c); }}
+                      className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-left hover:bg-slate-950 transition cursor-pointer"
+                    >
+                      <span className="w-9 h-9 rounded-full bg-mist flex items-center justify-center shrink-0"><FileText className="w-4 h-4 text-slate-100" /></span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px] font-medium text-slate-100 truncate">{c.title || "(tanpa judul)"}</span>
+                        <span className="block text-[11px] text-slate-500 truncate">
+                          <span className="font-mono">{c.contractNumber || "Belum bernomor"}</span>
+                          {c.party2Name ? ` · ${c.party2Name}` : ""}
+                        </span>
+                      </span>
+                      {statusPill(c, true)}
+                      <span className="text-[11px] text-slate-500 tabular shrink-0 w-[84px] text-right">{fmtTanggal(c.createdAt || c.updatedAt)}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          ) : null;
+
           return (
             <div className="space-y-5">
+              {recentModal}
               {/* Kartu statistik + grafik mini */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
                 {[
@@ -15842,52 +16469,60 @@ export default function App() {
                   </div>
                 </div>
                 <div className="lg:col-span-5">
-                  <div className="rounded-[28px] card-sky card-soft p-5 space-y-4 h-full">
+                  <div className="rounded-[28px] card-sky card-soft p-5 h-full flex flex-col gap-4">
                     <div className="flex items-center justify-between">
                       <h3 className="text-[20px] font-medium text-slate-100">Info Kontrak</h3>
-                      <button onClick={() => { setActiveTab("monitoring"); setSelectedContract(null); }} className="text-[12px] text-slate-500 hover:text-slate-100 cursor-pointer">Lihat semua &gt;</button>
+                      <button onClick={() => { setRecentQuery(""); setRecentModalOpen(true); }} className="text-[12px] text-slate-500 hover:text-slate-100 cursor-pointer">Lihat semua &gt;</button>
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="rounded-[22px] bg-mist-strong p-4 flex flex-col justify-between min-h-[170px]">
-                        <div className="flex items-start justify-between gap-2 text-[15px] font-medium text-slate-100">
-                          <span className="truncate max-w-[45%]">{nextExp ? (nextExp.party1Name || "Pihak 1") : "—"}</span>
-                          <span className="truncate max-w-[45%] text-right">{nextExp ? (nextExp.party2Name || "Pihak 2") : "—"}</span>
-                        </div>
-                        <div className="flex justify-center my-2"><FileText className="w-9 h-9 text-slate-100/80" strokeWidth={1.5} /></div>
-                        <div>
-                          <div className="relative h-1 rounded-full bg-white/60">
-                            <span className="absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-white" style={{ left: `calc(${nextProgress}% - 6px)` }} />
-                          </div>
-                          <div className="flex justify-between text-[10px] text-slate-500 mt-2 tabular">
-                            <span>{nextExp?.startDate || "—"}</span>
-                            <span>{nextExp?.endDate || "—"}</span>
-                          </div>
-                        </div>
+                    {!latest ? (
+                      <div className="flex-1 flex flex-col items-center justify-center rounded-[22px] bg-slate-900/70 p-6 text-center">
+                        <FileText className="w-8 h-8 text-slate-500 mb-2" strokeWidth={1.5} />
+                        <p className="text-[13px] text-slate-500">Belum ada kontrak.</p>
                       </div>
-                      <div className="rounded-[22px] bg-slate-900/70 p-4 space-y-2.5">
-                        <p className="text-[17px] font-medium text-slate-100 truncate">{nextExp ? `#${nextExp.contractNumber}` : "Kontrak Terbaru"}</p>
-                        {recent.length === 0 ? (
-                          <p className="text-[12px] text-slate-500">Belum ada kontrak.</p>
-                        ) : recent.map((c, i) => (
-                          <button key={c.id} onClick={() => handleOpenWorkspace(c)} className="w-full flex items-center gap-2 text-left cursor-pointer group">
-                            <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${i === 0 ? "bg-soft-blue" : "border border-slate-650"}`} />
-                            <span className={`text-[11px] truncate flex-1 ${i === 0 ? "text-slate-100 font-medium" : "text-slate-500"} group-hover:text-slate-100`}>{c.title}</span>
-                            <span className="text-[10px] text-slate-500 tabular shrink-0">{String(c.updatedAt || c.createdAt || c.startDate || "").slice(5, 10)}</span>
+                    ) : (
+                    <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Kiri: SATU kontrak paling baru */}
+                      <button
+                        type="button"
+                        onClick={() => handleOpenWorkspace(latest)}
+                        className="rounded-[22px] bg-mist-strong p-4 flex flex-col gap-3 text-left cursor-pointer hover:brightness-[1.02] transition min-h-[190px]"
+                        title="Buka kontrak"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-300">Paling baru</span>
+                          {statusPill(latest)}
+                        </div>
+                        <div className="min-w-0 space-y-1">
+                          <p className="text-[15px] font-semibold text-slate-100 leading-snug line-clamp-2">{latest.title || "(tanpa judul)"}</p>
+                          <p className="text-[11px] font-mono text-slate-400 truncate">{latest.contractNumber || "Belum bernomor"}</p>
+                        </div>
+                        <div className="mt-auto space-y-1.5">
+                          <p className="text-[12px] text-slate-200 truncate" title={`${latest.party1Name || "Pihak 1"} ↔ ${latest.party2Name || "Pihak 2"}`}>
+                            {latest.party1Name || "Pihak 1"} <span className="text-slate-400">↔</span> {latest.party2Name || "Pihak 2"}
+                          </p>
+                          <p className="text-[11px] text-slate-400">Dibuat {fmtTanggal(latest.createdAt || latest.updatedAt)}</p>
+                        </div>
+                      </button>
+                      {/* Kanan: kontrak terbaru berikutnya */}
+                      <div className="rounded-[22px] bg-slate-900/70 p-4 flex flex-col gap-2.5 min-w-0">
+                        <p className="text-[15px] font-medium text-slate-100">Kontrak Terbaru</p>
+                        {recentRest.length === 0 ? (
+                          <p className="text-[12px] text-slate-500">Belum ada kontrak lain.</p>
+                        ) : recentRest.map((c) => (
+                          <button key={c.id} onClick={() => handleOpenWorkspace(c)} className="w-full flex items-start gap-2 text-left cursor-pointer group min-w-0">
+                            <span className="w-2 h-2 mt-[5px] rounded-full shrink-0 border border-slate-650 group-hover:bg-soft-blue group-hover:border-transparent" />
+                            <span className="flex-1 min-w-0">
+                              <span className="block text-[12px] truncate text-slate-200 group-hover:text-slate-100" title={c.title}>{c.title || "(tanpa judul)"}</span>
+                              <span className="flex items-center gap-1.5 mt-0.5">
+                                {statusPill(c, true)}
+                                <span className="text-[10px] text-slate-500 tabular">{fmtTanggal(c.createdAt || c.updatedAt, false)}</span>
+                              </span>
+                            </span>
                           </button>
                         ))}
                       </div>
                     </div>
-                    <div className="rounded-full bg-slate-900 px-4 py-3 flex items-center gap-3 text-[13px]">
-                      <span className="w-5 h-5 rounded-full border-[3px] border-mist border-t-soft-blue shrink-0" />
-                      <span className="text-slate-100">{aktifPct}% Kontrak Aktif</span>
-                      <span className="w-px h-4 bg-slate-800" />
-                      <span className="text-slate-500 flex-1">{criticalExpiryContracts.length} segera berakhir</span>
-                      {nextExp && (
-                        <button onClick={() => handleOpenRenewModal(nextExp)} className="text-[12px] font-semibold text-indigo-400 hover:underline cursor-pointer flex items-center gap-1">
-                          <RefreshCw className="w-3 h-3" /> Perpanjang
-                        </button>
-                      )}
-                    </div>
+                    )}
                   </div>
                 </div>
                 <div className="lg:col-span-4">
@@ -17608,12 +18243,20 @@ export default function App() {
               )}
 
               {/* USER MANAGEMENT (admin) */}
-              {configTab === "pengguna" && (
+              {configTab === "pengguna" && (() => {
+                const pendingRegs = tenantUsers.filter((u) => !!u.registrationStatus);
+                const regularUsers = tenantUsers.filter((u) => !u.registrationStatus);
+                // Kode yang diketik karyawan baru di halaman Daftar — terpisah
+                // dari kode perusahaan di nomor dokumen.
+                const mgmtTenant: any = userMgmtTenantId ? allTenants.find((t) => t.id === userMgmtTenantId) : currentTenant;
+                const regCode: string = mgmtTenant?.registrationCodeEffective || mgmtTenant?.codeEffective || "";
+                const docCode: string = mgmtTenant?.codeEffective || "";
+                return (
                 <div className="space-y-5">
                   <div className="flex items-end justify-between gap-4">
                     <div className="space-y-0.5">
                       <h3 className="text-base font-semibold text-slate-100">Pengguna</h3>
-                      <p className="text-[13px] text-slate-500">{tenantUsers.length} akun{currentUser.role === "super_admin" ? " di perusahaan terpilih" : " di perusahaan ini"}. Atur nama, email, kata sandi, dan peran akses.</p>
+                      <p className="text-[13px] text-slate-500">{regularUsers.length} akun{currentUser.role === "super_admin" ? " di perusahaan terpilih" : " di perusahaan ini"}. Atur nama, email, kata sandi, dan peran akses.</p>
                     </div>
                     <button
                       onClick={() => setUserForm({ name: "", email: "", password: "", role: "staff" })}
@@ -17641,8 +18284,118 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Kode pendaftaran: dibagikan admin ke karyawan baru supaya bisa
+                      daftar sendiri. Bisa diganti kapan saja (mis. bila tersebar ke
+                      orang luar) tanpa mengubah penomoran dokumen. */}
+                  {regCode && (
+                    <div className="p-4 rounded-2xl card-sky space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="w-9 h-9 rounded-xl bg-slate-900 flex items-center justify-center shrink-0">
+                            <UserPlus className="w-4 h-4 text-indigo-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[13px] font-semibold text-slate-100">Kode pendaftaran karyawan baru</p>
+                            <p className="text-[12px] text-slate-400">Karyawan mendaftar di halaman login › "Daftar", memilih perannya sendiri, dan langsung aktif setelah memasukkan kode verifikasi email.</p>
+                          </div>
+                        </div>
+                        {regCodeDraft === null ? (
+                          <div className="flex items-center gap-2 shrink-0">
+                            <code className="px-3 py-1.5 rounded-lg bg-slate-900 text-[14px] font-bold tracking-widest text-slate-100">{regCode}</code>
+                            <button
+                              type="button"
+                              onClick={() => { navigator.clipboard?.writeText(regCode).then(() => showToast("Kode pendaftaran disalin", "success")).catch(() => {}); }}
+                              title="Salin kode" aria-label="Salin kode pendaftaran"
+                              className="p-2 rounded-lg bg-slate-900 text-slate-400 hover:text-indigo-300 cursor-pointer"
+                            >
+                              <Copy className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setRegCodeDraft(regCode)}
+                              title="Ganti kode" aria-label="Ganti kode pendaftaran"
+                              className="p-2 rounded-lg bg-slate-900 text-slate-400 hover:text-indigo-300 cursor-pointer"
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2 shrink-0">
+                            <input
+                              autoFocus
+                              value={regCodeDraft}
+                              onChange={(e) => setRegCodeDraft(e.target.value.toUpperCase().replace(/\s+/g, "-").replace(/[^A-Z0-9-]/g, "").slice(0, 20))}
+                              onKeyDown={(e) => { if (e.key === "Enter") handleSaveRegistrationCode(); if (e.key === "Escape") setRegCodeDraft(null); }}
+                              aria-label="Kode pendaftaran baru"
+                              placeholder="Mis. TBK-2026"
+                              className="w-40 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-[14px] font-bold tracking-widest text-slate-100 focus:outline-none focus:border-indigo-500"
+                            />
+                            <button type="button" onClick={() => setRegCodeDraft(randomRegistrationCode(docCode))} className="px-2.5 py-1.5 rounded-lg bg-slate-900 text-[12px] font-semibold text-slate-300 hover:text-indigo-300 cursor-pointer inline-flex items-center gap-1">
+                              <RefreshCw className="w-3.5 h-3.5" /> Acak
+                            </button>
+                            <button type="button" disabled={regCodeSaving || regCodeDraft.length < 3} onClick={handleSaveRegistrationCode} className="px-3 py-1.5 rounded-full btn-grad-primary text-white text-[12px] font-bold cursor-pointer disabled:opacity-60 inline-flex items-center gap-1">
+                              {regCodeSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />} Simpan
+                            </button>
+                            <button type="button" onClick={() => setRegCodeDraft(null)} className="px-2.5 py-1.5 rounded-lg text-[12px] font-semibold text-slate-400 hover:text-slate-200 cursor-pointer">Batal</button>
+                          </div>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-relaxed">
+                        Terpisah dari kode perusahaan di nomor dokumen{docCode ? <> (<b className="text-slate-400">{docCode}</b>)</> : null} — mengganti kode ini tidak mengubah penomoran apa pun. Ganti kodenya bila sudah tersebar ke orang di luar perusahaan; kode lama langsung tidak berlaku.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Pendaftar yang belum memasukkan kode verifikasi email */}
+                  {pendingRegs.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Hourglass className="w-4 h-4 text-brand-orange" />
+                        <h4 className="text-[13px] font-semibold text-slate-100">Belum Verifikasi Email</h4>
+                        <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-peach text-brand-orange">{pendingRegs.length}</span>
+                        <span className="text-[11px] text-slate-500">· terhapus otomatis bila tidak diverifikasi dalam 24 jam</span>
+                      </div>
+                      <div className="rounded-xl border border-slate-800/80 divide-y divide-slate-800/70 overflow-hidden">
+                        {pendingRegs.map((u) => {
+                          const busy = registrationBusyId === u.id;
+                          return (
+                            <div key={u.id} className="flex flex-col md:flex-row md:items-center gap-3 px-4 py-3 bg-peach/30">
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                                <div className="w-9 h-9 rounded-full flex items-center justify-center text-[13px] font-semibold shrink-0 bg-peach text-brand-orange">
+                                  {String(u.name || "?").charAt(0).toUpperCase()}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-slate-100 text-[13px] truncate">{u.name} <span className="font-normal text-slate-500">· mendaftar sebagai {roleLabel(u.role)}</span></p>
+                                  <p className="text-[12px] text-slate-500 truncate">
+                                    {u.email}
+                                    {u.registeredAt && <span> · {new Date(u.registeredAt).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <button
+                                  onClick={() => handleApproveRegistration(u)} disabled={busy}
+                                  title="Aktifkan tanpa kode verifikasi (mis. email tidak sampai)"
+                                  className="px-3 py-1.5 rounded-full btn-grad-primary text-white text-[12px] font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                                >
+                                  {busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <UserCheck className="w-3.5 h-3.5" />} Aktifkan
+                                </button>
+                                <button
+                                  onClick={() => handleRejectRegistration(u)} disabled={busy}
+                                  className="px-3 py-1.5 rounded-full text-[12px] font-semibold text-rose-400 hover:bg-rose-500/10 flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
+                                >
+                                  <UserX className="w-3.5 h-3.5" /> Hapus
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="rounded-xl border border-slate-800/80 divide-y divide-slate-800/70 overflow-hidden">
-                    {tenantUsers.map((u) => {
+                    {regularUsers.map((u) => {
                       const rm = roleMeta(u.role);
                       return (
                         <div key={u.id} className="group flex items-center gap-3 px-4 py-3 hover:bg-slate-900/40 transition">
@@ -17670,10 +18423,11 @@ export default function App() {
                         </div>
                       );
                     })}
-                    {tenantUsers.length === 0 && <p className="text-slate-500 text-[13px] py-10 text-center">Belum ada pengguna lain. Klik "Tambah pengguna" untuk memulai.</p>}
+                    {regularUsers.length === 0 && <p className="text-slate-500 text-[13px] py-10 text-center">Belum ada pengguna lain. Klik "Tambah pengguna" untuk memulai.</p>}
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
               {/* HAK AKSES PER ROLE (RBAC) — matriks menu x role, disimpan di
                   appSettings.rolePermissions (bukan hardcode di kode), jadi

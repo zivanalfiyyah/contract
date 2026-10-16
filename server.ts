@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { randomBytes } from "crypto";
+import { randomBytes, createHash, randomInt, timingSafeEqual } from "crypto";
 import dotenv from "dotenv";
 import {
   Clause, Variable, Template, Contract, ContractVersion, ContractStatus,
@@ -14,7 +14,7 @@ import {
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
 import { startBackupScheduler, runBackup, listBackups } from "./backup.js";
-import { isEmailConfigured, sendEmail, testEmailConnection, emailTemplate } from "./email.js";
+import { isEmailConfigured, sendEmail, testEmailConnection, emailTemplate, escapeEmailHtml } from "./email.js";
 import { isPushConfigured, sendPushToUser, sendPushToTenant } from "./push.js";
 import { storeFile, fetchFile, isStorageCloudBacked } from "./storage.js";
 import { sha256 } from "./dcs/pdf-io.js";
@@ -151,6 +151,19 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Terlalu banyak percobaan login. Coba lagi dalam beberapa menit." },
+});
+
+// Pendaftaran & kirim ulang email verifikasi: lebih ketat dari login.
+// Orang sungguhan cukup mendaftar sekali; batas ini mencegah halaman Register
+// dipakai untuk membanjiri kotak masuk orang lain atau menebak kode perusahaan.
+// Tidak dibuat terlalu kecil karena satu kantor biasanya keluar lewat SATU IP
+// publik (NAT) — onboarding beberapa karyawan sekaligus tidak boleh terblokir.
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Terlalu banyak percobaan pendaftaran dari jaringan ini. Coba lagi dalam satu jam." },
 });
 
 // General safety net across the whole API — generous enough for normal use
@@ -407,11 +420,28 @@ function sanitizeReleaseRecipients(db: any, tid: string, raw: unknown): string[]
 // ===== AUTHENTICATION =====
 app.post("/api/auth/login", loginLimiter, (req, res) => {
   const db = loadDB();
-  const { email, password, remember } = req.body;
-  const user = (db.users as User[]).find(
-    (u) => u.email.toLowerCase() === String(email || "").toLowerCase(),
-  );
-  if (!user || !user.active || !verifyPassword(password || "", user.passwordHash)) {
+  const { password, remember } = req.body;
+  // trim: spasi tak sengaja (salin-tempel, autofill HP) jangan sampai membuat
+  // akun yang benar terbaca "tidak ditemukan".
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const user = (db.users as User[]).find((u) => u.email.toLowerCase().trim() === email);
+  if (!user || !verifyPassword(password || "", user.passwordHash)) {
+    // Ke pengguna tetap satu pesan generik (tidak membocorkan email mana yang
+    // terdaftar), tapi log server mencatat alasan sebenarnya supaya admin/dev
+    // bisa melacak "sudah daftar kok tidak bisa masuk" tanpa menebak-nebak.
+    logger.info({ email, reason: user ? "wrong_password" : "email_not_found", registrationStatus: user?.registrationStatus }, "Login gagal");
+    return res.status(401).json({ error: "Email atau kata sandi salah." });
+  }
+  // Akun hasil pendaftaran mandiri yang belum tuntas. Status ini baru
+  // diungkap SETELAH kata sandi terbukti benar, jadi tidak membocorkan
+  // keberadaan akun ke orang yang sekadar menebak email.
+  if (user.registrationStatus === "pending_email") {
+    return res.status(403).json({
+      code: "EMAIL_UNVERIFIED",
+      error: "Email Anda belum diverifikasi. Masukkan kode verifikasi 6 angka yang kami kirim ke email Anda.",
+    });
+  }
+  if (!user.active) {
     return res.status(401).json({ error: "Email atau kata sandi salah." });
   }
   // super_admin operates across tenants, so it isn't gated by any single
@@ -617,9 +647,274 @@ app.post("/api/auth/reset-password", loginLimiter, (req, res) => {
   res.json({ success: true, message: "Password berhasil diubah. Silakan login dengan password baru." });
 });
 
+// ===== PENDAFTARAN MANDIRI (Register) =====
+//
+// Alur: daftar (kode pendaftaran + nama + email + kata sandi + PERAN pilihan)
+//   → email berisi KODE OTP 6 angka (berlaku 10 menit, maks. 5 kali salah)
+//   → kode benar: akun LANGSUNG AKTIF & pendaftar langsung masuk (tanpa
+//     persetujuan admin); admin perusahaan hanya diberi tahu.
+//
+// Pengaman pengganti persetujuan admin:
+//  - Kode pendaftaran = "kunci masuk" perusahaan. Terpisah dari kode
+//    perusahaan di nomor dokumen, dan bisa diganti admin kapan saja
+//    (Konfigurasi › Kelola Pengguna) bila sudah tersebar ke orang luar.
+//  - Peran yang boleh dipilih sendiri hanya Viewer/Staff/Legal/Manager.
+//    Admin tetap hanya bisa diberikan oleh admin lain.
+//  - Email wajib terbukti milik pendaftar (OTP) sebelum akun aktif.
+//
+// Kenapa kode, bukan dropdown perusahaan: halaman ini publik — dropdown
+// berarti siapa pun bisa melihat daftar semua PT di grup.
+
+// Peran yang boleh dipilih sendiri saat mendaftar.
+const SELF_REGISTER_ROLES: UserRole[] = ["viewer", "staff", "legal", "manager"];
+const OTP_TTL_MS = 10 * 60 * 1000;     // kode berlaku 10 menit
+const OTP_MAX_ATTEMPTS = 5;            // lebih dari ini → kode hangus, minta baru
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+// Pendaftaran yang tidak pernah diverifikasi dibuang setelah 24 jam supaya
+// tidak menumpuk & email-nya bisa dipakai mendaftar lagi.
+const UNVERIFIED_REGISTRATION_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Kode pendaftaran: huruf besar, angka, tanda hubung; 3–20 karakter.
+function sanitizeRegistrationCode(raw: unknown): string {
+  return String(raw ?? "").trim().toUpperCase().replace(/\s+/g, "-").replace(/[^A-Z0-9-]/g, "").slice(0, 20);
+}
+// Kode yang berlaku untuk perusahaan ini: kode pendaftaran yang diatur admin,
+// atau (belum diatur) kode perusahaan yang lama — supaya karyawan yang sudah
+// tahu kodenya tidak bingung setelah fitur ini dipisah.
+function registrationCodeOf(tenant: any): string {
+  return sanitizeRegistrationCode(tenant?.registrationCode) || companyCodeOf(tenant);
+}
+
+// Di lokal/dev tanpa SMTP, kode OTP dikembalikan di respons & ditulis ke log
+// supaya alur tetap bisa diuji. Di produksi TIDAK PERNAH — tanpa SMTP,
+// pendaftaran ditolak dengan jujur (pola sama dengan lupa password).
+function canExposeDevOtp(): boolean {
+  return process.env.NODE_ENV !== "production" && !isEmailConfigured();
+}
+
+function pruneStaleRegistrations(db: any): boolean {
+  const now = Date.now();
+  const before = (db.users as User[]).length;
+  db.users = (db.users as User[]).filter((u) =>
+    !(u.registrationStatus === "pending_email" && u.registeredAt && now - new Date(u.registeredAt).getTime() > UNVERIFIED_REGISTRATION_TTL_MS),
+  );
+  return (db.users as User[]).length !== before;
+}
+
+function tenantAdminsOf(db: any, tid: string): User[] {
+  return (db.users as User[]).filter((u) => u.tenantId === tid && u.active && u.role === "admin");
+}
+
+// Endpoint pendaftaran tidak lewat requireAuth, jadi audit ditulis manual
+// (pushAudit() butuh req.user).
+function pushRegistrationAudit(db: any, req: express.Request, user: User, action: string, details: string) {
+  db.audits.unshift({
+    id: "aud-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    tenantId: user.tenantId,
+    userId: user.id, userName: user.name, userRole: user.role,
+    timestamp: new Date().toISOString(),
+    ipAddress: req.ip || "127.0.0.1",
+    action, details,
+  });
+}
+
+// Hash OTP diikat ke id user: kode 6 angka hanya punya 1 juta kemungkinan,
+// jadi hash tanpa "garam" bisa dibalik dengan tabel. Pembatas percobaan
+// (OTP_MAX_ATTEMPTS) yang menutup tebak-tebakan lewat endpoint.
+function hashOtp(userId: string, code: string): string {
+  return createHash("sha256").update(`${userId}:${code}`).digest("hex");
+}
+
+// Buat kode baru untuk user, simpan hash-nya, lalu kirim lewat email.
+// Mengembalikan kode mentah HANYA untuk mode dev tanpa SMTP.
+async function issueRegistrationOtp(user: User, companyName: string): Promise<string> {
+  const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
+  user.emailOtpHash = hashOtp(user.id, code);
+  user.emailOtpExpiresAt = new Date(Date.now() + OTP_TTL_MS).toISOString();
+  user.emailOtpAttempts = 0;
+  user.emailOtpSentAt = new Date().toISOString();
+  if (!isEmailConfigured()) {
+    logger.warn({ email: user.email, code }, "SMTP belum dikonfigurasi — kode OTP pendaftaran (hanya untuk dev)");
+    return code;
+  }
+  const html = emailTemplate({
+    title: "Kode verifikasi pendaftaran Anda",
+    bodyHtml: `Halo ${escapeEmailHtml(user.name)},<br><br>Masukkan kode berikut di halaman pendaftaran Smart CLM Enterprise untuk <b>${escapeEmailHtml(companyName)}</b>:<br><br><div style="font-size:32px;font-weight:800;letter-spacing:10px;color:#1c2433;background:#f1f6fc;border-radius:14px;padding:16px 0;text-align:center;">${code}</div><br>Kode berlaku <b>10 menit</b>. Jangan berikan kode ini kepada siapa pun, termasuk yang mengaku dari tim IT.<br><br>Jika Anda tidak merasa mendaftar, abaikan email ini — akun tidak akan aktif.`,
+  });
+  const result = await sendEmail({ to: user.email, subject: `${code} adalah kode verifikasi Smart CLM Anda`, html });
+  if (!result.sent) logger.error({ error: result.error, userId: user.id }, "Failed to send registration OTP email");
+  return code;
+}
+
+const REGISTER_GENERIC_MESSAGE =
+  "Kami mengirim kode verifikasi 6 angka ke email Anda. Masukkan kodenya di bawah (cek juga folder spam).";
+
+app.post("/api/auth/register", registerLimiter, async (req, res) => {
+  if (!isEmailConfigured() && process.env.NODE_ENV === "production") {
+    return res.status(503).json({
+      error: "Pendaftaran mandiri belum tersedia (pengiriman email belum dikonfigurasi di server ini). Hubungi admin perusahaan Anda untuk dibuatkan akun.",
+    });
+  }
+  const name = String(req.body?.name || "").trim().replace(/\s+/g, " ");
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const password = String(req.body?.password || "");
+  const code = sanitizeRegistrationCode(req.body?.registrationCode ?? req.body?.companyCode);
+  const role = String(req.body?.role || "viewer") as UserRole;
+
+  if (!code) return res.status(400).json({ error: "Kode pendaftaran wajib diisi." });
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Nama lengkap wajib diisi (2–100 karakter)." });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return res.status(400).json({ error: "Format email tidak valid." });
+  if (password.length < 8) return res.status(400).json({ error: "Kata sandi minimal 8 karakter." });
+  if (password.length > 200) return res.status(400).json({ error: "Kata sandi terlalu panjang." });
+  if (!SELF_REGISTER_ROLES.includes(role)) {
+    return res.status(400).json({ error: "Peran tidak valid. Pilih Viewer, Staff, Legal, atau Manager. Peran Admin hanya bisa diberikan oleh admin perusahaan." });
+  }
+
+  const db = loadDB();
+  const matches = ((db.tenants || []) as any[]).filter((t) => t.active !== false && registrationCodeOf(t) === code);
+  if (matches.length === 0) {
+    return res.status(400).json({ error: "Kode pendaftaran tidak dikenali. Minta kode yang benar ke admin perusahaan Anda." });
+  }
+  if (matches.length > 1) {
+    // Kode turunan otomatis bisa bentrok (mis. dua PT berinisial sama).
+    return res.status(400).json({ error: "Kode ini dipakai lebih dari satu perusahaan. Minta admin mengatur kode pendaftaran yang unik di Kelola Pengguna." });
+  }
+  const tenant = matches[0];
+  const pruned = pruneStaleRegistrations(db);
+
+  const existing = (db.users as User[]).find((u) => u.email.toLowerCase() === email);
+  if (existing) {
+    // Respons SENGAJA sama dengan pendaftaran baru supaya halaman publik ini
+    // tidak bisa dipakai mengecek email siapa saja yang punya akun.
+    if (existing.registrationStatus === "pending_email") {
+      // Belum diverifikasi: kirim kode baru, TANPA menimpa nama/kata sandi/
+      // peran (kalau ditimpa, orang lain bisa "membajak" pendaftaran yang
+      // belum diverifikasi pemilik email aslinya).
+      const t = (db.tenants as any[]).find((x) => x.id === existing.tenantId);
+      const otp = await issueRegistrationOtp(existing, t?.name || tenant.name);
+      saveDB(db);
+      return res.json({ success: true, email, message: REGISTER_GENERIC_MESSAGE, ...(canExposeDevOtp() ? { devOtp: otp } : {}) });
+    }
+    if (pruned) saveDB(db);
+    if (isEmailConfigured()) {
+      const html = emailTemplate({
+        title: "Email Anda sudah terdaftar",
+        bodyHtml: `Halo,<br><br>Seseorang (mungkin Anda) mencoba mendaftar akun Smart CLM Enterprise memakai email ini, padahal email ini sudah memiliki akun.<br><br>Silakan masuk seperti biasa. Lupa kata sandi? Gunakan "Lupa kata sandi?" di halaman login.<br><br>Jika bukan Anda yang mencoba mendaftar, abaikan email ini.`,
+        ctaLabel: "Buka Halaman Login",
+        ctaUrl: shareBaseUrl(req),
+      });
+      sendEmail({ to: existing.email, subject: "Percobaan pendaftaran — Smart CLM Enterprise", html })
+        .catch((err) => logger.warn({ err }, "Failed to send already-registered notice"));
+    }
+    return res.json({ success: true, email, message: REGISTER_GENERIC_MESSAGE });
+  }
+
+  const now = new Date().toISOString();
+  const newUser: User = {
+    id: "usr-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    tenantId: tenant.id, name, email,
+    passwordHash: hashPassword(password),
+    role, active: false, createdAt: now,
+    registrationStatus: "pending_email", registeredAt: now,
+  };
+  db.users.push(newUser);
+  const otp = await issueRegistrationOtp(newUser, tenant.name);
+  pushRegistrationAudit(db, req, newUser, "Pendaftaran Akun", `${name} (${email}) mendaftar mandiri dengan kode pendaftaran ${code} sebagai ${role}; menunggu verifikasi email (OTP).`);
+  saveDB(db);
+  res.json({ success: true, email, message: REGISTER_GENERIC_MESSAGE, ...(canExposeDevOtp() ? { devOtp: otp } : {}) });
+});
+
+// Kirim ulang kode OTP (dari layar verifikasi atau saat login ditolak karena
+// email belum diverifikasi). Respons selalu sama, ada jeda 60 detik.
+app.post("/api/auth/resend-verification", registerLimiter, async (req, res) => {
+  const generic = "Jika email tersebut punya pendaftaran yang belum diverifikasi, kode baru telah dikirim.";
+  const db = loadDB();
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const pruned = pruneStaleRegistrations(db);
+  const user = (db.users as User[]).find((u) => u.email.toLowerCase() === email && u.registrationStatus === "pending_email");
+  if (!user) { if (pruned) saveDB(db); return res.json({ success: true, message: generic }); }
+  const lastSent = user.emailOtpSentAt ? new Date(user.emailOtpSentAt).getTime() : 0;
+  const wait = Math.ceil((lastSent + OTP_RESEND_COOLDOWN_MS - Date.now()) / 1000);
+  if (wait > 0) return res.status(429).json({ error: `Tunggu ${wait} detik sebelum meminta kode baru.`, retryAfter: wait });
+  const tenant = (db.tenants as any[]).find((t) => t.id === user.tenantId);
+  const otp = await issueRegistrationOtp(user, tenant?.name || "");
+  saveDB(db);
+  res.json({ success: true, message: generic, ...(canExposeDevOtp() ? { devOtp: otp } : {}) });
+});
+
+// Masukkan kode OTP → akun langsung aktif & pendaftar langsung masuk.
+// loginLimiter (bukan registerLimiter) supaya memasukkan kode tidak ikut
+// menghabiskan kuota pendaftaran rekan sekantor.
+app.post("/api/auth/verify-otp", loginLimiter, async (req, res) => {
+  const email = String(req.body?.email || "").trim().toLowerCase();
+  const code = String(req.body?.code || "").replace(/\D/g, "");
+  const invalid = "Kode salah atau sudah kedaluwarsa.";
+  if (!email || code.length !== 6) return res.status(400).json({ error: "Masukkan 6 angka kode verifikasi." });
+  const db = loadDB();
+  const user = (db.users as User[]).find((u) => u.email.toLowerCase() === email && u.registrationStatus === "pending_email");
+  if (!user || !user.emailOtpHash || !user.emailOtpExpiresAt) return res.status(400).json({ error: invalid });
+  if (new Date(user.emailOtpExpiresAt).getTime() < Date.now()) {
+    return res.status(400).json({ error: "Kode sudah kedaluwarsa (berlaku 10 menit). Klik \"Kirim ulang kode\"." });
+  }
+  if ((user.emailOtpAttempts || 0) >= OTP_MAX_ATTEMPTS) {
+    return res.status(400).json({ error: "Terlalu banyak percobaan salah. Klik \"Kirim ulang kode\" untuk mendapat kode baru." });
+  }
+  const expected = Buffer.from(user.emailOtpHash, "hex");
+  const given = Buffer.from(hashOtp(user.id, code), "hex");
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
+    user.emailOtpAttempts = (user.emailOtpAttempts || 0) + 1;
+    saveDB(db);
+    const left = OTP_MAX_ATTEMPTS - user.emailOtpAttempts;
+    return res.status(400).json({ error: left > 0 ? `Kode salah. Sisa ${left} percobaan.` : "Terlalu banyak percobaan salah. Klik \"Kirim ulang kode\" untuk mendapat kode baru." });
+  }
+  const tenant = (db.tenants as any[]).find((t) => t.id === user.tenantId);
+  if (!tenant || tenant.active === false) {
+    return res.status(403).json({ error: "Akun perusahaan Anda sedang tidak aktif. Hubungi administrator sistem." });
+  }
+
+  user.active = true;
+  user.registrationStatus = undefined;
+  user.emailVerifiedAt = new Date().toISOString();
+  user.emailOtpHash = undefined;
+  user.emailOtpExpiresAt = undefined;
+  user.emailOtpAttempts = undefined;
+  user.emailOtpSentAt = undefined;
+  user.lastLoginAt = new Date().toISOString();
+
+  // Admin hanya DIBERI TAHU (tidak perlu menyetujui) — supaya tetap tahu
+  // siapa saja yang masuk lewat kode pendaftaran, dan bisa mengganti kode
+  // atau menonaktifkan akun bila ada yang tidak dikenal.
+  const admins = tenantAdminsOf(db, user.tenantId);
+  if (admins.length > 0) {
+    pushNotif(db, user.tenantId, {
+      title: "Pengguna Baru Bergabung",
+      message: `${user.name} (${user.email}) mendaftar sebagai ${user.role} lewat kode pendaftaran. Tidak kenal? Nonaktifkan di Konfigurasi › Kelola Pengguna dan ganti kode pendaftarannya.`,
+      type: "info",
+      targetUserIds: admins.map((a) => a.id),
+    });
+  }
+  pushRegistrationAudit(db, req, user, "Verifikasi Email Pendaftaran", `${user.name} memverifikasi email ${user.email} dengan kode OTP; akun aktif sebagai ${user.role}.`);
+  saveDB(db);
+  for (const a of admins) {
+    sendPushToUser(a.id, {
+      title: "Pengguna baru bergabung",
+      body: `${user.name} mendaftar sebagai ${user.role}.`,
+      url: "/?config=pengguna",
+      tag: `registration-${user.id}`,
+    }).catch((err) => logger.warn({ err }, "Push for registration failed"));
+  }
+
+  // Langsung masuk — tidak perlu mengetik email & kata sandi lagi.
+  setAuthCookie(res, signToken(user, false), false);
+  res.json({ success: true, user: stripUser(user) });
+});
+
 app.get("/api/auth/me", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  const tenant = (db.tenants as any[]).find((t) => t.id === req.user!.tenantId) || null;
+  const tenantRaw = (db.tenants as any[]).find((t) => t.id === req.user!.tenantId) || null;
+  // registrationCodeEffective = kode yang diketik karyawan baru di halaman
+  // Daftar (terpisah dari kode perusahaan di nomor dokumen).
+  const tenant = tenantRaw ? { ...tenantRaw, codeEffective: companyCodeOf(tenantRaw), registrationCodeEffective: registrationCodeOf(tenantRaw) } : null;
   const tid = req.user!.tenantId;
   const me = (db.users as User[]).find((u) => u.id === req.user!.id && u.tenantId === tid);
   // Dua arah delegasi dikirim sekali di sini supaya frontend tidak perlu
@@ -655,6 +950,11 @@ app.post("/api/auth/change-password", requireAuth, (req: AuthedRequest, res) => 
 app.get("/api/users", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
+  if (pruneStaleRegistrations(db)) saveDB(db);
+  // Pendaftar (belum verifikasi email maupun sudah) ikut dikirim dan
+  // ditampilkan terpisah di "Menunggu Persetujuan" dengan label statusnya —
+  // supaya admin tetap bisa menindaklanjuti kalau email verifikasi tidak
+  // sampai (SMTP bermasalah, masuk spam, salah ketik tidak terdeteksi).
   res.json(scoped(db.users as User[], tid).map(stripUser));
 });
 
@@ -693,11 +993,87 @@ app.post("/api/users", requireAuth, requireRole("admin"), (req: AuthedRequest, r
   res.json({ success: true, user: stripUser(newUser) });
 });
 
+// Aktifkan manual pendaftar yang belum memasukkan kode OTP — jalan keluar
+// bila email verifikasi tidak sampai (SMTP bermasalah, salah ketik). Admin
+// yang mengenal orangnya menjadi penjaminnya; dicatat jelas di audit.
+app.post("/api/users/:id/approve-registration", requireAuth, requireRole("admin"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
+  if (!user || !user.registrationStatus) {
+    return res.status(404).json({ error: "Pendaftaran tidak ditemukan atau sudah aktif." });
+  }
+  const allowedRoles: UserRole[] = ["admin", "legal", "manager", "staff", "viewer"];
+  if (allowedRoles.includes(req.body?.role)) user.role = req.body.role;
+  user.active = true;
+  user.registrationStatus = undefined;
+  user.emailOtpHash = undefined;
+  user.emailOtpExpiresAt = undefined;
+  user.emailOtpAttempts = undefined;
+  user.emailOtpSentAt = undefined;
+  user.approvedById = req.user!.id;
+  user.approvedByName = req.user!.name;
+  user.approvedAt = new Date().toISOString();
+  pushAudit(db, req, { action: "Aktifkan Pendaftar Manual", details: `Mengaktifkan "${user.name}" (${user.email}) sebagai ${user.role} tanpa verifikasi email (dijamin admin)` });
+  saveDB(db);
+  if (isEmailConfigured()) {
+    const tenant = (db.tenants as any[]).find((t) => t.id === tid);
+    const html = emailTemplate({
+      title: "Akun Anda sudah aktif",
+      bodyHtml: `Halo ${escapeEmailHtml(user.name)},<br><br>Akun Anda untuk <b>${escapeEmailHtml(tenant?.name || "perusahaan Anda")}</b> sudah diaktifkan oleh ${escapeEmailHtml(req.user!.name)}. Sekarang Anda bisa masuk memakai email dan kata sandi yang Anda buat saat mendaftar.`,
+      ctaLabel: "Masuk Sekarang",
+      ctaUrl: shareBaseUrl(req),
+    });
+    sendEmail({ to: user.email, subject: "Akun aktif — Smart CLM Enterprise", html })
+      .catch((err) => logger.warn({ err }, "Failed to send activation email"));
+  }
+  res.json({ success: true, user: stripUser(user) });
+});
+
+// Hapus pendaftaran yang belum diverifikasi (mis. orang tak dikenal). Akun
+// DIHAPUS supaya email itu bisa mendaftar ulang; jejaknya di Audit Trail.
+app.post("/api/users/:id/reject-registration", requireAuth, requireRole("admin"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
+  if (!user || !user.registrationStatus) {
+    return res.status(404).json({ error: "Pendaftaran tidak ditemukan atau sudah aktif." });
+  }
+  db.users = (db.users as User[]).filter((u) => u.id !== user.id);
+  pushAudit(db, req, { action: "Hapus Pendaftaran", details: `Menghapus pendaftaran yang belum diverifikasi: "${user.name}" (${user.email})` });
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// Ganti kode pendaftaran perusahaan (admin perusahaan; super_admin boleh untuk
+// perusahaan lain lewat tenantId). Terpisah dari kode perusahaan di nomor
+// dokumen — mengubahnya TIDAK mengubah penomoran apa pun.
+app.put("/api/registration-code", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const tenant = (db.tenants as any[]).find((t) => t.id === tid);
+  if (!tenant) return res.status(404).json({ error: "Perusahaan tidak ditemukan." });
+  const code = sanitizeRegistrationCode(req.body?.code);
+  if (code.length < 3) return res.status(400).json({ error: "Kode pendaftaran minimal 3 karakter (huruf, angka, atau tanda hubung)." });
+  const clash = (db.tenants as any[]).find((t) => t.id !== tid && registrationCodeOf(t) === code);
+  if (clash) return res.status(400).json({ error: "Kode ini sudah dipakai perusahaan lain. Pilih kode lain." });
+  const old = registrationCodeOf(tenant);
+  tenant.registrationCode = code;
+  pushAudit(db, req, { action: "Ganti Kode Pendaftaran", details: `Kode pendaftaran ${tenant.name} diganti dari ${old} menjadi ${code}` });
+  saveDB(db);
+  res.json({ success: true, code });
+});
+
 app.put("/api/users/:id", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
   if (!user) return res.status(404).json({ error: "User tidak ditemukan" });
+  // Pendaftar yang belum verifikasi hanya bisa diaktifkan lewat Aktifkan/Hapus —
+  // supaya jejak "siapa yang mengaktifkan" selalu tercatat.
+  if (user.registrationStatus) {
+    return res.status(400).json({ error: "Akun ini belum memverifikasi email. Gunakan tombol Aktifkan atau Hapus." });
+  }
 
   // A tenant with zero active admins can no longer manage its own users —
   // that's a support-ticket-only dead end, not just an inconvenience.
@@ -814,7 +1190,7 @@ app.get("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedReq
   const db = loadDB();
   // Sertakan platform efektif (termasuk fallback perusahaan bawaan) supaya
   // form Edit Perusahaan menampilkan isi yang sama dengan yang dipakai wizard.
-  res.json((db.tenants as any[]).map((t) => ({ ...t, platforms: platformsForTenant(db, t.id), codeEffective: companyCodeOf(t) })));
+  res.json((db.tenants as any[]).map((t) => ({ ...t, platforms: platformsForTenant(db, t.id), codeEffective: companyCodeOf(t), registrationCodeEffective: registrationCodeOf(t) })));
 });
 
 // Daftar perusahaan (Konfigurasi > Kelola Perusahaan) untuk dropdown
@@ -1519,6 +1895,21 @@ function defaultSettings() {
 
 export async function initFirebaseDB() {
   await initDB(createDefaultDB);
+  // Migrasi sekali jalan: alur pendaftaran tidak lagi butuh persetujuan admin.
+  // Pendaftar lama yang emailnya sudah terverifikasi & masih "menunggu
+  // persetujuan" diaktifkan dengan peran yang sudah tercatat (Viewer).
+  {
+    const db = loadDB();
+    let changed = 0;
+    for (const u of db.users as User[]) {
+      if ((u.registrationStatus as string) === "pending_approval") {
+        u.active = true;
+        u.registrationStatus = undefined;
+        changed++;
+      }
+    }
+    if (changed) { saveDB(db); logger.info({ changed }, "Pendaftar lama (menunggu persetujuan) diaktifkan otomatis"); }
+  }
 }
 
 // REST APIs

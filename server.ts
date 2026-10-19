@@ -11,6 +11,7 @@ import {
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
 } from "./src/types";
+import { R, canViewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
 import { startBackupScheduler, runBackup, listBackups } from "./backup.js";
@@ -307,7 +308,7 @@ function startFinalInternalReview(db: any, contract: Contract): ContractApproval
   const approvers = (lastApproved?.steps || [])
     .slice().sort((a, b) => a.order - b.order)
     .map((st) => (db.users as User[]).find((u) => u.id === st.approverId && u.tenantId === tid && u.active))
-    .filter((u): u is User => !!u && u.role !== "viewer");
+    .filter((u): u is User => !!u && canBeApprover(u.role));
   const now = new Date().toISOString();
   const steps: ContractApprovalStep[] = approvers.map((u, i) => ({
     id: "aps-" + Date.now() + "-f" + i,
@@ -666,7 +667,9 @@ app.post("/api/auth/reset-password", loginLimiter, (req, res) => {
 // berarti siapa pun bisa melihat daftar semua PT di grup.
 
 // Peran yang boleh dipilih sendiri saat mendaftar.
-const SELF_REGISTER_ROLES: UserRole[] = ["viewer", "staff", "legal", "manager"];
+const SELF_REGISTER_ROLES: UserRole[] = ["viewer", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga"];
+// Peran yang bisa diberikan lewat Kelola Pengguna (super_admin tidak).
+const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "admin", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "viewer"];
 const OTP_TTL_MS = 10 * 60 * 1000;     // kode berlaku 10 menit
 const OTP_MAX_ATTEMPTS = 5;            // lebih dari ini → kode hangus, minta baru
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -947,7 +950,7 @@ app.post("/api/auth/change-password", requireAuth, (req: AuthedRequest, res) => 
 });
 
 // ===== USER MANAGEMENT (admin dalam tenant; super_admin lintas tenant) =====
-app.get("/api/users", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.get("/api/users", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   if (pruneStaleRegistrations(db)) saveDB(db);
@@ -971,7 +974,7 @@ app.get("/api/users/mentionable", requireAuth, (req: AuthedRequest, res) => {
   );
 });
 
-app.post("/api/users", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.post("/api/users", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { name, email, password, role } = req.body;
@@ -980,8 +983,7 @@ app.post("/api/users", requireAuth, requireRole("admin"), (req: AuthedRequest, r
   if ((db.users as User[]).some((u) => u.email.toLowerCase() === String(email).toLowerCase())) {
     return res.status(400).json({ error: "Email sudah terpakai" });
   }
-  const allowedRoles: UserRole[] = ["admin", "legal", "manager", "staff", "viewer"];
-  const finalRole: UserRole = allowedRoles.includes(role) ? role : "staff";
+  const finalRole: UserRole = ASSIGNABLE_ROLES.includes(role) ? role : "viewer";
   const newUser: User = {
     id: "usr-" + Date.now(), tenantId: tid, name, email,
     passwordHash: hashPassword(password), role: finalRole, active: true,
@@ -996,15 +998,14 @@ app.post("/api/users", requireAuth, requireRole("admin"), (req: AuthedRequest, r
 // Aktifkan manual pendaftar yang belum memasukkan kode OTP — jalan keluar
 // bila email verifikasi tidak sampai (SMTP bermasalah, salah ketik). Admin
 // yang mengenal orangnya menjadi penjaminnya; dicatat jelas di audit.
-app.post("/api/users/:id/approve-registration", requireAuth, requireRole("admin"), async (req: AuthedRequest, res) => {
+app.post("/api/users/:id/approve-registration", requireAuth, requireRole(...R.settings), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
   if (!user || !user.registrationStatus) {
     return res.status(404).json({ error: "Pendaftaran tidak ditemukan atau sudah aktif." });
   }
-  const allowedRoles: UserRole[] = ["admin", "legal", "manager", "staff", "viewer"];
-  if (allowedRoles.includes(req.body?.role)) user.role = req.body.role;
+  if (ASSIGNABLE_ROLES.includes(req.body?.role)) user.role = req.body.role;
   user.active = true;
   user.registrationStatus = undefined;
   user.emailOtpHash = undefined;
@@ -1032,7 +1033,7 @@ app.post("/api/users/:id/approve-registration", requireAuth, requireRole("admin"
 
 // Hapus pendaftaran yang belum diverifikasi (mis. orang tak dikenal). Akun
 // DIHAPUS supaya email itu bisa mendaftar ulang; jejaknya di Audit Trail.
-app.post("/api/users/:id/reject-registration", requireAuth, requireRole("admin"), async (req: AuthedRequest, res) => {
+app.post("/api/users/:id/reject-registration", requireAuth, requireRole(...R.settings), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
@@ -1048,7 +1049,7 @@ app.post("/api/users/:id/reject-registration", requireAuth, requireRole("admin")
 // Ganti kode pendaftaran perusahaan (admin perusahaan; super_admin boleh untuk
 // perusahaan lain lewat tenantId). Terpisah dari kode perusahaan di nomor
 // dokumen — mengubahnya TIDAK mengubah penomoran apa pun.
-app.put("/api/registration-code", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.put("/api/registration-code", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const tenant = (db.tenants as any[]).find((t) => t.id === tid);
@@ -1064,7 +1065,7 @@ app.put("/api/registration-code", requireAuth, requireRole("admin"), (req: Authe
   res.json({ success: true, code });
 });
 
-app.put("/api/users/:id", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.put("/api/users/:id", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
@@ -1093,7 +1094,7 @@ app.put("/api/users/:id", requireAuth, requireRole("admin"), (req: AuthedRequest
   }
 
   if (req.body.name) user.name = req.body.name;
-  if (req.body.role && ["admin", "legal", "manager", "staff", "viewer"].includes(req.body.role)) user.role = req.body.role;
+  if (req.body.role && ASSIGNABLE_ROLES.includes(req.body.role)) user.role = req.body.role;
   if (typeof req.body.active === "boolean") user.active = req.body.active;
   if (req.body.newPassword) {
     if (String(req.body.newPassword).length < 8) return res.status(400).json({ error: "Kata sandi minimal 8 karakter" });
@@ -1131,7 +1132,7 @@ app.put("/api/users/:id/delegation", requireAuth, (req: AuthedRequest, res) => {
   if (targetId === user.id) return res.status(400).json({ error: "Tidak bisa mendelegasikan kepada diri sendiri." });
   const target = (db.users as User[]).find((u) => u.id === targetId && u.tenantId === tid);
   if (!target || !target.active) return res.status(400).json({ error: "Pengganti tidak ditemukan atau sedang nonaktif." });
-  if (target.role === "viewer") return res.status(400).json({ error: "Viewer tidak bisa dijadikan pengganti — perannya tidak berwenang menyetujui." });
+  if (!canBeApprover(target.role)) return res.status(400).json({ error: `${roleLabelOf(target.role)} tidak bisa dijadikan pengganti — perannya tidak berwenang menyetujui.` });
 
   const from = String(req.body.delegateFrom || "").slice(0, 10);
   const until = String(req.body.delegateUntil || "").slice(0, 10);
@@ -1165,7 +1166,7 @@ app.put("/api/users/:id/delegation", requireAuth, (req: AuthedRequest, res) => {
   res.json({ success: true, user: stripUser(user) });
 });
 
-app.delete("/api/users/:id", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.delete("/api/users/:id", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   if (req.params.id === req.user!.id) return res.status(400).json({ error: "Tidak bisa menghapus akun sendiri" });
@@ -1910,6 +1911,16 @@ export async function initFirebaseDB() {
     }
     if (changed) { saveDB(db); logger.info({ changed }, "Pendaftar lama (menunggu persetujuan) diaktifkan otomatis"); }
   }
+  // Migrasi peran: "manager" lama → "manajemen" (peran baru). "staff" lama
+  // dibiarkan — hanya bisa melihat sampai admin mengatur ulang perannya.
+  {
+    const db = loadDB();
+    let changed = 0;
+    for (const u of db.users as User[]) {
+      if ((u.role as string) === "manager") { u.role = "manajemen"; changed++; }
+    }
+    if (changed) { saveDB(db); logger.info({ changed }, "Peran manager dimigrasikan ke manajemen"); }
+  }
 }
 
 // REST APIs
@@ -1925,7 +1936,7 @@ app.get("/api/clause-categories", requireAuth, (req: AuthedRequest, res) => {
   res.json(catsFor(db, tenantOf(req)));
 });
 
-app.post("/api/clause-categories", requireAuth, requireRole("admin", "legal", "staff"), (req: AuthedRequest, res) => {
+app.post("/api/clause-categories", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { category } = req.body;
@@ -1939,7 +1950,7 @@ app.post("/api/clause-categories", requireAuth, requireRole("admin", "legal", "s
 });
 
 // Rename a folder/category everywhere it is referenced (cascade, within tenant)
-app.put("/api/clause-categories", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.put("/api/clause-categories", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { oldName, newName } = req.body;
@@ -1957,7 +1968,7 @@ app.put("/api/clause-categories", requireAuth, requireRole("admin", "legal"), (r
 });
 
 // Delete a folder/category (blocked if still used by any contract in tenant)
-app.delete("/api/clause-categories/:name", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.delete("/api/clause-categories/:name", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const name = decodeURIComponent(req.params.name);
@@ -2052,10 +2063,23 @@ app.get("/api/settings", requireAuth, (req: AuthedRequest, res) => {
   res.json(withSettingsDefaults(rawSettingsFor(db, tenantOf(req))));
 });
 
-app.put("/api/settings", requireAuth, requireRole("admin"), (req: AuthedRequest, res) => {
+app.put("/api/settings", requireAuth, requireRole(...R.settings, "hr_ga"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const { tenantId, ...patch } = req.body; // tenantId handled by tenantOf, not stored in settings
+  let { tenantId, ...patch } = req.body; // tenantId handled by tenantOf, not stored in settings
+  // HR/GA hanya boleh mengubah Kategori Kontrak Karyawan (employmentTypes);
+  // bagian lain dari kiriman diabaikan.
+  if (req.user!.role === "hr_ga") {
+    const types = patch?.masterData?.employmentTypes;
+    if (!Array.isArray(types)) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Kontrak Karyawan." });
+    const cur = rawSettingsFor(db, tid) || {};
+    const curFull = withSettingsDefaults(cur);
+    const same = (x: unknown, y: unknown) => JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
+    const otherTop = Object.keys(patch).filter((k) => k !== "masterData" && !same(patch[k], (curFull as any)[k]));
+    const otherMd = Object.keys(patch.masterData || {}).filter((k) => k !== "employmentTypes" && !same(patch.masterData[k], (curFull as any).masterData?.[k]));
+    if (otherTop.length || otherMd.length) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Kontrak Karyawan. Pengaturan lain diubah oleh Admin." });
+    patch = { masterData: { ...(cur.masterData || {}), employmentTypes: types.map((x: unknown) => String(x).trim()).filter(Boolean) } };
+  }
   // Validasi format nomor kontrak sebelum disimpan — mask tak valid baru
   // ketahuan saat generateContractNumber() dipanggil (throw) kalau tidak
   // dicegat di sini.
@@ -2079,7 +2103,7 @@ app.put("/api/settings", requireAuth, requireRole("admin"), (req: AuthedRequest,
   res.json({ success: true, settings: merged });
 });
 
-app.post("/api/clauses", requireAuth, requireRole("admin", "legal", "staff"), (req: AuthedRequest, res) => {
+app.post("/api/clauses", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const newClause: Clause = {
@@ -2099,7 +2123,7 @@ app.post("/api/clauses", requireAuth, requireRole("admin", "legal", "staff"), (r
   res.json({ success: true, clause: newClause });
 });
 
-app.put("/api/clauses/:id", requireAuth, requireRole("admin", "legal", "staff"), (req: AuthedRequest, res) => {
+app.put("/api/clauses/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.clauses.findIndex((c: Clause) => c.id === req.params.id && c.tenantId === tid);
@@ -2125,7 +2149,7 @@ app.put("/api/clauses/:id", requireAuth, requireRole("admin", "legal", "staff"),
   }
 });
 
-app.delete("/api/clauses/:id", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.delete("/api/clauses/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   db.clauses = db.clauses.filter((c: Clause) => !(c.id === req.params.id && c.tenantId === tid));
@@ -2140,7 +2164,7 @@ app.get("/api/templates", requireAuth, (req: AuthedRequest, res) => {
   res.json(scoped(db.templates as Template[], tenantOf(req)));
 });
 
-app.post("/api/templates", requireAuth, requireRole("admin", "legal", "staff"), (req: AuthedRequest, res) => {
+app.post("/api/templates", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const newTemplate: Template = {
     id: "tmp-" + Date.now(),
@@ -2161,7 +2185,7 @@ app.post("/api/templates", requireAuth, requireRole("admin", "legal", "staff"), 
   res.json({ success: true, template: newTemplate });
 });
 
-app.delete("/api/templates/:id", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.delete("/api/templates/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const target = db.templates.find((t: Template) => t.id === req.params.id && t.tenantId === tid);
@@ -2171,7 +2195,7 @@ app.delete("/api/templates/:id", requireAuth, requireRole("admin", "legal"), (re
   res.json({ success: true });
 });
 
-app.put("/api/templates/:id", requireAuth, requireRole("admin", "legal", "staff"), (req: AuthedRequest, res) => {
+app.put("/api/templates/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.templates.findIndex((t: Template) => t.id === req.params.id && t.tenantId === tid);
@@ -2218,7 +2242,7 @@ app.get("/api/modules/employees", requireAuth, (req: AuthedRequest, res) => {
   res.json(scoped(db.employees as EmployeeData[], tenantOf(req)));
 });
 
-app.post("/api/modules/employees", requireAuth, requireRole("admin", "staff"), (req: AuthedRequest, res) => {
+app.post("/api/modules/employees", requireAuth, requireRole(...R.employeeData), (req: AuthedRequest, res) => {
   const db = loadDB();
   const emp: EmployeeData = {
     id: "EMP" + Date.now(),
@@ -2234,7 +2258,7 @@ app.post("/api/modules/employees", requireAuth, requireRole("admin", "staff"), (
   res.json({ success: true, employee: emp });
 });
 
-app.put("/api/modules/employees/:id", requireAuth, requireRole("admin", "staff"), (req: AuthedRequest, res) => {
+app.put("/api/modules/employees/:id", requireAuth, requireRole(...R.employeeData), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.employees.findIndex((e: EmployeeData) => e.id === req.params.id && e.tenantId === tid);
@@ -2244,7 +2268,7 @@ app.put("/api/modules/employees/:id", requireAuth, requireRole("admin", "staff")
   res.json({ success: true, employee: db.employees[idx] });
 });
 
-app.delete("/api/modules/employees/:id", requireAuth, requireRole("admin", "staff"), (req: AuthedRequest, res) => {
+app.delete("/api/modules/employees/:id", requireAuth, requireRole(...R.employeeData), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   db.employees = db.employees.filter((e: EmployeeData) => !(e.id === req.params.id && e.tenantId === tid));
@@ -2257,7 +2281,7 @@ app.get("/api/modules/vendors", requireAuth, (req: AuthedRequest, res) => {
   res.json(scoped(db.vendors as VendorData[], tenantOf(req)));
 });
 
-app.post("/api/modules/vendors", requireAuth, requireRole("admin", "staff"), (req: AuthedRequest, res) => {
+app.post("/api/modules/vendors", requireAuth, requireRole(...R.vendorData), (req: AuthedRequest, res) => {
   const db = loadDB();
   const vendor: VendorData = {
     id: "VND" + Date.now(),
@@ -2280,7 +2304,7 @@ app.post("/api/modules/vendors", requireAuth, requireRole("admin", "staff"), (re
   res.json({ success: true, vendor });
 });
 
-app.put("/api/modules/vendors/:id", requireAuth, requireRole("admin", "staff"), (req: AuthedRequest, res) => {
+app.put("/api/modules/vendors/:id", requireAuth, requireRole(...R.vendorData), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.vendors.findIndex((v: VendorData) => v.id === req.params.id && v.tenantId === tid);
@@ -2290,7 +2314,7 @@ app.put("/api/modules/vendors/:id", requireAuth, requireRole("admin", "staff"), 
   res.json({ success: true, vendor: db.vendors[idx] });
 });
 
-app.delete("/api/modules/vendors/:id", requireAuth, requireRole("admin", "staff"), (req: AuthedRequest, res) => {
+app.delete("/api/modules/vendors/:id", requireAuth, requireRole(...R.vendorData), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   db.vendors = db.vendors.filter((v: VendorData) => !(v.id === req.params.id && v.tenantId === tid));
@@ -2307,7 +2331,7 @@ app.get("/api/subfolders", requireAuth, (req: AuthedRequest, res) => {
   res.json(list);
 });
 
-app.post("/api/subfolders", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/subfolders", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { category, parentId, name } = req.body;
@@ -2339,7 +2363,7 @@ app.post("/api/subfolders", requireAuth, requireRole("admin", "staff", "legal", 
   res.json(folder);
 });
 
-app.put("/api/subfolders/:id", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.put("/api/subfolders/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const folder = (db.subFolders as SubFolder[]).find((f) => f.id === req.params.id && f.tenantId === tid);
@@ -2351,7 +2375,7 @@ app.put("/api/subfolders/:id", requireAuth, requireRole("admin", "staff", "legal
   res.json(folder);
 });
 
-app.delete("/api/subfolders/:id", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.delete("/api/subfolders/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const folder = (db.subFolders as SubFolder[]).find((f) => f.id === req.params.id && f.tenantId === tid);
@@ -2385,9 +2409,31 @@ function companyNameFor(db: any, tid: string): string {
     || "Perusahaan";
 }
 // Temukan kontrak yang benar-benar milik tenant si pemanggil.
+// Pengguna yang SAAT INI didelegasikan wewenang approve ke `userId` — supaya
+// pengganti bisa membuka dokumen yang harus ia setujui.
+function actingForIdsOf(db: any, userId: string): string[] {
+  const today = new Date().toISOString().slice(0, 10);
+  return ((db.users as User[]) || [])
+    .filter((u) => u.delegateToId === userId && (!u.delegateFrom || u.delegateFrom <= today) && (!u.delegateUntil || u.delegateUntil >= today))
+    .map((u) => u.id);
+}
+function viewerOf(db: any, req: AuthedRequest) {
+  return { id: req.user!.id, role: req.user!.role as string, actingForIds: actingForIdsOf(db, req.user!.id) };
+}
+// Kontrak yang boleh DILIHAT pengguna ini (batas per divisi / kontrak
+// karyawan — lihat canViewContract di src/roles.ts).
+function visibleContracts(db: any, req: AuthedRequest): Contract[] {
+  const viewer = viewerOf(db, req);
+  return scoped(db.contracts as Contract[], tenantOf(req)).filter((c) => canViewContract(viewer, c));
+}
+// Dipakai hampir semua endpoint /api/contracts/:id — kontrak di luar
+// jangkauan pengguna dianggap "tidak ditemukan" (404), sama seperti kontrak
+// perusahaan lain, supaya keberadaannya pun tidak bocor.
 function findOwnedContract(db: any, req: AuthedRequest, id: string): Contract | undefined {
   const tid = tenantOf(req);
-  return (db.contracts as Contract[]).find((c) => c.id === id && c.tenantId === tid);
+  const c = (db.contracts as Contract[]).find((x) => x.id === id && x.tenantId === tid);
+  if (!c) return undefined;
+  return canViewContract(viewerOf(db, req), c) ? c : undefined;
 }
 
 app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
@@ -2396,7 +2442,7 @@ app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
   // pakai `status` asli) — cuma field tambahan utk badge tabel Monitoring
   // Kontrak, dihitung dari fungsi yang SAMA dipakai linkedContract di
   // legal-jobs, supaya keduanya dijamin identik.
-  const list = scoped(db.contracts as Contract[], tenantOf(req)).map((c) => ({ ...c, unifiedStatus: computeUnifiedLegalStatus(c) }));
+  const list = visibleContracts(db, req).map((c) => ({ ...c, unifiedStatus: computeUnifiedLegalStatus(c) }));
   res.json(list);
 });
 
@@ -3030,7 +3076,7 @@ app.post("/api/dcs/lampiran-upload", requireAuth, uploadLampiran.single("file"),
 // dcs/routes.ts to fetchFile() at compose time) — same two-step convention
 // as master-contracts/upload: this just uploads, the caller still needs to
 // PUT /api/settings to actually persist the returned fields onto the tenant.
-app.post("/api/settings/company-logo", requireAuth, requireRole("admin"), upload.single("file"), async (req, res) => {
+app.post("/api/settings/company-logo", requireAuth, requireRole(...R.settings), upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Tidak ada berkas" });
   if (!/^image\/(png|jpe?g)$/.test(req.file.mimetype)) {
     return res.status(400).json({ error: "Logo harus berformat PNG atau JPEG" });
@@ -3047,7 +3093,7 @@ app.post("/api/settings/company-logo", requireAuth, requireRole("admin"), upload
 // /api/contracts/:id yang sudah ada (lihat komentar showLetterhead/
 // party2LogoUrl di situ) — konsisten dgn alur "Edit Data Pihak & Kontrak" yg
 // juga baru benar-benar tersimpan setelah tombol Simpan di modal itu diklik.
-app.post("/api/contracts/:id/party2-logo", requireAuth, requireRole("admin", "staff", "legal", "manager"), upload.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/party2-logo", requireAuth, requireRole(...R.contractEditors), upload.single("file"), async (req: AuthedRequest, res) => {
   if (!req.file) return res.status(400).json({ error: "Tidak ada berkas" });
   if (!/^image\/(png|jpe?g)$/.test(req.file.mimetype)) {
     return res.status(400).json({ error: "Logo harus berformat PNG atau JPEG" });
@@ -3075,7 +3121,11 @@ function buildContractCopies(copyCount: number, hasMaterai: boolean): any[] {
   });
 }
 
-app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+  // HR/GA hanya membuat kontrak karyawan; kontrak eksternal lewat Legal.
+  if (req.user!.role === "hr_ga" && !(req.body?.party2Type === "Karyawan" || req.body?.party2Type === "Employee")) {
+    return res.status(403).json({ error: "HR/GA hanya dapat membuat kontrak karyawan. Kontrak eksternal diajukan lewat Permintaan Kontrak ke Legal." });
+  }
   // Upload Dokumen: berkas ASLI user = dokumen kontrak utama. Metadata berkas
   // TIDAK dipercaya dari klien — dibaca ulang dari storage (ukuran, hash,
   // format) berdasarkan key hasil /api/master-contracts/upload. Dilakukan
@@ -3140,6 +3190,9 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
   const newContract: Contract = {
     id: "ctr-" + Date.now(),
     tenantId: tid,
+    createdById: req.user!.id,
+    createdByName: req.user!.name,
+    requestingDivision: isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined,
     templateId: req.body.templateId || "",
     templateSnapshot: captureTemplateSnapshot(db, tid, req.body.templateId),
     contractNumber,
@@ -3269,6 +3322,8 @@ app.post("/api/contracts", requireAuth, requireRole("admin", "staff", "legal", "
     const linkedJob = findLegalJob(db, tid, linkedLegalJobId);
     if (linkedJob && !linkedJob.linkedContractId && linkedJob.status !== "menunggu_persetujuan" && linkedJob.status !== "ditolak") {
       linkedJob.linkedContractId = newContract.id;
+      // Permintaan dari divisi → dokumen ikut terlihat oleh divisi peminta.
+      if (linkedJob.requestingDivision && !newContract.requestingDivision) newContract.requestingDivision = linkedJob.requestingDivision;
       linkedJob.updatedAt = new Date().toISOString();
       pushLegalTimeline(linkedJob, {
         label: `Ditautkan ke Kontrak: ${newContract.title} (${newContract.contractNumber})`,
@@ -3322,11 +3377,11 @@ const CONTRACT_PUT_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   Terminated: [],
 };
 
-app.put("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.put("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = (db.contracts as Contract[]).findIndex((c) => c.id === req.params.id && c.tenantId === tid);
-  if (idx === -1) return res.status(404).json({ error: "Contract not found" });
+  if (idx === -1 || !canViewContract(viewerOf(db, req), db.contracts[idx])) return res.status(404).json({ error: "Contract not found" });
   const oldContract = db.contracts[idx];
 
   if (req.body.status !== undefined && req.body.status !== oldContract.status) {
@@ -3413,6 +3468,11 @@ app.put("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal"
       customOpeningParagraph: req.body.customOpeningParagraph !== undefined ? (req.body.customOpeningParagraph || undefined) : oldContract.customOpeningParagraph,
     } : {}),
     status: req.body.status !== undefined ? req.body.status : oldContract.status,
+    // Divisi peminta — hanya Legal/Admin yang menandai (menentukan divisi
+    // mana yang ikut melihat dokumen ini).
+    requestingDivision: req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)
+      ? (isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined)
+      : oldContract.requestingDivision,
     // category/subFolderId: dipakai fitur "Pindahkan ke Arsip" (handleBulkMove
     // di App.tsx) — SELALU diizinkan terlepas dari status (lihat komentar
     // canEditContent di atas). subFolderId eksplisit boleh "" (pindah ke root
@@ -3487,7 +3547,7 @@ app.put("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal"
 // ---------------------------------------------------------------------------
 const BULK_IMPORT_MAX_FILES = 25;
 
-app.post("/api/contracts/bulk-import/extract", requireAuth, requireRole("admin", "staff", "legal", "manager"),
+app.post("/api/contracts/bulk-import/extract", requireAuth, requireRole(...R.contractEditors),
   upload.array("files", BULK_IMPORT_MAX_FILES), async (req: AuthedRequest, res) => {
   const files = (req.files as Express.Multer.File[]) || [];
   if (files.length === 0) return res.status(400).json({ error: "Tidak ada berkas yang diunggah." });
@@ -3563,7 +3623,7 @@ Balas JSON: {"title","category","docType","party1Name","party2Name","party2Type"
   res.json({ success: true, rows: hasil, terbaca: hasil.filter((r) => r.ocrOk).length, total: hasil.length });
 });
 
-app.post("/api/contracts/bulk-import/commit", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/bulk-import/commit", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const rows: any[] = Array.isArray(req.body.rows) ? req.body.rows : [];
@@ -3689,7 +3749,7 @@ function normalizeBudgetBody(body: any): { ok: boolean; value?: Partial<BudgetEn
   };
 }
 
-app.post("/api/budgets", requireAuth, requireRole("admin", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/budgets", requireAuth, requireRole(...R.budgets), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const v = normalizeBudgetBody(req.body);
@@ -3707,7 +3767,7 @@ app.post("/api/budgets", requireAuth, requireRole("admin", "legal", "manager"), 
   res.json({ success: true, entry });
 });
 
-app.put("/api/budgets/:id", requireAuth, requireRole("admin", "legal", "manager"), (req: AuthedRequest, res) => {
+app.put("/api/budgets/:id", requireAuth, requireRole(...R.budgets), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const entry = (db.budgets as BudgetEntry[]).find((b) => b.id === req.params.id && b.tenantId === tid);
@@ -3720,7 +3780,7 @@ app.put("/api/budgets/:id", requireAuth, requireRole("admin", "legal", "manager"
   res.json({ success: true, entry });
 });
 
-app.delete("/api/budgets/:id", requireAuth, requireRole("admin", "legal", "manager"), (req: AuthedRequest, res) => {
+app.delete("/api/budgets/:id", requireAuth, requireRole(...R.budgets), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const entry = (db.budgets as BudgetEntry[]).find((b) => b.id === req.params.id && b.tenantId === tid);
@@ -3731,7 +3791,7 @@ app.delete("/api/budgets/:id", requireAuth, requireRole("admin", "legal", "manag
   res.json({ success: true });
 });
 
-app.post("/api/contracts/:id/legal-hold", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/legal-hold", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const c = (db.contracts as Contract[]).find((x) => x.id === req.params.id && x.tenantId === tid);
@@ -3754,7 +3814,7 @@ app.post("/api/contracts/:id/legal-hold", requireAuth, requireRole("admin", "leg
   res.json({ success: true, contract: c });
 });
 
-app.post("/api/contracts/:id/mark-destroyed", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/mark-destroyed", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const c = (db.contracts as Contract[]).find((x) => x.id === req.params.id && x.tenantId === tid);
@@ -3776,7 +3836,7 @@ app.post("/api/contracts/:id/mark-destroyed", requireAuth, requireRole("admin", 
   res.json({ success: true, contract: c });
 });
 
-app.post("/api/contracts/bulk-reminder", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/bulk-reminder", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const ids: string[] = Array.isArray(req.body.contractIds) ? req.body.contractIds.filter((x: unknown) => typeof x === "string") : [];
@@ -3832,11 +3892,24 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requireRole("admin", "staf
   res.json({ success: true, sent: terkirim.length, skipped: dilewati });
 });
 
-app.post("/api/contracts/:id/submit-review", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+// Pihak pembuat dokumen: pengaju approval terakhir (atau pembuat) + admin.
+// Peninjau yang meminta revisi tidak ikut menerima/menolak usulan atau
+// mengajukan ulang. Dokumen lama tanpa data pembuat → semua staf berwenang.
+function isDocumentOwnerSide(c: Contract, user: { id: string; role: string }) {
+  if (user.role === "admin" || user.role === "super_admin") return true;
+  const owner = c.approvalSubmittedById || c.createdById;
+  if (!owner) return true;
+  return owner === user.id;
+}
+
+app.post("/api/contracts/:id/submit-review", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status === "Draft" && contract.revisionStage && !isDocumentOwnerSide(contract, req.user!)) {
+    return res.status(403).json({ error: `Revisi ditindaklanjuti & diajukan ulang oleh pembuat dokumen (${contract.approvalSubmittedByName || "pengaju"}).` });
+  }
   // Review Final Internal tanpa approver otomatis (approver ronde terakhir
   // sudah nonaktif) → pengguna memilih approver sendiri lewat endpoint ini.
   const isFinalSubmit = contract.status === "FinalReview"
@@ -3863,7 +3936,7 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requireRole("admin", "
   if (approvers.some((u) => !u)) {
     return res.status(400).json({ error: "Salah satu penanggung jawab tidak valid/tidak aktif." });
   }
-  if (approvers.some((u) => u!.role === "viewer")) {
+  if (approvers.some((u) => !canBeApprover(u!.role))) {
     return res.status(400).json({ error: "Penanggung jawab tidak boleh berperan sebagai Viewer." });
   }
 
@@ -4109,7 +4182,7 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
 });
 
 // Delete contract
-app.delete("/api/contracts/:id", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.delete("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const target = findOwnedContract(db, req, req.params.id);
@@ -4173,10 +4246,10 @@ function releaseContractNumber(db: any, tid: string, c: Contract): boolean {
 // FILING, jadi boleh di status apa pun (seperti Pindahkan ke Arsip). Nomor
 // dokumen yang sudah terbit TIDAK diubah. Dipakai untuk menata dokumen lama
 // yang belum punya PT/Platform ("Belum Diklasifikasi" di Arsip Eksternal).
-app.post("/api/contracts/:id/classify", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/classify", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   const company = resolveNumberCompany(db, req.body.companyId);
   if (!company) return res.status(400).json({ error: "Pilih perusahaan (PT)." });
@@ -4212,12 +4285,15 @@ app.post("/api/contracts/:id/classify", requireAuth, requireRole("admin", "staff
   contract.category = category;
   contract.docType = docType;
   contract.updatedAt = new Date().toISOString();
+  if (req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)) {
+    contract.requestingDivision = isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined;
+  }
   pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Klasifikasi Arsip", details: `${before} → ${company.name} / ${platform} / ${category} / ${docType} (nomor dokumen tidak berubah)` });
   saveDB(db);
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/release-number", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/release-number", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const target = findOwnedContract(db, req, req.params.id);
@@ -4241,7 +4317,7 @@ app.post("/api/contracts/:id/release-number", requireAuth, requireRole("admin", 
 // rangkap, atau upload scan berkas rangkap tsb. Kontrak lama (dibuat sebelum
 // fitur ini) belum punya `copies`; endpoint update menginisialisasi on-demand
 // lewat req.body.initCopies agar arsip lama bisa mulai dilacak juga.
-app.put("/api/contracts/:id/copies/:index", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.put("/api/contracts/:id/copies/:index", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4264,7 +4340,7 @@ app.put("/api/contracts/:id/copies/:index", requireAuth, requireRole("admin", "s
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/copies/:index/upload", requireAuth, requireRole("admin", "staff", "legal", "manager"), upload.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/copies/:index/upload", requireAuth, requireRole(...R.contractEditors), upload.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4324,7 +4400,7 @@ const isoDateOnly = (v: any): string | null => {
   const t = typeof v === "string" ? v.trim().slice(0, 10) : "";
   return /^\d{4}-\d{2}-\d{2}$/.test(t) && !isNaN(new Date(t).getTime()) ? t : null;
 };
-app.post("/api/contracts/:id/signing-dispatch", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/signing-dispatch", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4353,7 +4429,7 @@ app.post("/api/contracts/:id/signing-dispatch", requireAuth, requireRole("admin"
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4383,7 +4459,7 @@ app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole("admin",
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/activate", requireAuth, requireRole("admin", "staff", "legal", "manager"), upload.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/activate", requireAuth, requireRole(...R.contractEditors), upload.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4464,7 +4540,7 @@ app.post("/api/contracts/:id/activate", requireAuth, requireRole("admin", "staff
 // "kontrak ini sudah rilis" ke orang-orang yang dipilih PER NAMA, lengkap
 // dengan keterangan bebas. Bisa dikirim berkali-kali (mis. menyusul orang
 // lain); tiap pengumuman dicatat di contract.releaseAnnouncements + Audit Trail.
-app.post("/api/contracts/:id/announce-release", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/announce-release", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -4510,7 +4586,7 @@ function releaseShareUrl(req: express.Request, token: string): string {
   return `${shareBaseUrl(req)}/api/public/release/${token}`;
 }
 
-app.post("/api/contracts/:id/announce-release-external", requireAuth, requireRole("admin", "legal"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/announce-release-external", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4586,7 +4662,7 @@ app.get("/api/contracts/:id/addendum-context", requireAuth, (req: AuthedRequest,
 // tetap hidup, tidak digantikan — beda dari /renew yang membuat kontrak
 // pengganti independen). Hanya valid untuk kontrak induk yang sudah Aktif
 // (amandemen cuma masuk akal untuk kontrak yang sudah mengikat).
-app.post("/api/contracts/:id/addendum", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/addendum", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const parent = findOwnedContract(db, req, req.params.id);
@@ -5350,7 +5426,7 @@ function pushDocumentVersion(
 // Simpan hasil edit workspace (atau revisi yang diunggah) sbg versi BARU.
 // Multipart: file, comment, baseVersion (versi yang sedang diedit — cegah
 // menimpa perubahan orang lain), editMethod.
-app.post("/api/contracts/:id/document-versions", requireAuth, requireRole("admin", "staff", "legal", "manager"),
+app.post("/api/contracts/:id/document-versions", requireAuth, requireRole(...R.contractEditors),
   uploadContractDoc.single("file"), async (req: AuthedRequest, res) => {
   if (!req.file) return res.status(400).json({ error: "Berkas versi baru wajib dikirim." });
   const fileName = cleanFileName(req.file.originalname);
@@ -5508,7 +5584,7 @@ function assertEditableUploadContract(contract: Contract | undefined, res: any):
 }
 
 // Konversi versi aktif .doc -> .docx sebagai versi BARU (agar bisa diedit).
-app.post("/api/contracts/:id/document-versions/convert", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/convert", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   const pre = findOwnedContract(loadDB(), req, req.params.id);
   if (!assertEditableUploadContract(pre, res)) return;
   const preVersions = uploadedDocumentVersions(loadDB(), pre);
@@ -5538,7 +5614,7 @@ app.post("/api/contracts/:id/document-versions/convert", requireAuth, requireRol
 // "Edit seperti Word": ubah versi aktif PDF -> .docx sebagai versi BARU
 // (pdf-to-docx.ts, tanpa Python/layanan luar). PDF-nya tetap tersimpan utuh
 // di versi sebelumnya & jadi sourceFile versi baru ini.
-app.post("/api/contracts/:id/document-versions/pdf-to-docx", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/pdf-to-docx", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   const pre = findOwnedContract(loadDB(), req, req.params.id);
   if (!assertEditableUploadContract(pre, res)) return;
   const preVersions = uploadedDocumentVersions(loadDB(), pre);
@@ -5590,7 +5666,7 @@ app.get("/api/contracts/:id/document/pdf-layout", requireAuth, async (req: Authe
 });
 
 // Simpan edit TEKS ASLI PDF (+ teks baru & redaksi) sebagai versi baru.
-app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   const pre = findOwnedContract(loadDB(), req, req.params.id);
   if (!assertEditableUploadContract(pre, res)) return;
   const preVersions = uploadedDocumentVersions(loadDB(), pre);
@@ -5633,7 +5709,7 @@ app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requireRo
 
 // Kembalikan ke versi lama = buat versi BARU yang menunjuk berkas versi itu
 // (riwayat tidak pernah ditulis ulang/dihapus).
-app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -5659,7 +5735,7 @@ app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, r
 });
 
 // 8. SMART RENEWAL ENGINE (klik perpanjang, AI atau sistem buat perpanjangan otomatis tahun berikutnya)
-app.post("/api/contracts/:id/renew", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/renew", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const sourceContract = findOwnedContract(db, req, req.params.id);
@@ -5768,9 +5844,24 @@ app.post("/api/contracts/:id/renew", requireAuth, requireRole("admin", "staff", 
 
 
 // 9. AUDIT TRAILS & NOTIFICATIONS
+// Audit & notifikasi yang menyangkut kontrak hanya tampil bila kontraknya
+// boleh dilihat pengguna (batas divisi / kontrak karyawan); yang tidak
+// terkait kontrak tetap tampil seperti biasa.
+function contractVisibilityFilter(db: any, req: AuthedRequest) {
+  const viewer = viewerOf(db, req);
+  const byId = new Map(scoped(db.contracts as Contract[], tenantOf(req)).map((c) => [c.id, c] as const));
+  return (contractId?: string) => {
+    if (!contractId) return true;
+    const c = byId.get(contractId);
+    return !c || canViewContract(viewer, c);
+  };
+}
+
 app.get("/api/audits", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  res.json(scoped(db.audits as AuditTrail[], tenantOf(req)));
+  const ok = contractVisibilityFilter(db, req);
+  const privileged = ["super_admin", "admin", "legal", "manajemen", "it_system"].includes(req.user!.role);
+  res.json(scoped(db.audits as AuditTrail[], tenantOf(req)).filter((a) => ok(a.contractId) && (privileged || a.contractId || a.userId === req.user!.id)));
 });
 
 app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
@@ -5779,8 +5870,10 @@ app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
   // sengaja tidak diubah). Kalau diisi, hanya orang yang disebut yang melihat —
   // dipakai eskalasi SLA supaya teguran keterlambatan tidak jadi pengumuman
   // sekantor.
+  const ok = contractVisibilityFilter(db, req);
   const mine = scoped(db.notifications as SystemNotification[], tenantOf(req))
-    .filter((n) => !n.targetUserIds?.length || n.targetUserIds.includes(req.user!.id));
+    .filter((n) => !n.targetUserIds?.length || n.targetUserIds.includes(req.user!.id))
+    .filter((n) => ok(n.contractId));
   res.json(mine);
 });
 
@@ -6608,7 +6701,7 @@ app.post("/api/ai/analyze-regulation-impact", requireAuth, async (req: AuthedReq
   const db = loadDB();
   // Kritis: batasi ke portofolio kontrak milik tenant pemanggil saja — jangan
   // pernah kirim data kontrak perusahaan lain ke prompt AI.
-  const contractsList = scoped(db.contracts as Contract[], tenantOf(req));
+  const contractsList = visibleContracts(db, req);
   const regulation = defaultRegulations.find(r => r.id === regulationId);
 
   if (!regulation) {
@@ -6810,7 +6903,7 @@ app.get("/api/analytics", requireAuth, (req: AuthedRequest, res) => {
   const categoryFilter = typeof req.query.category === "string" ? req.query.category : "";
   const monthsParam = parseInt(String(req.query.months || "12"), 10);
   const monthsWindow = [3, 6, 12, 24].includes(monthsParam) ? monthsParam : 12;
-  const allContracts = scoped(db.contracts as Contract[], tid).filter(
+  const allContracts = visibleContracts(db, req).filter(
     (c) => !categoryFilter || categoryFilter === "Semua" || c.category === categoryFilter,
   );
 
@@ -6904,6 +6997,7 @@ app.get("/api/analytics", requireAuth, (req: AuthedRequest, res) => {
 app.get("/api/contracts/:id/comments", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
+  if (!findOwnedContract(db, req, req.params.id)) return res.status(404).json({ error: "Contract not found" });
   const comments = (db.clauseComments as ClauseComment[] || [])
     .filter((c) => c.tenantId === tid && c.contractId === req.params.id)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -6935,7 +7029,7 @@ function parseMarkupFields(body: any): { kind: "comment" | "strike" | "replace";
 app.post("/api/contracts/:id/comments", requireAuth, async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
 
   const { clauseId, clauseTitle, text, parentId, mentions, anchor } = req.body;
@@ -7048,7 +7142,11 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   // baru), jadi dibatasi ke peran yang boleh mengubah dokumen kontrak.
   if (req.body.status !== undefined) {
     if (!["pending", "accepted", "rejected"].includes(req.body.status)) return res.status(400).json({ error: "Status tidak valid." });
-    if (!["admin", "staff", "legal", "manager", "super_admin"].includes(req.user!.role)) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
+    if (![...R.contractEditors, "super_admin"].includes(req.user!.role)) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
+    const parent = (db.contracts as Contract[]).find((c) => c.id === comment.contractId && c.tenantId === tid);
+    if (parent && !isDocumentOwnerSide(parent, req.user!)) {
+      return res.status(403).json({ error: `Usulan diterima/ditolak oleh pembuat dokumen (${parent.approvalSubmittedByName || parent.createdByName || "pengaju"}).` });
+    }
     if (comment.kind !== "strike" && comment.kind !== "replace") return res.status(400).json({ error: "Hanya usulan coret/ganti yang punya status." });
     comment.status = req.body.status;
     comment.resolved = req.body.status !== "pending";
@@ -7097,10 +7195,10 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
 // field kontrak sensitif lain yang dibocorkan.
 
 // Aktifkan/putar token review eksternal (authed). Hanya sebelum FullyApproved.
-app.post("/api/contracts/:id/external-review/enable", requireAuth, (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/enable", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   // Alur baru: review eksternal baru boleh dibuka SETELAH acc internal
   // (ApprovedInternal), atau saat sudah dalam Review Eksternal (ambil ulang
@@ -7174,10 +7272,10 @@ function startExternalRevision(db: any, contract: Contract, note: string, by: st
   });
 }
 
-app.post("/api/contracts/:id/external-review/request-revision", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/request-revision", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   if (contract.status !== "ReviewEksternal") {
     return res.status(409).json({ error: "Revisi eksternal hanya bisa dimulai saat kontrak sedang dalam Review Eksternal." });
@@ -7192,10 +7290,10 @@ app.post("/api/contracts/:id/external-review/request-revision", requireAuth, req
 
 // Pihak eksternal setuju di luar sistem (email/rapat) — staf internal
 // mencatat persetujuannya sendiri. Sama efeknya dgn tamu klik "Setuju/OK".
-app.post("/api/contracts/:id/external-review/mark-approved", requireAuth, requireRole("admin", "staff", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/mark-approved", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   if (contract.status !== "ReviewEksternal") {
     return res.status(409).json({ error: "Hanya kontrak yang sedang Review Eksternal yang bisa ditandai disetujui eksternal." });
@@ -7213,10 +7311,10 @@ app.post("/api/contracts/:id/external-review/mark-approved", requireAuth, requir
 
 // Lewati Review Eksternal (mis. dokumen tidak perlu ditinjau pihak kedua).
 // Dibatasi admin/legal/manager & wajib alasan — tercatat jelas di audit.
-app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole("admin", "legal", "manager"), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   if (contract.status !== "ApprovedInternal") {
     return res.status(409).json({ error: "Review eksternal hanya bisa dilewati saat kontrak berstatus Disetujui Internal." });
@@ -7231,10 +7329,10 @@ app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole("ad
 });
 
 // Matikan token (link lama langsung tidak berlaku).
-app.post("/api/contracts/:id/external-review/disable", requireAuth, (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/disable", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   contract.externalReviewToken = undefined;
   contract.externalReviewExpiresAt = null;
@@ -7246,10 +7344,10 @@ app.post("/api/contracts/:id/external-review/disable", requireAuth, (req: Authed
 
 // Buka kembali akses komentar/setuju setelah tamu eksternal mengunci sesinya
 // (klik Setuju/OK) — TIDAK memutar ulang token, link yang sama tetap berlaku.
-app.post("/api/contracts/:id/external-review/unlock", requireAuth, (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/unlock", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
-  const contract = (db.contracts as Contract[]).find((c) => c.id === req.params.id && c.tenantId === tid);
+  const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   if (!contract.externalReviewToken) return res.status(409).json({ error: "Belum ada link review eksternal aktif untuk kontrak ini." });
   contract.externalReviewLocked = false;
@@ -7525,7 +7623,7 @@ function fixFixedPartyLabels(text: string | undefined, targetLang: "id" | "en"):
 // terjemahan bisa dibuat ulang kapan saja tanpa kehilangan naskah asli, dan
 // arah terjemahan bisa dibalik (kontrak yang aslinya berbahasa Inggris
 // diterjemahkan ke Indonesia).
-app.post("/api/contracts/:id/translate", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/translate", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -7878,7 +7976,7 @@ function sanitizeDcsAnchor(raw: any): DcsReviewCommentAnchor {
   return a;
 }
 
-app.post("/api/dcs/versions/:vid/external-review/enable", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/dcs/versions/:vid/external-review/enable", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   try {
     const tid = tenantOf(req);
     const token = randomBytes(24).toString("hex");
@@ -7891,12 +7989,12 @@ app.post("/api/dcs/versions/:vid/external-review/enable", requireAuth, requireRo
   }
 });
 
-app.post("/api/dcs/versions/:vid/external-review/disable", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/dcs/versions/:vid/external-review/disable", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   await disableDcsExternalReview(dcsPool, { tenantId: tenantOf(req), versionId: req.params.vid });
   res.json({ success: true });
 });
 
-app.post("/api/dcs/versions/:vid/external-review/unlock", requireAuth, requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/dcs/versions/:vid/external-review/unlock", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
   const tid = tenantOf(req);
   // Guard yang sama seperti sisi Kontrak (/api/contracts/:id/external-review/unlock):
   // tanpa ini, versi yang belum pernah punya link review eksternal balas 200
@@ -7998,9 +8096,27 @@ app.post("/api/dcs-external-review/:token/approve", apiLimiter, async (req, res)
 
 // ----- Authed: kelola Pekerjaan Legal -----
 
+// Pekerjaan Legal yang boleh dilihat pengguna: Legal/Admin/Manajemen semua;
+// divisi bisnis hanya permintaan divisinya (termasuk data lama yang PIC-nya
+// nama divisi tsb); peran lain tidak melihat antrian Legal.
+const DIVISION_PIC_LABEL: Record<string, string> = {
+  marketing: "Marketing", business_partnership: "Business Partnership",
+  account_executive: "Account Executive", operasional: "Operasional",
+};
+function canViewLegalJob(user: { id: string; role: string }, job: LegalJob): boolean {
+  if (["super_admin", "admin", "legal", "manajemen"].includes(user.role)) return true;
+  if (job.requesterId === user.id) return true;
+  if (isDivisionRole(user.role)) return job.requestingDivision === user.role || job.picName === DIVISION_PIC_LABEL[user.role];
+  return false;
+}
+function findVisibleLegalJob(db: any, req: AuthedRequest, id: string): LegalJob | undefined {
+  const job = findLegalJob(db, tenantOf(req), id);
+  return job && canViewLegalJob(req.user!, job) ? job : undefined;
+}
+
 app.get("/api/legal-jobs", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  const list = legalJobTenantList(db, tenantOf(req)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const list = legalJobTenantList(db, tenantOf(req)).filter((j) => canViewLegalJob(req.user!, j)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   res.json(list.map((j) => withLinkedContract(db, j)));
 });
 
@@ -8019,7 +8135,7 @@ app.get("/api/legal-jobs/available-for-contract", requireAuth, (req: AuthedReque
 
 app.get("/api/legal-jobs/:id", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  const job = findVisibleLegalJob(db, req, req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
   res.json(withLinkedContract(db, job));
 });
@@ -8028,20 +8144,24 @@ app.get("/api/legal-jobs/:id", requireAuth, (req: AuthedRequest, res) => {
 // formulir). Karena yang menginput sudah Legal, tahap "Menunggu Persetujuan"
 // dilewati: pekerjaan langsung masuk alur kerja utama (Draft) dengan prioritas
 // yang ditentukan penginput, sumbernya "internal".
-app.post("/api/legal-jobs", requireAuth, requireRole("admin", "legal", "manager", "staff"), uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
+// Divisi bisnis (Marketing / BP / AE / Operasional) memakai endpoint yang
+// sama untuk PERMINTAAN KONTRAK: masuk "Menunggu Persetujuan" Legal, PIC =
+// divisinya, tanpa prioritas (prioritas ditentukan Legal saat menyetujui).
+app.post("/api/legal-jobs", requireAuth, requireRole(...R.legalOnly, ...R.requesters), uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const b = req.body || {};
+  const isDivisionRequest = isDivisionRole(req.user!.role);
   const title = String(b.title || "").trim();
   const partnerName = String(b.partnerName || "").trim();
   const docType = String(b.docType || "").trim();
-  const picName = normalizeLegalPic(b.picName);
+  const picName = isDivisionRequest ? DIVISION_PIC_LABEL[req.user!.role] : normalizeLegalPic(b.picName);
   const deadline = String(b.deadline || "").trim();
   const priority = String(b.priority || "") as LegalJobPriority;
   const missing = [
     !title && "Judul Pekerjaan", !partnerName && "Partner/Pihak", !docType && "Jenis Dokumen",
     !picName && "PIC Pemberi Pekerjaan (pilih dari daftar; jika Lainnya, isi nama divisinya)", !deadline && "Deadline",
-    !["Tinggi", "Sedang", "Rendah"].includes(priority) && "Prioritas",
+    !isDivisionRequest && !["Tinggi", "Sedang", "Rendah"].includes(priority) && "Prioritas",
   ].filter(Boolean);
   if (missing.length) return res.status(400).json({ error: `Field wajib belum diisi: ${missing.join(", ")}.` });
 
@@ -8060,6 +8180,31 @@ app.post("/api/legal-jobs", requireAuth, requireRole("admin", "legal", "manager"
       logger.error({ err }, "Gagal mengunggah lampiran Pekerjaan Legal (input Staff Legal)");
       return res.status(500).json({ error: "Gagal mengunggah lampiran. Coba lagi atau simpan tanpa lampiran." });
     }
+  }
+  if (isDivisionRequest) {
+    const job: LegalJob = {
+      id: "lj-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      tenantId: tid, title, partnerName, docType, picName: picName!, deadline,
+      description: String(b.description || "").trim() || undefined, documents,
+      status: "menunggu_persetujuan", source: "divisi",
+      submitterName: req.user!.name, submitterEmail: req.user!.email,
+      requesterId: req.user!.id, requesterName: req.user!.name, requestingDivision: req.user!.role,
+      notes: [], timeline: [
+        { id: "ljt-0", label: `Permintaan Kontrak dari ${picName}`, actor: req.user!.name, at: now, detail: "Menunggu persetujuan Legal." },
+      ],
+      createdAt: now, updatedAt: now,
+    };
+    if (!db.legalJobs) db.legalJobs = [];
+    db.legalJobs.push(job);
+    pushNotif(db, tid, {
+      title: "Permintaan Kontrak Baru",
+      message: `${req.user!.name} (${picName}) meminta: "${title}" — ${partnerName}, deadline ${deadline}.`,
+      type: "info",
+      targetUserIds: ((db.users as User[]) || []).filter((u) => u.tenantId === tid && u.active && (u.role === "legal" || u.role === "admin")).map((u) => u.id),
+    });
+    pushAudit(db, req, { action: "Permintaan Kontrak", details: `${picName} meminta "${title}" (${partnerName}).` });
+    saveDB(db);
+    return res.json(withLinkedContract(db, job));
   }
   const requester = String(b.submitterName || "").trim();
   const job: LegalJob = {
@@ -8083,7 +8228,7 @@ app.post("/api/legal-jobs", requireAuth, requireRole("admin", "legal", "manager"
 });
 
 // Setujui pekerjaan masuk → tentukan prioritas → pindah ke alur kerja utama (status: draft).
-app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole("admin", "legal", "manager", "staff"), (req: AuthedRequest, res) => {
+app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const job = findLegalJob(db, tenantOf(req), req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
@@ -8097,12 +8242,19 @@ app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole("admin", "lega
   job.updatedAt = job.approvedAt;
   pushLegalTimeline(job, { label: `Disetujui — Prioritas ${priority}`, actor: req.user!.name, detail: "Masuk ke alur kerja utama (status: Draft)." }, job.approvedAt);
   pushAudit(db, req, { action: "Approve Pekerjaan Legal", details: `Menyetujui "${job.title}" (${job.partnerName}), prioritas ${priority}.` });
+  if (job.requesterId) {
+    pushNotif(db, tenantOf(req), {
+      title: "Permintaan Kontrak Disetujui Legal",
+      message: `"${job.title}" disetujui ${req.user!.name} (prioritas ${priority}) dan sedang disiapkan Legal.`,
+      type: "success", targetUserIds: [job.requesterId],
+    });
+  }
   saveDB(db);
   res.json(job);
 });
 
 // Tolak pekerjaan masuk → wajib alasan → arsip penolakan (status: ditolak), TIDAK masuk alur kerja utama.
-app.patch("/api/legal-jobs/:id/reject", requireAuth, requireRole("admin", "legal", "manager", "staff"), async (req: AuthedRequest, res) => {
+app.patch("/api/legal-jobs/:id/reject", requireAuth, requireRole(...R.legalOnly), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const job = findLegalJob(db, tenantOf(req), req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
@@ -8116,6 +8268,13 @@ app.patch("/api/legal-jobs/:id/reject", requireAuth, requireRole("admin", "legal
   job.updatedAt = job.rejectedAt;
   pushLegalTimeline(job, { label: "Tidak Disetujui", actor: req.user!.name, detail: reason }, job.rejectedAt);
   pushAudit(db, req, { action: "Tolak Pekerjaan Legal", details: `Menolak "${job.title}" (${job.partnerName}). Alasan: ${reason}` });
+  if (job.requesterId) {
+    pushNotif(db, tenantOf(req), {
+      title: "Permintaan Kontrak Ditolak Legal",
+      message: `"${job.title}" tidak disetujui ${req.user!.name}. Alasan: ${reason}`,
+      type: "warning", targetUserIds: [job.requesterId],
+    });
+  }
   saveDB(db);
   // Notifikasi email opsional ke pengisi form — honest-degradation seperti fitur email lain (no-op kalau SMTP belum dikonfigurasi).
   if (job.submitterEmail && isEmailConfigured()) {
@@ -8146,7 +8305,7 @@ app.patch("/api/legal-jobs/:id/status", requireAuth, (req: AuthedRequest, res) =
 
 app.post("/api/legal-jobs/:id/notes", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  const job = findVisibleLegalJob(db, req, req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
   const text = String(req.body?.text || "").trim();
   if (!text) return res.status(400).json({ error: "Catatan tidak boleh kosong." });
@@ -8160,7 +8319,7 @@ app.post("/api/legal-jobs/:id/notes", requireAuth, (req: AuthedRequest, res) => 
 
 app.post("/api/legal-jobs/:id/documents", requireAuth, uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
-  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  const job = findVisibleLegalJob(db, req, req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
   if (!req.file) return res.status(400).json({ error: "Berkas wajib diunggah." });
   try {
@@ -8188,7 +8347,7 @@ app.post("/api/legal-jobs/:id/documents", requireAuth, uploadLegalDoc.single("fi
 // jelas (bukan halaman aplikasi). ?download=1 -> attachment, default inline.
 app.get("/api/legal-jobs/:id/documents/:docId/file", requireAuth, async (req: AuthedRequest, res) => {
   const db = loadDB();
-  const job = findLegalJob(db, tenantOf(req), req.params.id);
+  const job = findVisibleLegalJob(db, req, req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
   const doc = (job.documents || []).find((d) => d.id === req.params.docId);
   if (!doc) return res.status(404).json({ error: "Dokumen tidak ditemukan." });
@@ -8227,7 +8386,7 @@ app.get("/api/legal-form-link", requireAuth, async (req: AuthedRequest, res) => 
 });
 
 // Reset/nonaktifkan link lama — token baru diterbitkan, link lama langsung tidak berlaku.
-app.post("/api/legal-form-link/regenerate", requireAuth, requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+app.post("/api/legal-form-link/regenerate", requireAuth, requireRole(...R.legalOnly), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   if (!db.legalFormLinks) db.legalFormLinks = [];
@@ -8332,7 +8491,7 @@ app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const jobs = legalJobTenantList(db, tid);
-  const contracts = (db.contracts as Contract[]).filter((c) => c.tenantId === tid);
+  const contracts = visibleContracts(db, req);
   const now = Date.now();
 
   const statusCounts: Record<string, number> = {};

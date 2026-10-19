@@ -297,8 +297,8 @@ export function makeDefaultUsers(): any[] {
     // Perusahaan default (PT Semesta Digital Terpadu)
     mk("usr-admin", DEFAULT_TENANT_ID, "Admin Perusahaan", "admin@semesta.co", "admin", "Admin#2026"),
     mk("usr-legal", DEFAULT_TENANT_ID, "Siti Rahma", "legal@semesta.co", "legal", "Legal#2026"),
-    mk("usr-manager", DEFAULT_TENANT_ID, "Budi Santoso", "manager@semesta.co", "manager", "Manager#2026"),
-    mk("usr-staff", DEFAULT_TENANT_ID, "Ahmad GA", "staff@semesta.co", "staff", "Staff#2026"),
+    mk("usr-manager", DEFAULT_TENANT_ID, "Budi Santoso", "manager@semesta.co", "manajemen", "Manager#2026"),
+    mk("usr-staff", DEFAULT_TENANT_ID, "Ahmad GA", "staff@semesta.co", "hr_ga", "Staff#2026"),
   ];
 }
 

@@ -51,7 +51,9 @@ function fail(res: Response, err: any, fallback: string) {
 // notifikasi di sini walau mereka boleh menandatangani kolom apa pun sebagai
 // override — mencegah admin di-spam tiap dokumen mana pun butuh TTD.
 function usersWithRole(db: any, tenantId: string, role: string): { id: string; name: string }[] {
-  return ((db.users as any[]) || []).filter((u) => u.tenantId === tenantId && u.active && u.role === role);
+  // "manager" (peran lama di kolom tanda tangan DCS) = "manajemen".
+  const want = role === "manager" ? "manajemen" : role;
+  return ((db.users as any[]) || []).filter((u) => u.tenantId === tenantId && u.active && (u.role === want || u.role === role));
 }
 
 // Siapa yang harus di-notifikasi / boleh menandatangani sebuah kolom TTD:
@@ -255,7 +257,7 @@ export function createDcsRouter(pool: Pool): express.Router {
 
   // Create a controlled document + its Terbitan 1 Revisi 0 draft (or a
   // manually-chosen starting number — see initialMajor/initialMinor below).
-  router.post("/documents", requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/documents", requireRole("admin", "legal", "hr_ga"), async (req: AuthedRequest, res) => {
     try {
       const { docTypeCode, department, title, ownerUserId, metadata } = req.body;
       if (!docTypeCode || !department || !title) {
@@ -280,7 +282,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   // New version (revisi = minor+1, terbitan = major+1 & minor reset to 0) —
   // or a manually typed major/minor override; a collision with an existing
   // Terbitan/Revisi on this document comes back as a clean 409 (see fail()).
-  router.post("/documents/:id/versions", requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/documents/:id/versions", requireRole("admin", "legal", "hr_ga"), async (req: AuthedRequest, res) => {
     try {
       const bump = req.body.bump === "terbitan" ? "terbitan" : "revisi";
       const overrideMajor = Number.isInteger(Number(req.body.major)) && Number(req.body.major) >= 1
@@ -298,7 +300,7 @@ export function createDcsRouter(pool: Pool): express.Router {
 
   // Lepas nomor dokumen supaya dipakai dokumen berikutnya (batal terbit).
   // Dokumennya TIDAK dihapus — modul ini menganut supersede-never-delete.
-  router.post("/documents/:id/release-number", requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/documents/:id/release-number", requireRole("admin", "legal", "manajemen"), async (req: AuthedRequest, res) => {
     try {
       const result = await releaseDocumentNumber(pool, { tenantId: tenantOf(req), documentId: req.params.id });
       if (result.ok === true) return res.json({ success: true, releasedNumber: result.releasedNumber });
@@ -307,7 +309,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   });
 
   // Upload the clean master PDF for a version (stored clean + hashed).
-  router.post("/versions/:vid/file", requireRole("admin", "staff", "legal", "manager"), upload.single("file"), async (req: AuthedRequest, res) => {
+  router.post("/versions/:vid/file", requireRole("admin", "legal", "hr_ga"), upload.single("file"), async (req: AuthedRequest, res) => {
     try {
       if (!req.file) return res.status(400).json({ error: "Tidak ada berkas" });
       const key = `dcs-${Date.now()}-${req.file.originalname.replace(/[^\w.\-]/g, "_")}`;
@@ -328,7 +330,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   // upload (hash, store, attach), so everything downstream (approval, sign,
   // watermark) is identical either way. The structured content is preserved in
   // metadata so it can be reopened/edited or carried into the next revision.
-  router.post("/versions/:vid/compose", requireRole("admin", "staff", "legal", "manager"), upload.single("flowImage"), async (req: AuthedRequest, res) => {
+  router.post("/versions/:vid/compose", requireRole("admin", "legal", "hr_ga"), upload.single("flowImage"), async (req: AuthedRequest, res) => {
     try {
       const tid = tenantOf(req);
       const version = await getVersionCore(pool, tid, req.params.vid);
@@ -471,7 +473,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   // two separate versions, auto-translated, not one interleaved bilingual
   // PDF). Only documents composed in-app have structured content to
   // translate; plain uploads have no source of truth to translate FROM.
-  router.post("/versions/:vid/translate", requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/versions/:vid/translate", requireRole("admin", "legal", "hr_ga"), async (req: AuthedRequest, res) => {
     try {
       const tid = tenantOf(req);
       const version = await getVersionCore(pool, tid, req.params.vid);
@@ -539,7 +541,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   // "dokumen kadaluarsa" reminder, independent of Terbitan/Revisi state.
   // Callable at any lifecycle stage (a schedule set on a draft carries
   // forward once it's effective; can also be adjusted afterward).
-  router.put("/versions/:vid/review-schedule", requireRole("admin", "staff", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.put("/versions/:vid/review-schedule", requireRole("admin", "legal", "hr_ga"), async (req: AuthedRequest, res) => {
     try {
       const reviewDueAt: string | null = req.body.reviewDueAt || null;
       const reviewReminderDays = Number(req.body.reviewReminderDays) || 30;
@@ -899,7 +901,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   });
 
   // Distribute a version to a set of users (creates pending read obligations).
-  router.post("/versions/:vid/distribute", requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/versions/:vid/distribute", requireRole("admin", "legal", "manajemen"), async (req: AuthedRequest, res) => {
     try {
       const userIds: string[] = Array.isArray(req.body?.userIds) ? req.body.userIds : [];
       if (userIds.length === 0) return res.status(400).json({ error: "Pilih minimal satu penerima" });
@@ -917,7 +919,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   //     versi effective lama otomatis superseded/UNCONTROLLED).
   //   • tanggal > sekarang → JADWALKAN (status tetap 'approved', tanggal disimpan;
   //     cron reminders.ts mengaktifkannya saat tiba).
-  router.post("/documents/:id/versions/:vid/make-effective", requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/documents/:id/versions/:vid/make-effective", requireRole("admin", "legal", "manajemen"), async (req: AuthedRequest, res) => {
     try {
       const tid = tenantOf(req);
       const rawWhen = typeof req.body?.effectiveAt === "string" ? req.body.effectiveAt.trim() : "";
@@ -954,7 +956,7 @@ export function createDcsRouter(pool: Pool): express.Router {
   });
 
   // Batalkan jadwal rilis — kembali menunggu rilis manual (status tetap approved).
-  router.post("/documents/:id/versions/:vid/cancel-release", requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/documents/:id/versions/:vid/cancel-release", requireRole("admin", "legal", "manajemen"), async (req: AuthedRequest, res) => {
     try {
       await cancelVersionRelease(pool, { tenantId: tenantOf(req), versionId: req.params.vid });
       res.json({ success: true });
@@ -963,7 +965,7 @@ export function createDcsRouter(pool: Pool): express.Router {
 
   // Nonaktifkan (tarik) dokumen Effective tanpa pengganti → OBSOLETE permanen.
   // Watermark otomatis menjadi UNCONTROLLED karena status jadi superseded.
-  router.post("/documents/:id/versions/:vid/withdraw", requireRole("admin", "legal", "manager"), async (req: AuthedRequest, res) => {
+  router.post("/documents/:id/versions/:vid/withdraw", requireRole("admin", "legal", "manajemen"), async (req: AuthedRequest, res) => {
     try {
       const result = await withdrawEffectiveVersion(pool, {
         tenantId: tenantOf(req), documentId: req.params.id,

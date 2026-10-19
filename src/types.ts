@@ -19,13 +19,21 @@ export interface Tenant {
 
 // Peran pengguna (RBAC). super_admin lintas-tenant (operator SaaS);
 // sisanya tercakup dalam satu tenant/perusahaan.
+// Detail hak tiap peran: lihat src/roles.ts.
 export type UserRole =
-  | "super_admin" // kelola semua perusahaan & user (operator sistem)
-  | "admin"       // admin perusahaan: kelola user, master data, template, settings
-  | "legal"       // Legal Counsel: kelola klausul & template
-  | "manager"     // Supervisor: kelola kontrak & aktivasi
-  | "staff"       // Staff GA/HR: buat/edit draft, upload, aktifkan kontrak
-  | "viewer";     // hanya baca
+  | "super_admin"          // semua fitur, lintas perusahaan
+  | "it_system"            // pengaturan & sistem, tanpa hak bisnis
+  | "admin"                // admin per perusahaan
+  | "legal"                // susun, ajukan, kirim eksternal, TTD
+  | "manajemen"            // lihat semua + approve
+  | "marketing"            // divisi bisnis — Permintaan Kontrak ke Legal
+  | "business_partnership" // divisi bisnis
+  | "account_executive"    // divisi bisnis
+  | "operasional"          // divisi bisnis
+  | "hr_ga"                // kontrak karyawan & DCS
+  | "manager"              // LAMA → dimigrasikan ke "manajemen"
+  | "staff"                // LAMA → hanya lihat sampai diatur ulang
+  | "viewer";              // hanya baca
 
 export interface User {
   id: string;
@@ -484,6 +492,9 @@ export interface Contract {
   approvalRound?: number;
   approvalSubmittedById?: string;
   approvalSubmittedByName?: string;
+  // Pembuat dokumen (untuk menentukan siapa yang menindaklanjuti revisi).
+  createdById?: string;
+  createdByName?: string;
   approvalHistory?: ContractApprovalRound[];
   createdAt: string;
   updatedAt: string;
@@ -511,6 +522,10 @@ export interface Contract {
   // `employmentTypes`); division = Divisi/Departemen. Platform tidak dipakai.
   // `category` kontrak karyawan tetap "Employment" (kunci template/klausul).
   employmentType?: string;
+  // Divisi bisnis peminta (marketing / business_partnership / ...). Diisi
+  // saat kontrak dibuat dari Permintaan Kontrak; menentukan divisi mana yang
+  // boleh melihat dokumen ini (lihat canViewContract di src/roles.ts).
+  requestingDivision?: string;
   division?: string;
   // Satu entri per ronde Review Eksternal: snapshot isi yang DILIHAT pihak
   // eksternal saat ronde itu dibuka (untuk redline ronde berikutnya) +
@@ -988,7 +1003,11 @@ export interface LegalJob {
   documents: LegalJobDocument[];
   status: LegalJobStatus;
   priority?: LegalJobPriority; // diisi Staff Legal saat approve — TIDAK diisi eksternal
-  source: "eksternal" | "internal";
+  source: "eksternal" | "internal" | "divisi";
+  // Permintaan Kontrak dari divisi bisnis (source "divisi").
+  requesterId?: string;
+  requesterName?: string;
+  requestingDivision?: string;
   submitterName?: string;      // nama pengisi form eksternal (opsional)
   submitterEmail?: string;     // email pengisi, untuk notifikasi penolakan (opsional)
   rejectionReason?: string;

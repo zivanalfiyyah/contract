@@ -142,7 +142,7 @@ export function requireAuth(req: AuthedRequest, res: Response, next: NextFunctio
 }
 
 // Restricts to specific roles (super_admin always allowed).
-export function requireRole(...roles: UserRole[]) {
+export function requireRole(...roles: readonly (UserRole | string)[]) {
   return (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: "Belum login" });
     if (req.user.role === "super_admin" || roles.includes(req.user.role)) return next();

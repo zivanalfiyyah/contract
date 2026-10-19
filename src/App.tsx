@@ -10,6 +10,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
+import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, R as ROLE_GROUPS } from "./roles";
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
@@ -514,18 +515,13 @@ function FlowDiagramPreview({ steps, lanes, onStepDrag }: { steps: FlowStep[]; l
 // dropdowns in this file need it (user-management role assignment, DCS
 // signature-column role gate); centralizing avoids the vocabulary silently
 // drifting between them.
-const ROLE_OPTIONS: { value: string; label: string; desc: string }[] = [
-  { value: "admin", label: "Admin", desc: "Kelola pengguna, konfigurasi, dan seluruh dokumen perusahaan." },
-  { value: "legal", label: "Legal Counsel", desc: "Susun & tinjau kontrak, kelola klausul, beri persetujuan hukum." },
-  { value: "manager", label: "Manager / Supervisor", desc: "Setujui dokumen dalam matriks approval & pantau tim." },
-  { value: "staff", label: "Staff", desc: "Buat & kelola draf dokumen, ajukan untuk persetujuan." },
-  { value: "viewer", label: "Viewer", desc: "Hanya melihat dokumen — tanpa mengubah apa pun." },
-];
-const roleMeta = (value: string) => ROLE_OPTIONS.find((r) => r.value === value);
+// Sumber tunggal: src/roles.ts (dipakai server juga).
+const ROLE_OPTIONS: { value: string; label: string; desc: string }[] = ROLE_DEFS.filter((r) => r.assignable);
+const roleMeta = (value: string) => ROLE_DEFS.find((r) => r.value === value);
 // Display-only label for roles that can appear on a user but aren't
 // assignable via ROLE_OPTIONS (currently just super_admin — a cross-tenant
 // system role, deliberately excluded from the assignment dropdown).
-const roleLabel = (value: string) => roleMeta(value)?.label || (value === "super_admin" ? "Super Admin" : value);
+const roleLabel = (value: string) => roleLabelOf(value);
 
 // Batas & validasi unggah berkas — HARUS selaras dengan server (multer):
 // maksimal 10MB, hanya PDF/JPG/PNG. Cek di klien memberi umpan balik instan
@@ -3584,6 +3580,11 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
   const [rejectJob, setRejectJob] = useState<LegalJob | null>(null);
   const [detailJob, setDetailJob] = useState<LegalJobWithLink | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("semua");
+  // Divisi bisnis = PEMINTA (ajukan Permintaan Kontrak, pantau progresnya);
+  // Legal/Admin = PEMROSES (setujui/tolak, buat kontrak). Manajemen hanya lihat.
+  const isRequester = isDivisionRole(currentUser?.role);
+  const isLegalSide = ["admin", "legal", "super_admin"].includes(currentUser?.role);
+  const [requestOpen, setRequestOpen] = useState(false);
 
   const fetchJobs = async () => {
     try {
@@ -3625,8 +3626,13 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
         </div>
       )}
 
-      <LegalHero Icon={Briefcase} title="Pekerjaan Legal" sub="Kelola seluruh pekerjaan Legal dari awal hingga selesai."
-        right={<button onClick={() => setAddOpen(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer"><Plus className="w-4 h-4" /> Tambah Pekerjaan Legal</button>} />
+      <LegalHero Icon={Briefcase} title={isRequester ? "Permintaan Kontrak" : "Pekerjaan Legal"}
+        sub={isRequester ? `Ajukan kebutuhan kontrak ke Legal & pantau progresnya — divisi ${roleLabelOf(currentUser?.role)}.` : "Kelola seluruh pekerjaan Legal dari awal hingga selesai."}
+        right={isRequester ? (
+          <button onClick={() => setRequestOpen(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer"><Send className="w-4 h-4" /> Ajukan Permintaan Kontrak</button>
+        ) : isLegalSide ? (
+          <button onClick={() => setAddOpen(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer"><Plus className="w-4 h-4" /> Tambah Pekerjaan Legal</button>
+        ) : undefined} />
 
       {/* Kartu ringkasan status — klik untuk filter tabel utama di bawah. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-9 gap-3">
@@ -3636,12 +3642,12 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
       </div>
 
       {/* ===== Tabel "Pekerjaan Masuk" (Belum Diproses) ===== */}
-      <LegalPanel Icon={Inbox} tone="peach" title="Pekerjaan Masuk" subtitle="Belum diproses — dari formulir eksternal"
+      <LegalPanel Icon={Inbox} tone="peach" title={isRequester ? "Menunggu Persetujuan Legal" : "Pekerjaan Masuk"} subtitle={isRequester ? "Permintaan divisi Anda yang belum diproses Legal" : "Belum diproses — dari formulir eksternal & permintaan divisi"}
         right={<span className="text-[11px] px-3 py-1 rounded-full bg-peach text-brand-orange font-semibold whitespace-nowrap">{incoming.length} menunggu</span>}>
         {loading ? (
           <p className="py-6 text-center text-xs text-slate-500">Memuat…</p>
         ) : incoming.length === 0 ? (
-          <p className="py-6 text-center text-xs text-slate-500">Belum ada pekerjaan masuk dari formulir eksternal.</p>
+          <p className="py-6 text-center text-xs text-slate-500">{isRequester ? "Tidak ada permintaan yang sedang menunggu." : "Belum ada pekerjaan masuk dari formulir eksternal maupun divisi."}</p>
         ) : (
           <div className="overflow-x-auto no-scrollbar">
             <table className="w-full text-[12.5px]">
@@ -3663,7 +3669,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
                     <td className="p-3 font-medium text-slate-100">{j.title}</td>
                     <td className="p-3 text-slate-400">{j.partnerName}</td>
                     <td className="p-3 text-slate-400">{j.docType}</td>
-                    <td className="p-3 text-slate-400">{j.picName}</td>
+                    <td className="p-3 text-slate-400">{j.picName}{j.source === "divisi" && j.requesterName ? <span className="block text-[10.5px] text-slate-500">oleh {j.requesterName}</span> : null}</td>
                     <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
                     <td className="p-3">
                       {j.documents.length > 0 ? (
@@ -3679,10 +3685,14 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
                     </td>
                     <td className="p-3 text-slate-500">{fmtDateTimeID(j.createdAt)}</td>
                     <td className="p-3">
+                      {!isLegalSide ? (
+                        <p className="text-right text-[11px] text-slate-500 italic">Menunggu Legal</p>
+                      ) : (
                       <div className="flex items-center justify-end gap-1.5">
                         <button onClick={() => setApproveJob(j)} title="Setujui" className="w-8 h-8 rounded-full bg-mist hover:brightness-95 text-indigo-400 flex items-center justify-center cursor-pointer"><ThumbsUp className="w-3.5 h-3.5" /></button>
                         <button onClick={() => setRejectJob(j)} title="Tidak Disetujui" className="w-8 h-8 rounded-full bg-peach hover:brightness-95 text-brand-orange flex items-center justify-center cursor-pointer"><ThumbsDown className="w-3.5 h-3.5" /></button>
                       </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -3794,6 +3804,10 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
         <DirectLegalJobModal onClose={() => setInputOpen(false)} notify={notify}
           onSaved={async () => { setInputOpen(false); notify("Pekerjaan disimpan dan langsung masuk alur kerja (Draft).", "success"); setStatusFilter("semua"); await fetchJobs(); }} />
       )}
+      {requestOpen && (
+        <DirectLegalJobModal asRequest divisionLabel={roleLabelOf(currentUser?.role)} onClose={() => setRequestOpen(false)} notify={notify}
+          onSaved={async () => { setRequestOpen(false); notify("Permintaan terkirim ke Legal. Anda akan mendapat notifikasi saat diproses.", "success"); await fetchJobs(); }} />
+      )}
       {shareOpen && <ShareFormLinkModal onClose={() => setShareOpen(false)} notify={notify} />}
       {approveJob && (
         <ApprovePriorityModal
@@ -3825,7 +3839,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
           onChanged={fetchJobs}
           notify={notify}
           onOpenContract={onOpenContract}
-          onCreateExternalContract={onCreateExternalContract}
+          onCreateExternalContract={isLegalSide ? onCreateExternalContract : undefined}
         />
       )}
     </div>
@@ -3865,7 +3879,9 @@ function AddLegalJobChooser({ onClose, onShare, onDirect }: { onClose: () => voi
 }
 
 // Form input langsung oleh Staff Legal (POST /api/legal-jobs).
-function DirectLegalJobModal({ onClose, notify, onSaved }: { onClose: () => void; notify: (t: string, k?: "error" | "success") => void; onSaved: () => void }) {
+// asRequest: dipakai divisi bisnis untuk PERMINTAAN KONTRAK ke Legal — PIC
+// otomatis divisinya, tanpa prioritas (ditentukan Legal saat menyetujui).
+function DirectLegalJobModal({ onClose, notify, onSaved, asRequest, divisionLabel }: { onClose: () => void; notify: (t: string, k?: "error" | "success") => void; onSaved: () => void; asRequest?: boolean; divisionLabel?: string }) {
   const [f, setF] = useState({ title: "", partnerName: "", docType: "", picName: "", deadline: "", priority: "", description: "", submitterName: "" });
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -3887,9 +3903,9 @@ function DirectLegalJobModal({ onClose, notify, onSaved }: { onClose: () => void
     if (!f.title.trim()) return notify("Judul Pekerjaan wajib diisi.");
     if (!f.partnerName.trim()) return notify("Partner/Pihak wajib diisi.");
     if (!f.docType.trim()) return notify("Jenis Dokumen wajib diisi.");
-    const pe = legalPicError(f.picName); if (pe) return notify(pe);
+    if (!asRequest) { const pe = legalPicError(f.picName); if (pe) return notify(pe); }
     if (!f.deadline) return notify("Deadline wajib diisi.");
-    if (!f.priority) return notify("Prioritas wajib dipilih.");
+    if (!asRequest && !f.priority) return notify("Prioritas wajib dipilih.");
     setBusy(true);
     try {
       const fd = new FormData();
@@ -3910,8 +3926,8 @@ function DirectLegalJobModal({ onClose, notify, onSaved }: { onClose: () => void
         <div className="flex items-start gap-3 pr-10">
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Pencil className="w-5 h-5 text-slate-300" /></span>
           <div>
-            <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">Input Pekerjaan oleh Staff Legal</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Langsung masuk alur kerja utama (status Draft) — tanpa tahap persetujuan.</p>
+            <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">{asRequest ? "Ajukan Permintaan Kontrak" : "Input Pekerjaan oleh Staff Legal"}</h3>
+            <p className="text-xs text-slate-500 mt-0.5">{asRequest ? `Dikirim ke Legal atas nama divisi ${divisionLabel || ""}. Legal menentukan prioritas, lalu menyusun & mengajukan kontraknya.` : "Langsung masuk alur kerja utama (status Draft) — tanpa tahap persetujuan."}</p>
           </div>
         </div>
 
@@ -3921,10 +3937,14 @@ function DirectLegalJobModal({ onClose, notify, onSaved }: { onClose: () => void
           <div className="space-y-1.5"><label className={lbl}>Jenis Dokumen *</label><input value={f.docType} onChange={set("docType")} placeholder='Contoh: "PKS", "NDA", "Addendum"' className={inp} /></div>
         </div>
         <div className="grid sm:grid-cols-2 gap-4">
+          {asRequest ? (
+            <div className="space-y-1.5"><label className={lbl}>Divisi Peminta</label><input value={divisionLabel || ""} readOnly className={inp + " opacity-70"} /></div>
+          ) : (
           <div className="space-y-1.5"><label className={lbl}>PIC Pemberi Pekerjaan *</label><LegalPicSelect value={f.picName} onChange={(v) => setF((x) => ({ ...x, picName: v }))} className={inp} /></div>
+          )}
           <div className="space-y-1.5"><label className={lbl}>Deadline *</label><input type="date" value={f.deadline} onChange={set("deadline")} className={inp} /></div>
         </div>
-        <div className="grid sm:grid-cols-2 gap-4">
+        {!asRequest && <div className="grid sm:grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label className={lbl}>Prioritas *</label>
             <div className="grid grid-cols-3 gap-2">
@@ -3935,7 +3955,7 @@ function DirectLegalJobModal({ onClose, notify, onSaved }: { onClose: () => void
             </div>
           </div>
           <div className="space-y-1.5"><label className={lbl}>Nama Requester <span className="normal-case font-normal">(opsional)</span></label><input value={f.submitterName} onChange={set("submitterName")} placeholder="Orang yang meminta pekerjaan ini" className={inp} /></div>
-        </div>
+        </div>}
         <div className="space-y-1.5"><label className={lbl}>Keterangan <span className="normal-case font-normal">(opsional)</span></label>
           <textarea value={f.description} onChange={set("description")} rows={3} placeholder="Deskripsi tambahan pekerjaan" className="w-full px-4 py-3 bg-slate-950 rounded-[18px] text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none resize-none" /></div>
         <div className="space-y-1.5">
@@ -3949,7 +3969,7 @@ function DirectLegalJobModal({ onClose, notify, onSaved }: { onClose: () => void
 
         <div className="flex items-center justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className={LEGAL_BTN_GHOST}>Batal</button>
-          <button type="submit" disabled={busy} className={LEGAL_BTN_PRIMARY}><Plus className="w-3.5 h-3.5" /> {busy ? "Menyimpan…" : "Simpan Pekerjaan"}</button>
+          <button type="submit" disabled={busy} className={LEGAL_BTN_PRIMARY}>{asRequest ? <Send className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />} {busy ? "Menyimpan…" : asRequest ? "Kirim ke Legal" : "Simpan Pekerjaan"}</button>
         </div>
       </form>
     </div>
@@ -5223,7 +5243,7 @@ export default function App() {
     { id: "performa-vendor", label: "Performa Vendor" },
     { id: "ai-tools", label: "AI Tools Hukum (semua submenu)" },
   ];
-  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["admin", "legal", "manager", "staff", "viewer"];
+  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["it_system", "admin", "legal", "manajemen", "marketing", "business_partnership", "account_executive", "operasional", "hr_ga", "viewer"];
   // Boleh lihat menu `id` atau tidak, untuk role saat ini. super_admin SELALU
   // penuh (tidak pernah dibatasi config ini — sesuai keputusan "yang bebas
   // cuma super admin"). Role yang belum pernah diatur di rolePermissions =
@@ -5233,7 +5253,7 @@ export default function App() {
   const canSee = (menuId: string): boolean => {
     const role = currentUser?.role;
     if (!role || role === "super_admin") return true;
-    const allowed = appSettings?.rolePermissions?.[role];
+    const allowed = appSettings?.rolePermissions?.[role] ?? DEFAULT_MENUS_BY_ROLE[role === "manager" ? "manajemen" : role];
     if (!Array.isArray(allowed)) return true;
     return allowed.includes(menuId);
   };
@@ -5295,7 +5315,7 @@ export default function App() {
   // yang dikirim ke email (setelah daftar, atau dari login yang ditolak karena
   // email belum diverifikasi). Kode benar → akun aktif & langsung masuk.
   const [authGateMode, setAuthGateMode] = useState<"login" | "forgot" | "reset" | "register" | "otp">("login");
-  const [registerForm, setRegisterForm] = useState({ registrationCode: "", name: "", email: "", password: "", confirmPassword: "", role: "staff" });
+  const [registerForm, setRegisterForm] = useState({ registrationCode: "", name: "", email: "", password: "", confirmPassword: "", role: "viewer" });
   const [isRegistering, setIsRegistering] = useState(false);
   const [registerError, setRegisterError] = useState("");
   // Email yang sedang diverifikasi + kode OTP (devOtp hanya dikirim server di
@@ -6151,8 +6171,13 @@ export default function App() {
     !!c && (c.documentSource ? c.documentSource === "upload" : c.creationMode === "upload");
 
   // Kontrak hanya bisa diedit selagi Draft — begitu diaktifkan, terkunci.
+  // Boleh membuat/mengubah/mengajukan dokumen kontrak (HR/GA: kontrak
+  // karyawan saja — server hanya mengirim kontrak yang boleh ia lihat).
+  const canEditContracts = !!currentUser && (currentUser.role === "super_admin" || (ROLE_GROUPS.contractEditors as readonly string[]).includes(currentUser.role));
+  // Saat revisi, hanya pihak pembuat/pengaju yang mengedit (peninjau cukup
+  // berkomentar) — lihat isDocumentOwnerSide.
   const isContractEditable = (c: Contract | null) =>
-    !!c && c.status === "Draft";
+    !!c && c.status === "Draft" && canEditContracts && (!c.revisionStage || isDocumentOwnerSide(c));
 
   // Sebelum approval matrix selesai (Draft/OnReview), dokumen tidak boleh
   // diunduh sama sekali — cerminan client-side dari guard yang sama di
@@ -6236,6 +6261,17 @@ export default function App() {
   const isInternalApprovalStage = (status?: string) => status === "OnReview" || status === "FinalReview";
   // Giliran approver pada kontrak yang sedang dibuka (dipakai panel status
   // DAN header Mode Tinjau — keputusan review dibuat dari Mode Tinjau).
+  // Siapa yang menindaklanjuti REVISI (Terima/Tolak usulan & Ajukan Ulang):
+  // pembuat/pengaju dokumen (approvalSubmittedById) + admin. Peninjau yang
+  // meminta revisi (approver) hanya melihat & membalas — bukan dia yang
+  // mengajukan ulang. Dokumen yang belum pernah diajukan: semua staf berwenang.
+  const isDocumentOwnerSide = (c: Contract | null) => {
+    if (!c || !currentUser) return false;
+    if (currentUser.role === "admin" || currentUser.role === "super_admin") return true;
+    const owner = c.approvalSubmittedById || c.createdById;
+    if (!owner) return (ROLE_GROUPS.contractEditors as readonly string[]).includes(currentUser.role);
+    return owner === currentUser.id;
+  };
   const approvalTurnOf = (c: Contract | null) => {
     const steps = c?.approvalSteps || [];
     const currentStep = c && isInternalApprovalStage(c.status) ? steps.find((st) => st.decision === "pending") : undefined;
@@ -6351,7 +6387,7 @@ export default function App() {
   // Klasifikasi arsip KONTRAK KARYAWAN (PT/Kategori/Jenis/Divisi).
   const [classifyInternal, setClassifyInternal] = useState<{ contract: Contract; value: InternalTaxValue } | null>(null);
   // Modal Klasifikasi/Pindah Folder Arsip Eksternal (PT/Platform/Kategori/Jenis).
-  const [classifyTarget, setClassifyTarget] = useState<{ contract: Contract; value: TaxValue } | null>(null);
+  const [classifyTarget, setClassifyTarget] = useState<{ contract: Contract; value: TaxValue; requestingDivision?: string } | null>(null);
   const [classifyBusy, setClassifyBusy] = useState(false);
   const [approvalHistoryOpen, setApprovalHistoryOpen] = useState(false);
 
@@ -6791,7 +6827,7 @@ export default function App() {
     if (showApproverPicker && selectedContract && mentionableUsers.length > 0 && approverPickerIds.length === 0) {
       const preset = masterData.categoryApprovalDefaults[selectedContract.category] || [];
       const eligible = preset.filter((id) =>
-        mentionableUsers.some((mu) => mu.id === id && mu.id !== currentUser?.id && mu.role !== "viewer")
+        mentionableUsers.some((mu) => mu.id === id && mu.id !== currentUser?.id && canBeApprover(mu.role))
       );
       if (eligible.length > 0) setApproverPickerIds(eligible);
     }
@@ -7037,7 +7073,7 @@ export default function App() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) { setOtpError(data.error || "Verifikasi gagal."); return; }
       setOtpState(null); setOtpCode("");
-      setRegisterForm({ registrationCode: "", name: "", email: "", password: "", confirmPassword: "", role: "staff" });
+      setRegisterForm({ registrationCode: "", name: "", email: "", password: "", confirmPassword: "", role: "viewer" });
       setAuthGateMode("login");
       setCurrentUser(data.user);
       showToast(`Selamat datang, ${data.user.name}! Akun Anda sudah aktif.`, "success");
@@ -7506,46 +7542,99 @@ export default function App() {
   // diterima. Kutipan dicari di isi pasal MENTAH (bukan teks tampil), jadi
   // bila kutipannya melintasi {{variabel}} atau format tebal/miring, usulan
   // tidak diterapkan otomatis — pengguna diminta mengubah manual di Editor Pasal.
+  // Terima usulan Coret/Ganti pada teks dokumen template — SEMUA teks bisa
+  // diubah: pasal, narasi pembuka, teks yang berasal dari {{variabel}},
+  // maupun yang melintasi format tebal/miring. Urutan percobaan dibuat dari
+  // yang paling mempertahankan isi asli:
+  //   1. kutipan ditemukan utuh di teks mentah → ganti di situ;
+  //   2. kutipan baru utuh setelah {{variabel}} diisi → variabel di bagian
+  //      itu dibekukan jadi teks biasa, lalu diganti;
+  //   3. kutipan terpotong format → bagian itu disimpan sebagai teks polos
+  //      (format tebal/miring di bagian itu hilang; minta konfirmasi dulu).
+  // Narasi pembuka disimpan sebagai narasi pembuka khusus kontrak ini.
+  const replaceNthOccurrence = (text: string, quote: string, nth: number, insert: string): string | null => {
+    let at = -1;
+    for (let i = 0, from = 0; i <= nth; i++) {
+      at = text.indexOf(quote, from);
+      if (at < 0) return null;
+      from = at + 1;
+    }
+    const before = text.slice(0, at);
+    let after = text.slice(at + quote.length);
+    // Coret: rapikan spasi ganda yang tersisa di bekas potongan.
+    if (!insert && before.endsWith(" ") && after.startsWith(" ")) after = after.slice(1);
+    return before + insert + after;
+  };
+  const plainToRichHtml = (plain: string) =>
+    plain.split(/\n{2,}/).map((para) => `<p>${escapeHtml(para).replace(/\n/g, "<br>")}</p>`).join("");
   const handleAcceptClauseMarkup = async (cmt: ClauseComment) => {
     if (!selectedContract || !cmt.anchor?.quote) return;
     const quote = cmt.anchor.quote;
-    const idx = selectedContract.clauses.findIndex((x, i) => (x.id || String(i)) === cmt.clauseId);
-    if (idx < 0) { showToast("Pasal untuk usulan ini tidak ditemukan lagi.", "warning"); return; }
-    const raw = String(selectedContract.clauses[idx].content || "");
-    const display = stripHtmlOnly(substituteVars(raw, selectedContract.variables));
-    // Kemunculan ke-n kutipan (n dihitung dari teks tampil sebelum posisi sorotan)
-    // dipakai untuk memilih kemunculan yang sama di teks mentah.
-    let nth = 0;
-    for (let from = display.indexOf(quote); from >= 0 && from < cmt.anchor.start; from = display.indexOf(quote, from + 1)) nth++;
-    let at = -1;
-    for (let i = 0, from = 0; i <= nth; i++) {
-      at = raw.indexOf(quote, from);
-      if (at < 0) break;
-      from = at + 1;
-    }
-    if (at < 0) {
-      showToast("Kutipan tidak ditemukan utuh di isi pasal (mungkin melintasi {{variabel}} atau format tebal/miring). Ubah manual lewat Editor Pasal, lalu tolak usulan ini.", "warning");
-      return;
-    }
-    const isRich = /<\/?[a-z][^>]*>/i.test(raw);
-    const insert = cmt.kind === "replace" ? (isRich ? escapeHtml(cmt.replacement || "") : (cmt.replacement || "")) : "";
-    const before = raw.slice(0, at);
-    let after = raw.slice(at + quote.length);
-    // Coret: rapikan spasi ganda yang tersisa di bekas potongan.
-    if (!insert && before.endsWith(" ") && after.startsWith(" ")) after = after.slice(1);
-    const updated: Contract = {
-      ...selectedContract,
-      clauses: selectedContract.clauses.map((c, i) => (i === idx ? { ...c, content: before + insert + after } : c)),
+    const replacement = cmt.kind === "replace" ? (cmt.replacement || "") : "";
+    // Kemunculan ke-n kutipan pada teks yang TAMPIL (posisi sorotan).
+    const nthIn = (display: string) => {
+      let n = 0;
+      for (let from = display.indexOf(quote); from >= 0 && from < cmt.anchor!.start; from = display.indexOf(quote, from + 1)) n++;
+      return n;
     };
+    let updated: Contract | null = null;
+
+    if (cmt.clauseId === "__preamble__") {
+      const { template, tokens } = getPreambleTemplateAndTokens();
+      const display = buildPreambleText(template, tokens);
+      const n = nthIn(display);
+      // Template dengan token sudah terisi, format **tebal** tetap ada.
+      const resolved = template.replace(/\{\{([^}]+)\}\}/g, (_m, k) => tokens[k] ?? `{{${k}}}`);
+      // Utamakan template asli (token {{...}} tetap hidup, jadi data pihak
+      // yang diubah nanti tetap ikut); baru bekukan token bila kutipan
+      // memang mengenai isi token.
+      let next = replaceNthOccurrence(template, quote, n, replacement)
+        ?? replaceNthOccurrence(resolved, quote, n, replacement);
+      if (next === null) {
+        next = replaceNthOccurrence(display, quote, n, replacement);
+        if (next === null) {
+          showToast("Teks ini ada di baris Jabatan / No. Identitas — ubah lewat \"Edit Data Pihak & Kontrak\", lalu tandai usulan ini.", "warning");
+          return;
+        }
+        const ok = await askConfirm("Kalimat yang diusulkan terpotong format tebal di narasi pembuka. Usulan tetap bisa diterapkan, tapi format tebal di narasi pembuka akan hilang. Lanjutkan?", { title: "Terapkan usulan", confirmLabel: "Terapkan" });
+        if (!ok) return;
+      }
+      updated = { ...selectedContract, customOpeningParagraph: next };
+    } else {
+      const idx = selectedContract.clauses.findIndex((x, i) => (x.id || String(i)) === cmt.clauseId);
+      if (idx < 0) { showToast("Pasal untuk usulan ini sudah dihapus dari dokumen.", "warning"); return; }
+      const raw = String(selectedContract.clauses[idx].content || "");
+      const isRich = /<\/?[a-z][^>]*>/i.test(raw);
+      const display = stripHtmlOnly(substituteVars(raw, selectedContract.variables));
+      const n = nthIn(display);
+      const ins = isRich ? escapeHtml(replacement) : replacement;
+      let content = replaceNthOccurrence(raw, quote, n, ins);
+      if (content === null) {
+        // Kutipan berasal dari isi {{variabel}} → bekukan variabel di pasal ini.
+        content = replaceNthOccurrence(substituteVars(raw, selectedContract.variables), quote, n, ins);
+      }
+      if (content === null) {
+        const ok = await askConfirm("Kalimat yang diusulkan terpotong format tebal/miring di pasal ini. Usulan tetap bisa diterapkan, tapi format di pasal ini akan jadi teks biasa. Lanjutkan?", { title: "Terapkan usulan", confirmLabel: "Terapkan" });
+        if (!ok) return;
+        const plain = replaceNthOccurrence(display, quote, n, replacement);
+        if (plain === null) { showToast("Kutipan usulan sudah tidak ada di pasal ini (mungkin sudah diubah).", "warning"); return; }
+        content = isRich ? plainToRichHtml(plain) : plain;
+      }
+      updated = {
+        ...selectedContract,
+        clauses: selectedContract.clauses.map((c, i) => (i === idx ? { ...c, content: content as string } : c)),
+      };
+    }
+
     setMarginBusy(true);
     try {
       const note = cmt.kind === "replace"
         ? `Terima usulan ${cmt.userName}: "${quote}" → "${cmt.replacement || ""}"`
         : `Terima usulan hapus dari ${cmt.userName}: "${quote}"`;
-      const saved = await handleUpdateContractDraft(note.slice(0, 480), updated);
+      const saved = await handleUpdateContractDraft(note.slice(0, 480), updated!);
       if (!saved) return; // galat sudah ditampilkan oleh handleUpdateContractDraft
       const marked = await putMarkupStatus(cmt, "accepted");
-      if (!marked) showToast("Pasal sudah diperbarui, tetapi status usulan gagal disimpan.", "warning");
+      if (!marked) showToast("Dokumen sudah diperbarui, tetapi status usulan gagal disimpan.", "warning");
     } finally {
       setMarginBusy(false);
     }
@@ -7607,7 +7696,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/contracts/${classifyTarget.contract.id}/classify`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...classifyTarget.value, platform: classifyTarget.value.platform.trim(), category: classifyTarget.value.category.trim(), docType: classifyTarget.value.docType.trim() }),
+        body: JSON.stringify({ ...classifyTarget.value, platform: classifyTarget.value.platform.trim(), category: classifyTarget.value.category.trim(), docType: classifyTarget.value.docType.trim(), requestingDivision: classifyTarget.requestingDivision ?? "" }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) { showToast(data.error || "Gagal menyimpan klasifikasi", "warning"); return; }
@@ -10523,7 +10612,7 @@ export default function App() {
                               // Kolom 0 = Penyusun = pembuat dokumen (otomatis). "+ Tambah Reviewer"
                               // menambah kolom TTD khusus dokumen ini di luar template.
                               const flatCols = (dt.signatureGroups.length ? dt.signatureGroups : [{ heading: undefined, columns: dt.signatureColumns }]).flatMap((g) => g.columns);
-                              const pickables = mentionableUsers.filter((u) => u.role !== "viewer");
+                              const pickables = mentionableUsers.filter((u) => canBeApprover(u.role));
                               const setAssign = (idx: number, userId: string) => {
                                 const next = [...dcsComposeForm.signatureAssignments];
                                 while (next.length < flatCols.length) next.push("");
@@ -11727,7 +11816,7 @@ export default function App() {
     const k = pendingDeepLinkConfig;
     setPendingDeepLinkConfig(null);
     if (k !== "pengguna") return;
-    if (currentUser.role !== "admin" && currentUser.role !== "super_admin") return;
+    if (currentUser.role !== "admin" && currentUser.role !== "super_admin" && currentUser.role !== "it_system") return;
     goConfig(k);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser, pendingDeepLinkConfig]);
@@ -11749,7 +11838,7 @@ export default function App() {
     { label: "Pengingat / Reminder Kadaluarsa", hint: "Default hari pengingat kontrak", keywords: "reminder pengingat kadaluarsa expire jatuh tempo notifikasi hari", tab: "masterdata" },
     { label: "Data Vendor", hint: "Vendor, NPWP, rekening bank", keywords: "vendor npwp rekening bank supplier mitra pihak kedua", tab: "vendor" },
     { label: "Data Karyawan", hint: "Karyawan untuk kontrak kerja", keywords: "karyawan employee pegawai pkwt kontrak kerja", tab: "karyawan" },
-    { label: "Kelola Pengguna", hint: "Akun & peran pengguna", keywords: "pengguna user akun peran role kelola admin", tab: "pengguna", role: ["admin", "super_admin"] },
+    { label: "Kelola Pengguna", hint: "Akun & peran pengguna", keywords: "pengguna user akun peran role kelola admin", tab: "pengguna", role: ["admin", "super_admin", "it_system"] },
     { label: "Kelola Perusahaan", hint: "Tenant, cadangan, email, penyimpanan", keywords: "perusahaan tenant cadangan backup email penyimpanan storage", tab: "perusahaan", role: ["super_admin"] },
   ];
 
@@ -13106,9 +13195,13 @@ export default function App() {
     // admin, siapa pun yang tahu kode pendaftaran bisa masuk — peran Admin
     // hanya boleh diberikan admin lain lewat Kelola Pengguna.
     const SELF_ROLE_OPTIONS = [
-      { value: "staff", label: "Staff", desc: "Buat & ajukan draf dokumen" },
+      { value: "marketing", label: "Marketing", desc: "Ajukan permintaan kontrak" },
+      { value: "business_partnership", label: "Business Partnership", desc: "Ajukan permintaan kontrak" },
+      { value: "account_executive", label: "Account Executive", desc: "Ajukan permintaan kontrak" },
+      { value: "operasional", label: "Operasional", desc: "Ajukan permintaan kontrak" },
+      { value: "hr_ga", label: "HR / GA", desc: "Kontrak karyawan & DCS" },
       { value: "legal", label: "Legal", desc: "Susun & tinjau kontrak" },
-      { value: "manager", label: "Manager", desc: "Setujui dokumen tim" },
+      { value: "manajemen", label: "Manajemen", desc: "Lihat & setujui dokumen" },
       { value: "viewer", label: "Viewer", desc: "Hanya melihat dokumen" },
     ];
 
@@ -13746,7 +13839,7 @@ export default function App() {
                 }`}
               >
                 <ClipboardList className="w-4 h-4" />
-                Pekerjaan Legal
+                {isDivisionRole(currentUser?.role) ? "Permintaan Kontrak" : "Pekerjaan Legal"}
               </button>
               )}
 
@@ -14180,7 +14273,7 @@ export default function App() {
               <div className="text-left leading-tight flex-1 min-w-0">
                 <p className="text-sm font-medium text-slate-100 truncate">{currentUser.name}</p>
                 <p className="text-[10.5px] text-slate-500">
-                  {({ super_admin: "Super Admin", admin: "Admin", legal: "Legal", manager: "Manager", staff: "Staff", viewer: "Viewer" } as any)[currentUser.role] || currentUser.role}
+                  {roleLabel(currentUser.role)}
                 </p>
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
@@ -14524,13 +14617,15 @@ export default function App() {
                 >
                   <LineChart className="w-[18px] h-[18px]" />
                 </button>
+                {(canEditContracts && currentUser?.role !== "hr_ga") || isDivisionRole(currentUser?.role) ? (
                 <button
-                  onClick={() => { setIsCreating(true); setActiveTab("monitoring"); }}
+                  onClick={() => { if (isDivisionRole(currentUser?.role)) { setActiveTab("pekerjaan-legal"); return; } setIsCreating(true); setActiveTab("monitoring"); }}
                   className="hidden sm:flex items-center gap-2 px-5 h-11 bg-soft-blue hover:opacity-90 text-white rounded-full text-[13px] font-medium transition cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
                   Request kontrak baru
                 </button>
+                ) : null}
               </>
             )}
             {activeTab === "clauses" && (
@@ -16341,7 +16436,7 @@ export default function App() {
                     </span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-[13px] font-semibold text-slate-100 truncate">{audit.userName} <span className="text-[10px] font-normal text-indigo-400">{audit.userRole}</span></p>
+                        <p className="text-[13px] font-semibold text-slate-100 truncate">{audit.userName} <span className="text-[10px] font-normal text-indigo-400">{roleLabel(audit.userRole)}</span></p>
                         <span className="text-[10px] text-slate-500 shrink-0">{new Date(audit.timestamp).toLocaleDateString()}</span>
                       </div>
                       <p className="text-[12px] text-slate-500 leading-snug line-clamp-2">
@@ -16587,8 +16682,8 @@ export default function App() {
                   ] },
                   { group: "Perusahaan & Sistem", items: [
                     { k: "app", label: "Perusahaan & e-Meterai" },
-                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
-                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
+                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
+                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
                     ...(currentUser.role === "super_admin" ? [{ k: "perusahaan", label: "Kelola Perusahaan" }] : []),
                   ] },
                 ] as { group: string; items: { k: string; label: string; main?: string }[] }[];
@@ -18259,7 +18354,7 @@ export default function App() {
                       <p className="text-[13px] text-slate-500">{regularUsers.length} akun{currentUser.role === "super_admin" ? " di perusahaan terpilih" : " di perusahaan ini"}. Atur nama, email, kata sandi, dan peran akses.</p>
                     </div>
                     <button
-                      onClick={() => setUserForm({ name: "", email: "", password: "", role: "staff" })}
+                      onClick={() => setUserForm({ name: "", email: "", password: "", role: "legal" })}
                       className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-[13px] font-semibold flex items-center gap-1.5 cursor-pointer shrink-0 transition"
                     >
                       <Plus className="w-4 h-4" /> Tambah pengguna
@@ -18437,12 +18532,15 @@ export default function App() {
                   checkbox-nya SEMUA kosong = akses penuh (belum diatur),
                   bukan "tidak boleh apa-apa" — supaya nyalain fitur ini
                   pertama kali tidak mendadak mengunci semua orang. */}
-              {(currentUser.role === "admin" || currentUser.role === "super_admin") && configTab === "hakakses" && (() => {
+              {(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
                 const rp: Record<string, string[]> = appSettings.rolePermissions || {};
-                const isChecked = (role: string, menuId: string) =>
-                  !Array.isArray(rp[role]) || rp[role].includes(menuId);
+                // Belum diatur → pakai default peran (src/roles.ts), atau penuh
+                // bila peran itu tak punya default (admin, legal).
+                const effective = (role: string): string[] =>
+                  Array.isArray(rp[role]) ? rp[role] : (DEFAULT_MENUS_BY_ROLE[role] || MENU_ITEMS.map((m) => m.id));
+                const isChecked = (role: string, menuId: string) => effective(role).includes(menuId);
                 const toggle = (role: string, menuId: string) => {
-                  const current = Array.isArray(rp[role]) ? rp[role] : MENU_ITEMS.map((m) => m.id);
+                  const current = effective(role);
                   const next = current.includes(menuId) ? current.filter((m) => m !== menuId) : [...current, menuId];
                   setAppSettings({ ...appSettings, rolePermissions: { ...rp, [role]: next } });
                 };
@@ -18454,7 +18552,7 @@ export default function App() {
                   <div className="space-y-4">
                     <div className="space-y-0.5">
                       <h3 className="text-base font-semibold text-slate-100">Hak Akses Menu per Role</h3>
-                      <p className="text-[13px] text-slate-500">Centang = role itu BOLEH buka menu tersebut. <b>super_admin</b> selalu penuh, tidak ada di tabel ini. Kosongkan semua centang di satu kolom role = role itu diperlakukan "belum diatur" (akses penuh juga).</p>
+                      <p className="text-[13px] text-slate-500">Centang = role itu BOLEH buka menu tersebut. <b>super_admin</b> selalu penuh, tidak ada di tabel ini. Kolom yang belum pernah diubah memakai bawaan peran itu (klik "reset" untuk kembali ke bawaan). Batas data (dokumen per divisi, kontrak karyawan) tetap berlaku di luar matriks ini.</p>
                     </div>
                     <div className="overflow-x-auto table-card">
                       <table className="plain-table text-[12px] border-collapse w-full">
@@ -18463,11 +18561,11 @@ export default function App() {
                             <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950">Menu</th>
                             {ALL_ROLES_EXCEPT_SUPER.map((role) => (
                               <th key={role} className="px-3 py-2 text-slate-300 font-bold uppercase text-center">
-                                {role}
+                                {roleLabelOf(role)}
                                 <button
                                   type="button"
                                   onClick={() => resetRole(role)}
-                                  title="Reset role ini ke akses penuh"
+                                  title="Kembalikan ke bawaan peran ini"
                                   className="block mx-auto mt-0.5 text-[9px] font-normal normal-case text-slate-600 hover:text-indigo-400 cursor-pointer"
                                 >
                                   reset
@@ -18518,7 +18616,7 @@ export default function App() {
                   dst), supaya role yang folder arsipnya dibatasi di sini
                   tetap bisa memilih kategori itu saat membuat kontrak baru
                   seperti biasa — cuma "melihat arsipnya" yang dibatasi. */}
-              {(currentUser.role === "admin" || currentUser.role === "super_admin") && configTab === "hakakses" && (() => {
+              {(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
                 const fp: Record<string, string[]> = appSettings.folderPermissions || {};
                 const isChecked = (role: string, cat: string) =>
                   !Array.isArray(fp[role]) || fp[role].includes(cat);
@@ -18547,8 +18645,8 @@ export default function App() {
                               <tr>
                                 <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950">Folder</th>
                                 {ALL_ROLES_EXCEPT_SUPER.map((role) => (
-                                  <th key={role} className="px-3 py-2 text-slate-300 font-bold uppercase text-center">
-                                    {role}
+                                  <th key={roleLabelOf(role)} className="px-3 py-2 text-slate-300 font-bold uppercase text-center">
+                                    {roleLabelOf(role)}
                                     <button
                                       type="button"
                                       onClick={() => resetRole(role)}
@@ -18730,6 +18828,13 @@ export default function App() {
                     </p>
                   </div>
                 </div>
+                {isDivisionRole(currentUser?.role) && activeTab === "monitoring" && (
+                  <button onClick={() => setActiveTab("pekerjaan-legal")}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-semibold transition cursor-pointer shrink-0">
+                    <Send className="w-4 h-4" /> Ajukan Permintaan Kontrak
+                  </button>
+                )}
+                {canEditContracts && (activeTab === "kontrak-karyawan" || currentUser?.role !== "hr_ga") && (
                 <button
                   onClick={() => {
                     const locked = activeTab === "kontrak-karyawan" ? "employee" : "external";
@@ -18754,6 +18859,7 @@ export default function App() {
                   <Plus className="w-4 h-4" />
                   {activeTab === "kontrak-karyawan" ? "Buat Kontrak Karyawan" : "Buat Kontrak Eksternal"}
                 </button>
+                )}
               </div>
 
               {(() => {
@@ -20357,7 +20463,7 @@ export default function App() {
                   docTypes={externalDocTypeNames}
                   isSigned={isSignedContract}
                   onOpen={(c) => handleOpenWorkspace(c)}
-                  onClassify={(c) => setClassifyTarget({ contract: c, value: { companyId: c.companyId || "", platform: c.platform || "", platformCustom: false, category: c.category || "", docType: c.docType || "" } })}
+                  onClassify={(c) => setClassifyTarget({ contract: c, requestingDivision: c.requestingDivision || "", value: { companyId: c.companyId || "", platform: c.platform || "", platformCustom: false, category: c.category || "", docType: c.docType || "" } })}
                   renderStatus={(c) => (
                     <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase shrink-0 border ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-800 text-slate-400"}`}>
                       {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
@@ -20662,7 +20768,7 @@ export default function App() {
                       {isDraftDirty && <span className="text-[9px] font-normal opacity-80">(ada perubahan belum disimpan)</span>}
                     </button>
                   )}
-                  {isContractRenewable(selectedContract) && (
+                  {canEditContracts && isContractRenewable(selectedContract) && (
                     <button
                       onClick={() => handleOpenRenewModal(selectedContract)}
                       title="Muncul setelah matriks approval selesai penuh — membuat kontrak PENERUS baru, dokumen ini tetap tersimpan sbg riwayat."
@@ -20672,7 +20778,7 @@ export default function App() {
                       Perpanjang / Extend
                     </button>
                   )}
-                  {isContractAmendable(selectedContract) && (
+                  {canEditContracts && isContractAmendable(selectedContract) && (
                     <button
                       onClick={() => handleOpenAddendumModal(selectedContract)}
                       title="Buat dokumen amandemen terpisah yang mendokumentasikan pasal yang berubah — kontrak ini tetap berlaku, tidak digantikan."
@@ -22020,7 +22126,7 @@ export default function App() {
                             <ChevronLeft className="w-3.5 h-3.5" /> Tinjau Kontrak Induk
                           </button>
                         )}
-                        {!viewingAddendum && isContractAmendable(selectedContract) && (
+                        {!viewingAddendum && canEditContracts && isContractAmendable(selectedContract) && (
                           <button
                             onClick={() => handleOpenAddendumModal(selectedContract)}
                             className="px-3.5 py-2 bg-violet-600/20 hover:bg-violet-600/40 text-violet-300 text-xs font-semibold rounded-full border border-violet-600/30 transition flex items-center gap-1.5 cursor-pointer"
@@ -22350,6 +22456,15 @@ export default function App() {
                               Draft dapat diedit bebas (pasal, variabel, pihak). Sebelum bisa diunduh untuk TTD basah, kontrak ini harus diajukan & disetujui seluruh penanggung jawab yang dipilih, secara berurutan.
                             </p>
                           )}
+                          {!canEditContracts ? (
+                            <div className="w-full py-2 px-3 rounded-xl border border-slate-700 bg-slate-800/40 text-[11px] text-slate-400 leading-relaxed">
+                              Draft ini disusun & diajukan oleh Legal. Anda bisa memantau dan memberi komentar lewat Mode Tinjau.
+                            </div>
+                          ) : selectedContract.revisionStage && !isDocumentOwnerSide(selectedContract) ? (
+                            <div className="w-full py-2 px-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-700 leading-relaxed">
+                              Menunggu revisi oleh <b>{selectedContract.approvalSubmittedByName || selectedContract.createdByName || "pembuat dokumen"}</b>. Usulan Anda akan diterima/ditolak oleh pembuat dokumen, lalu diajukan ulang ke Review Internal.
+                            </div>
+                          ) : (
                           <button
                             onClick={async () => {
                               // Editan draft yang belum disimpan TIDAK ikut terkirim:
@@ -22375,6 +22490,7 @@ export default function App() {
                           >
                             <Send className="w-4 h-4" /> {selectedContract.revisionStage ? "Ajukan Ulang ke Review Internal" : "Ajukan untuk Persetujuan"}
                           </button>
+                          )}
                         </div>
                       )}
 
@@ -22416,7 +22532,7 @@ export default function App() {
                           >
                             <ExternalLink className="w-4 h-4" /> Kirim ke Review Eksternal
                           </button>
-                          {(currentUser?.role === "admin" || currentUser?.role === "super_admin" || currentUser?.role === "legal" || currentUser?.role === "manager") && (
+                          {(currentUser?.role === "admin" || currentUser?.role === "super_admin" || currentUser?.role === "legal" || currentUser?.role === "manajemen") && (
                             <button
                               onClick={handleSkipExternalReview}
                               title="Untuk dokumen yang tidak perlu ditinjau pihak kedua. Wajib alasan, tercatat di audit."
@@ -22838,10 +22954,10 @@ export default function App() {
                                   </div>
                                 )}
                                 <div className="max-h-40 overflow-y-auto bg-slate-900 border border-slate-800 rounded-lg p-1.5 space-y-0.5">
-                                  {mentionableUsers.filter((mu) => mu.role !== "viewer").length === 0 && (
+                                  {mentionableUsers.filter((mu) => canBeApprover(mu.role)).length === 0 && (
                                     <p className="text-[10px] text-slate-500 italic p-1.5">Belum ada kolega yang bisa jadi penanggung jawab.</p>
                                   )}
-                                  {mentionableUsers.filter((mu) => mu.role !== "viewer").map((mu) => {
+                                  {mentionableUsers.filter((mu) => canBeApprover(mu.role)).map((mu) => {
                                     const selected = ids.includes(mu.id);
                                     return (
                                       <button
@@ -26000,10 +26116,10 @@ export default function App() {
                 </div>
               )}
               <div className="max-h-56 overflow-y-auto bg-slate-900 border border-slate-800 rounded-lg p-1.5 space-y-0.5">
-                {mentionableUsers.filter((mu) => mu.id !== currentUser?.id && mu.role !== "viewer").length === 0 && (
+                {mentionableUsers.filter((mu) => mu.id !== currentUser?.id && canBeApprover(mu.role)).length === 0 && (
                   <p className="text-[10px] text-slate-500 italic p-1.5">Tidak ada kolega lain yang bisa jadi penanggung jawab.</p>
                 )}
-                {mentionableUsers.filter((mu) => mu.id !== currentUser?.id && mu.role !== "viewer").map((mu) => {
+                {mentionableUsers.filter((mu) => mu.id !== currentUser?.id && canBeApprover(mu.role)).map((mu) => {
                   const selected = approverPickerIds.includes(mu.id);
                   return (
                     <button
@@ -26288,6 +26404,17 @@ export default function App() {
                 value={classifyTarget.value}
                 onChange={(patch) => setClassifyTarget((t) => (t ? { ...t, value: { ...t.value, ...patch } } : t))}
               />
+              {["admin", "legal", "super_admin"].includes(currentUser?.role) && (
+                <div className="mt-3 space-y-1">
+                  <label className="text-[11px] font-semibold text-slate-400">Divisi Peminta</label>
+                  <select value={classifyTarget.requestingDivision || ""} onChange={(e) => setClassifyTarget((t) => (t ? { ...t, requestingDivision: e.target.value } : t))}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-xs text-slate-100">
+                    <option value="">— Tidak ada (hanya Legal/Admin/Manajemen) —</option>
+                    {ROLE_DEFS.filter((r) => isDivisionRole(r.value)).map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                  </select>
+                  <p className="text-[10px] text-slate-500">Divisi ini ikut bisa melihat dokumen.</p>
+                </div>
+              )}
               <p className="text-[10px] text-slate-500 mt-3">Hanya memindah folder arsip — nomor dokumen yang sudah terbit tidak berubah.</p>
             </div>
             <div className="p-4 border-t border-slate-800 flex justify-end gap-2">
@@ -27781,12 +27908,12 @@ export default function App() {
         // (bukan narasi/pasal template — clauses-nya memang kosong).
         const isUploadReview = isUploadedDocument(selectedContract);
         // Menerima usulan = membuat versi dokumen baru: hanya Draft & peran yg boleh ubah dokumen.
-        const canEditRole = ["admin", "staff", "legal", "manager", "super_admin"].includes(currentUser?.role);
+        const canEditRole = canEditContracts && isDocumentOwnerSide(selectedContract);
         const canApplyMarkup = selectedContract.status === "Draft" && canEditRole;
         // Kenapa "Terima" belum bisa menerapkan usulan (dulu tombolnya cuma
         // disabled & pudar — terlihat seperti bug "tidak bisa dipencet").
         const applyBlockedReason = !canEditRole
-          ? "Peran Anda tidak berwenang mengubah dokumen."
+          ? "Usulan diterima/ditolak oleh pembuat dokumen."
           : isInternalApprovalStage(selectedContract.status)
             ? "Dokumen sedang direview & terkunci. Usulan diterapkan saat tahap revisi: approver klik \"Minta Revisi\", lalu pembuat dokumen menerima/menolak usulan ini."
             : selectedContract.status === "ReviewEksternal"
@@ -27843,7 +27970,7 @@ export default function App() {
           const canManage = currentUser?.id === cmt.userId || ["admin", "legal", "super_admin"].includes(currentUser?.role);
           const isMarkupProposal = cmt.kind === "strike" || cmt.kind === "replace";
           const isPendingMarkup = isMarkupProposal && cmt.status === "pending";
-          const canDecideMarkup = ["admin", "staff", "legal", "manager", "super_admin"].includes(currentUser?.role);
+          const canDecideMarkup = canEditContracts && isDocumentOwnerSide(selectedContract);
           return (
             <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${isMarkupProposal ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
               <div className="flex items-center gap-1.5">
@@ -27883,7 +28010,10 @@ export default function App() {
                 </div>
               ))}
               <div className="flex items-center gap-3 pt-1 flex-wrap">
-                {isPendingMarkup && (
+                {isPendingMarkup && !canDecideMarkup && (
+                  <span className="text-[10px] italic text-slate-500">Menunggu keputusan {selectedContract.approvalSubmittedByName || selectedContract.createdByName || "pembuat dokumen"}</span>
+                )}
+                {isPendingMarkup && canDecideMarkup && (
                   <>
                     <button
                       disabled={marginBusy}
@@ -28065,7 +28195,11 @@ export default function App() {
             )}
             {selectedContract.status === "Draft" && selectedContract.revisionStage && (
               <div className="shrink-0 px-5 py-2 border-b border-rose-500/25 bg-rose-500/10 text-[11px] text-rose-600">
-                <b>{selectedContract.revisionStage === "eksternal" ? "Revisi Eksternal" : "Revisi Internal"}</b> — klik <b>✓ Terima</b> / <b>✕ Tolak</b> pada tiap usulan coret/ganti dan <b>Selesai</b> pada komentar yang sudah ditindaklanjuti, lalu ajukan ulang ke Review Internal.
+                <b>{selectedContract.revisionStage === "eksternal" ? "Revisi Eksternal" : "Revisi Internal"}</b> — {isDocumentOwnerSide(selectedContract) ? (
+                  <>klik <b>✓ Terima</b> / <b>✕ Tolak</b> pada tiap usulan coret/ganti dan <b>Selesai</b> pada komentar yang sudah ditindaklanjuti, lalu ajukan ulang ke Review Internal.</>
+                ) : (
+                  <>menunggu tindak lanjut <b>{selectedContract.approvalSubmittedByName || selectedContract.createdByName || "pembuat dokumen"}</b>. Anda masih bisa menambah/membalas komentar; Terima/Tolak & pengajuan ulang dilakukan pembuat dokumen.</>
+                )}
               </div>
             )}
 
@@ -28428,12 +28562,12 @@ export default function App() {
               </div>
               <div className="space-y-1.5">
                 <label className="block text-xs font-semibold text-slate-300">Peran akses</label>
-                <select value={userForm.role || "staff"} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500">
+                <select value={userForm.role || "legal"} onChange={(e) => setUserForm({ ...userForm, role: e.target.value })} className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500">
                   {ROLE_OPTIONS.map((r) => (
                     <option key={r.value} value={r.value}>{r.label}</option>
                   ))}
                 </select>
-                <p className="text-[11px] text-slate-500 leading-snug">{roleMeta(userForm.role || "staff")?.desc}</p>
+                <p className="text-[11px] text-slate-500 leading-snug">{roleMeta(userForm.role || "legal")?.desc}</p>
               </div>
               {!userForm.id ? (
                 <div className="space-y-1.5">

@@ -1,5 +1,29 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #18] — Peran baru, batas per divisi & Permintaan Kontrak
+
+### Ringkasan
+- Peran baru: **IT/System, Admin (per PT), Legal, Manajemen, Marketing, Business Partnership, Account Executive, Operasional, HR/GA** (+ Super Admin). Aturan tunggal di `src/roles.ts`, dipakai server & frontend.
+- **Lihat dokumen**: Legal/Admin/Manajemen semua; divisi bisnis hanya dokumen divisinya (`requestingDivision`); HR/GA hanya kontrak karyawan; IT/System semua kecuali kontrak karyawan. Pembuat, pengaju & approver selalu bisa melihat dokumennya. Kontrak di luar jangkauan = 404. Audit & notifikasi ikut disaring.
+- **Permintaan Kontrak**: divisi bisnis mengajukan lewat menu "Permintaan Kontrak" → masuk "Pekerjaan Masuk" Legal → Legal setujui (prioritas) & buat kontrak → kontrak otomatis ditandai divisi peminta. Peminta dapat notifikasi saat disetujui/ditolak.
+- **Buat/ajukan kontrak**: Legal & Admin; HR/GA khusus kontrak karyawan. IT/System tidak punya hak bisnis tapi bisa kelola pengguna, Hak Akses & pengaturan. HR/GA bisa mengubah Kategori Kontrak Karyawan.
+- Klasifikasi Arsip: Legal/Admin bisa menandai **Divisi Peminta** untuk dokumen lama.
+- Menu default per peran (bisa diubah di Konfigurasi › Hak Akses).
+
+### Migrasi
+- Peran `manager` otomatis jadi `manajemen`. Peran `staff` lama tetap, hanya bisa melihat sampai diatur ulang di Kelola Pengguna.
+- Dokumen lama tanpa divisi hanya terlihat Legal/Admin/Manajemen/Super Admin (dan orang yang terlibat).
+
+## [Unreleased #17] — Terima usulan di semua teks & peran saat revisi
+
+### Ringkasan
+- **Terima** usulan coret/ganti kini bisa di semua teks dokumen template: Narasi Pembuka (sebelumnya selalu gagal "Pasal untuk usulan ini tidak ditemukan"), teks yang berasal dari `{{variabel}}` (variabel di bagian itu dibekukan jadi teks), dan kalimat yang terpotong format tebal/miring (dengan konfirmasi; format bagian itu jadi teks biasa). Narasi pembuka yang diubah tersimpan sebagai narasi pembuka khusus kontrak.
+- Saat **Revisi**, hanya pembuat/pengaju dokumen (dan admin) yang melihat tombol Terima/Tolak dan **Ajukan Ulang ke Review Internal**. Peninjau yang meminta revisi melihat "Menunggu revisi oleh …" dan tetap bisa berkomentar/membalas.
+
+### Endpoint berubah
+- `PUT /api/contracts/:id/comments/:cid` (`status`) dan `POST /api/contracts/:id/submit-review` saat revisi: 403 bila bukan pengaju/pembuat dokumen atau admin.
+- `POST /api/contracts` menyimpan `createdById` / `createdByName`.
+
 ## [Unreleased #16] — Tampilan login baru & pendaftaran mandiri lewat email
 
 ### Ringkasan

@@ -126,6 +126,17 @@ import {
   BarChart3,
 } from "lucide-react";
 import {
+  paginateFlow,
+  clearPagination,
+  stripPaginationMarks,
+  samePages,
+  pageIndexOf,
+  PaperPage,
+  A4_WIDTH_PX,
+  A4_HEIGHT_PX,
+  MM_TO_PX,
+} from "./paper-pagination";
+import {
   Clause,
   Template,
   Contract,
@@ -145,6 +156,8 @@ import {
   UserRole,
   ContractAttachmentSection,
   LegalJob,
+  SignatureFormat,
+  getSignatureFormat,
 } from "./types";
 
 // Mirrors dcs/pdf-compose.ts's layoutFlowGraph 1:1 (same algorithm, TS
@@ -526,6 +539,13 @@ const roleLabel = (value: string) => roleLabelOf(value);
 // Batas & validasi unggah berkas — HARUS selaras dengan server (multer):
 // maksimal 10MB, hanya PDF/JPG/PNG. Cek di klien memberi umpan balik instan
 // sebelum berkas dikirim; server tetap menegakkan batas yang sama (defense in depth).
+// Pilihan tombol "Format TTD" di preview dokumen template (lihat SignatureFormat).
+const SIGNATURE_FORMAT_OPTIONS: { value: SignatureFormat; label: string; desc: string }[] = [
+  { value: "satu_rangkap", label: "1 Rangkap", desc: "Kolom tanda tangan para pihak sebaris, dicetak sekali tanpa meterai." },
+  { value: "dua_rangkap", label: "2 Rangkap + Meterai", desc: "Halaman TTD dicetak per rangkap asli; kotak Meterai Rp10.000 bergantian di sisi tiap pihak." },
+  { value: "kolom_paraf", label: "TTD Kolom Paraf", desc: "Seperti PKS: tabel Paraf Pihak Pertama | Paraf Pihak Kedua di kaki setiap halaman PDF, bersama nomor halaman." },
+];
+
 const MAX_UPLOAD_MB = 10;
 const ALLOWED_UPLOAD_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 // `accept` opsional membatasi jenis lebih ketat per input (mis. hanya PDF).
@@ -3116,7 +3136,7 @@ function InlineRich({ html, onSave, className, placeholder }: { html: string; on
       contentEditable
       suppressContentEditableWarning
       data-placeholder={placeholder}
-      onBlur={() => { if (ref.current) onSave(sanitizeRich(ref.current.innerHTML)); }}
+      onBlur={() => { if (ref.current) onSave(sanitizeRich(stripPaginationMarks(ref.current.innerHTML))); }}
       onPaste={(e) => {
         // Paste dari Word/aplikasi lain bawa font-family sendiri (mis.
         // Calibri) menempel di tiap <span style="...">. Dibuang di sini
@@ -6179,6 +6199,19 @@ export default function App() {
   const isContractEditable = (c: Contract | null) =>
     !!c && c.status === "Draft" && canEditContracts && (!c.revisionStage || isDocumentOwnerSide(c));
 
+  // Mode Edit hanya berlaku untuk dokumen yang masih bisa diedit (Draft).
+  // Dulu nilainya "terbawa" saat pindah ke kontrak lain: nyalakan Mode Edit
+  // di kontrak Draft lalu buka kontrak Proses TTD → toolbar editor & token
+  // mentah {{...}} tetap muncul, padahal tombol Mode Edit tersembunyi di sana
+  // (tidak bisa dimatikan). Sekarang dimatikan otomatis setiap ganti kontrak
+  // atau begitu kontrak tidak lagi bisa diedit.
+  useEffect(() => {
+    setDocEditMode(false);
+  }, [selectedContract?.id]);
+  useEffect(() => {
+    if (docEditMode && !isContractEditable(selectedContract)) setDocEditMode(false);
+  }, [docEditMode, selectedContract?.status]);
+
   // Sebelum approval matrix selesai (Draft/OnReview), dokumen tidak boleh
   // diunduh sama sekali — cerminan client-side dari guard yang sama di
   // server (export-share, view-pdf).
@@ -8920,6 +8953,129 @@ export default function App() {
   };
 
   const previewRef = useRef<HTMLDivElement>(null);
+
+  // ===== Tampilan kertas ala Word (preview & Mode Edit dokumen template) =====
+  // Alur dokumen (previewRef) dipaginasi oleh src/paper-pagination.ts: blok
+  // yang tidak muat didorong ke awal lembar berikutnya, lembar A4 digambar di
+  // belakangnya. Export PDF memotong di lembar-lembar YANG SAMA (paperPagesRef),
+  // jadi layar = hasil cetak. Lihat komentar di paper-pagination.ts.
+  const [previewEl, setPreviewEl] = useState<HTMLDivElement | null>(null);
+  const setPreviewNode = useCallback((el: HTMLDivElement | null) => {
+    (previewRef as React.MutableRefObject<HTMLDivElement | null>).current = el;
+    setPreviewEl(el);
+  }, []);
+  const paperDeskRef = useRef<HTMLDivElement>(null);
+  const paperStackRef = useRef<HTMLDivElement>(null);
+  const [paperPages, setPaperPages] = useState<PaperPage[]>([]);
+  const paperPagesRef = useRef<PaperPage[]>([]);
+  const paperStableRef = useRef(false);
+  const [paperScale, setPaperScale] = useState(1);
+  const contractMarginsMm = appSettings.contractPageMargins || { top: 30, right: 30, bottom: 30, left: 30 };
+  const PAPER_GAP_PX = 24;
+  const latestContractRef = useRef(selectedContract);
+  latestContractRef.current = selectedContract;
+  const rangkapCutRef = useRef(rangkapCutIndex);
+  rangkapCutRef.current = rangkapCutIndex;
+  // masterData dibangun ulang tiap render — pakai kunci string agar efek
+  // paginasi tidak berjalan ulang tanpa perubahan nyata.
+  const typographyKey = JSON.stringify(masterData.documentTypography || {});
+
+  // Lebar panel → skala tampilan (lembar tetap dirender 210mm agar baris teks
+  // identik dgn PDF; hanya diperkecil secara visual lewat transform).
+  useEffect(() => {
+    const desk = paperDeskRef.current;
+    if (!desk || !previewEl) return;
+    const update = () => {
+      const avail = desk.clientWidth - 32;
+      setPaperScale(avail > 0 ? Math.min(1, avail / A4_WIDTH_PX) : 1);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(desk);
+    return () => ro.disconnect();
+  }, [previewEl]);
+
+  // Format 2 Rangkap: pasal yg satu halaman dgn TTD diulang per rangkap —
+  // diukur ulang setiap isi/tata letak berubah (null = ukur dulu 1 salinan).
+  useEffect(() => {
+    setRangkapCutIndex(null);
+  }, [selectedContract, docEditMode, contractMarginsMm.top, contractMarginsMm.bottom, contractMarginsMm.left, contractMarginsMm.right, typographyKey]);
+
+  useEffect(() => {
+    const root = previewEl;
+    if (!root) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let stopped = false;
+    let lastHeight = -1;
+    const geometry = {
+      sheetHeight: A4_HEIGHT_PX,
+      topMargin: contractMarginsMm.top * MM_TO_PX,
+      bottomMargin: contractMarginsMm.bottom * MM_TO_PX,
+      gap: PAPER_GAP_PX,
+    };
+    const run = () => {
+      timer = null;
+      if (stopped || !root.isConnected) return;
+      const pages = paginateFlow(root, geometry);
+      lastHeight = root.offsetHeight;
+      paperPagesRef.current = pages;
+      setPaperPages((prev) => (samePages(prev, pages) ? prev : pages));
+      // 2 Rangkap: tentukan pasal pertama di halaman TTD (sekali per tata letak).
+      const contract = latestContractRef.current;
+      const needsCut = !!contract && !docEditMode && rangkapCutRef.current === null
+        && getSignatureFormat(contract) === "dua_rangkap" && (contract.parties?.length || 2) > 1;
+      if (needsCut && contract) {
+        const sig = root.querySelector('[data-signature-anchor="1"]') as HTMLElement | null;
+        let cut = 0;
+        if (sig) {
+          const sigPage = pageIndexOf(root, sig, pages);
+          cut = contract.clauses.length;
+          // Pasal pertama yang (sebagian) berada di halaman TTD — termasuk pasal
+          // yang mulai di halaman sebelumnya lalu bersambung ke halaman TTD,
+          // supaya rangkap berikutnya mengulang pasal itu UTUH, bukan potongan.
+          const k = root.offsetWidth > 0 ? root.getBoundingClientRect().width / root.offsetWidth : 1;
+          const sigPageTop = pages[sigPage]?.top ?? 0;
+          for (const ce of Array.from(root.querySelectorAll("[data-clause-index]")) as HTMLElement[]) {
+            const bottom = (ce.getBoundingClientRect().bottom - root.getBoundingClientRect().top) / k;
+            if (bottom > sigPageTop + 1) { cut = Number(ce.getAttribute("data-clause-index")); break; }
+          }
+        }
+        setRangkapCutIndex(cut);
+        return; // tata letak berubah lagi (duplikasi) → paginasi ulang menyusul
+      }
+      paperStableRef.current = true;
+    };
+    const schedule = (ms: number) => {
+      paperStableRef.current = false;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(run, ms);
+    };
+    // Isi berubah (render ulang React / mengetik di Mode Edit / gambar dimuat).
+    // Saat mengetik ditunda sebentar supaya kursor tidak "meloncat" tiap ketukan.
+    const mo = new MutationObserver(() => schedule(docEditMode ? 400 : 60));
+    mo.observe(root, { childList: true, subtree: true, characterData: true });
+    const ro = new ResizeObserver(() => { if (root.offsetHeight !== lastHeight) schedule(docEditMode ? 400 : 60); });
+    ro.observe(root);
+    (document as any).fonts?.ready?.then(() => schedule(0));
+    schedule(0);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      mo.disconnect();
+      ro.disconnect();
+      clearPagination(root);
+    };
+  }, [previewEl, docEditMode, isExportingPdf, rangkapCutIndex, contractMarginsMm.top, contractMarginsMm.bottom, contractMarginsMm.left, contractMarginsMm.right, typographyKey, selectedContract?.id, selectedContract?.documentLanguage, selectedContract?.signatureFormat, selectedContract?.showMeteraiPlaceholder]);
+
+  // Tunggu paginasi tenang (dipakai export sebelum memotret lembar).
+  const waitPaperStable = async (timeoutMs = 5000) => {
+    const t0 = Date.now();
+    await new Promise((r) => setTimeout(r, 30));
+    while (!paperStableRef.current && Date.now() - t0 < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+  };
   const dcsFlowPreviewRef = useRef<HTMLDivElement>(null);
 
   // Unduh diagram alir yang sedang dibuat di builder DCS sebagai JPG — reuse
@@ -8943,422 +9099,86 @@ export default function App() {
   // Shared by both "download for print/wet-sign" and "share via email/WA".
   const generateContractPdf = async (): Promise<jsPDF | null> => {
     if (!previewRef.current || !selectedContract) return null;
-    const el = previewRef.current;
-    // Preserve inline styles so the scroll-clipped preview panel can be
-    // temporarily expanded to its full content height for capture.
-    const prevMaxHeight = el.style.maxHeight;
-    const prevOverflow = el.style.overflow;
-    const prevWidth = el.style.width;
-    const prevPadding = el.style.padding;
-    const prevBorder = el.style.border;
-    // BUG (poin 3 revisi user — token {{Party1Name}}/{{StartDate}}/dll
-    // muncul MENTAH di PDF hasil export, bukan tersubstitusi jadi data
-    // asli): kalau tombol "Export to PDF" dipencet SAAT "Mode Edit" masih
-    // aktif, previewRef masih menampilkan versi RAW contentEditable (token
-    // {{...}} belum disubstitusi — memang disengaja begitu supaya user bisa
-    // MENGEDIT token-nya), bukan versi "Preview" yang sudah tersubstitusi.
-    // generateContractPdf sebelumnya cuma mem-toggle isExportingPdf (buat
-    // sembunyikan tombol edit draft), TIDAK PERNAH memaksa balik ke mode
-    // Preview — jadi screenshot-nya ikut menangkap token mentah itu.
-    // Fix: paksa docEditMode false SELAMA capture (pola sama dengan
-    // isExportingPdf: disimpan lalu dikembalikan di finally), supaya PDF
-    // yang diekspor SELALU dari tampilan Preview yang sudah tersubstitusi,
-    // apa pun mode yang sedang aktif di layar user saat tombol dipencet.
+    // PDF = foto lembar-lembar kertas yang SAMA PERSIS dgn tampilan preview
+    // (lihat "Tampilan kertas ala Word" & src/paper-pagination.ts). Tidak ada
+    // lagi tata letak/pemotongan halaman terpisah khusus export — dulu export
+    // memaksa lebar 210mm & memotong sendiri, sehingga hasilnya bisa beda dari
+    // layar. Sekarang layar sudah 210mm berlembar, export tinggal memotret.
+    //
+    // Mode Edit dimatikan selama capture (token {{...}} mentah & kontrol edit
+    // tidak boleh ikut tercetak), lalu dikembalikan di finally.
     const prevDocEditMode = docEditMode;
+    const desk = paperDeskRef.current;
+    const stack = paperStackRef.current;
     try {
-      setRangkapCutIndex(null);
       setIsExportingPdf(true);
       if (prevDocEditMode) setDocEditMode(false);
-      // Let React re-render (hides draft-only edit buttons, dan kalau tadi
-      // Mode Edit aktif — beralih ke tampilan Preview yang token-nya sudah
-      // tersubstitusi) sebelum capture.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      // Tunggu paginasi selesai (termasuk duplikasi rangkap pada format
+      // 2 Rangkap) — tata letak sesudah ini identik dgn yang tampil di layar.
+      await waitPaperStable();
+      if (!stack || !desk) return null;
+      const pages = paperPagesRef.current.length ? paperPagesRef.current : [{ top: 0, height: A4_HEIGHT_PX }];
 
-      el.style.maxHeight = "none";
-      el.style.overflow = "visible";
-      // Margin cetak (mm) HANYA dipaksakan di sini, saat capture — BUKAN
-      // ditaruh permanen di className/style on-screen div ini. Alasannya:
-      // panel preview di layar lebarnya ikut layout editor (kolom app,
-      // biasanya jauh lebih sempit dari kertas asli), jadi kalau padding
-      // mm ditempel di situ, 4cm kiri+kanan bisa makan hampir separuh
-      // lebar panel yang sempit itu — bikin teks kepepet/wrap 3 baris dan
-      // kolom dwibahasa ke-squeeze parah (persis bug yang dilaporkan).
-      // Dengan memaksa width jadi "210mm" (lebar asli kertas A4) SESAAT
-      // sebelum screenshot, satuan mm padding-nya jadi terhitung relatif
-      // ke lebar kertas sungguhan, bukan ke lebar panel UI yang sempit.
-      el.style.width = "210mm";
-      const m = appSettings.contractPageMargins || { top: 30, right: 30, bottom: 30, left: 30 };
-      // PENTING: cuma kiri/kanan yang jadi padding DOM di sini. Alasannya:
-      // seluruh dokumen di-screenshot sebagai SATU kanvas tinggi, baru
-      // dipotong-potong jadi halaman PDF belakangan. Kalau atas/bawah ikut
-      // jadi padding DOM (seperti sebelumnya), padding itu cuma nempel SEKALI
-      // di paling atas & paling bawah kanvas GABUNGAN — jadi halaman 1 dapat
-      // margin atas, halaman TERAKHIR dapat margin bawah, tapi semua halaman
-      // di ANTARANYA (mis. halaman 2 dari kontrak 3 halaman) kepotong pas di
-      // batas semantik tanpa spasi apa pun di atas/bawahnya — beda dgn
-      // kiri/kanan yang otomatis konsisten di semua baris karena memang
-      // sifatnya lebar konten, bukan potongan vertikal. Makanya margin
-      // atas/bawah HARUS ditegakkan ulang per-halaman saat menaruh gambar ke
-      // PDF (lihat MM_TO_PT & topMarginPt/bottomMarginPt di bawah), bukan
-      // dari padding DOM ini.
-      el.style.padding = `0 ${m.right}mm 0 ${m.left}mm`;
-      // Border panel preview (`border-slate-850` di className) itu delineasi
-      // visual BUAT DI LAYAR doang, gak pernah dimaksudkan ikut tercetak.
-      // Dulu efeknya nyaris tak kasat mata karena garis ini nempel pas di
-      // tepi kanvas yang kebetulan berhimpit sama tepi halaman PDF (margin
-      // atas/bawah lama cuma nempel sekali di ujung kanvas gabungan — lihat
-      // komentar topMarginPt di bawah). Sekarang margin atas/bawah sudah
-      // benar per-halaman, konten ketarik turun sejauh topMarginPt tapi
-      // garis border ini AKAN ikut ketarik juga kalau tidak dimatikan —
-      // muncul sebagai garis ngambang aneh persis di atas kop surat.
-      el.style.border = "none";
-      // Force a layout recalc, lalu tunggu sampai TINGGI elemen berhenti
-      // berubah antar frame (bukan cuma 2x RAF tetap) — dokumen kontrak yang
-      // panjang + kolom dwibahasa butuh beberapa siklus reflow untuk benar2
-      // selesai repaint, kalau screenshot diambil di tengah reflow itu hasilnya
-      // "sobek"/belang terang-gelap separuh halaman (persis yang dilaporkan).
-      void el.offsetHeight;
-      let lastHeight = -1;
-      for (let i = 0; i < 12; i++) {
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        const currentHeight = el.scrollHeight;
-        if (currentHeight === lastHeight) break;
-        lastHeight = currentHeight;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 120));
+      // Skala tampilan & batas scroll panel sudah dilepas oleh render
+      // isExportingPdf (lihat stack/desk di JSX) — tunggu 2 frame agar terlukis.
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-      // Rangkap Fisik (>1 pihak + meterai nyala): tentukan pasal mana yg
-      // SATU HALAMAN dgn blok TTD — HANYA pasal itu yg akan diulang per
-      // rangkap tambahan (idx>0), bukan semua pasal dari Pasal 1 lagi.
-      // Diukur dari layout SATU salinan alami di atas (rangkapCutIndex masih
-      // null saat ini, jadi clauseListBlock() di atas belum menduplikasi apa
-      // pun — persis kondisi yg perlu diukur). Lihat komentar rangkapCutIndex
-      // & clauseListBlock/signatureRow di JSX preview.
-      if (selectedContract.showMeteraiPlaceholder && (selectedContract.parties?.length || 2) > 1) {
-        const elTop = el.getBoundingClientRect().top;
-        const sigAnchor = el.querySelector('[data-signature-anchor="1"]') as HTMLElement | null;
-        const clauseEls = Array.from(el.querySelectorAll("[data-clause-index]")) as HTMLElement[];
-        let cutIdx = 0; // fallback aman: ulang semua pasal (perilaku lama) kalau pengukuran gagal
-        if (sigAnchor && clauseEls.length > 0) {
-          const pxPerMm = el.getBoundingClientRect().width / 210; // el dipaksa width 210mm di atas
-          const pageContentHeightMm = 297 - m.top - m.bottom;
-          const pageHeightPxCss = pageContentHeightMm * pxPerMm;
-          const sigTopPx = sigAnchor.getBoundingClientRect().top - elTop;
-          // PENTING: batas antar halaman NYATA tidak persis kelipatan tetap
-          // pageHeightPxCss — algoritma potong asli (lihat while-loop capture
-          // di bawah, forceBreakPointsPx/safeBreakPointsPx) MENGGESER potongan
-          // ke batas pasal terdekat (isLastSlice/minCutY 40%), supaya tidak
-          // pernah motong di tengah kalimat. Kalau di sini dipakai kelipatan
-          // tetap yg polos, batas halamannya bisa MELESET dari yg sungguhan
-          // kepakai saat render PDF — persis bug yg dilaporkan (Pasal 6
-          // ketinggalan di halaman "sebelum" padahal nyatanya senasib sama
-          // TTD). Makanya di sini REPLIKASI PERSIS logic bestBreak/minCutY yg
-          // sama, dalam satuan px CSS (bukan px kanvas — scale-nya sama2
-          // dipakai di pembilang & penyebut jadi hasilnya proporsional sama).
-          const breakBoundaryElsMeasure = [
-            ...Array.from(el.children),
-            ...Array.from(el.querySelectorAll(".group\\/clause")),
-          ] as HTMLElement[];
-          const safeBreakPointsPxCss = breakBoundaryElsMeasure.map(
-            (c) => c.getBoundingClientRect().bottom - elTop,
-          );
-          const totalHeightPxCss = el.scrollHeight;
-          let renderedPx = 0;
-          let pageStartPx = 0;
-          while (renderedPx < totalHeightPxCss) {
-            let sliceHeight = Math.min(pageHeightPxCss, totalHeightPxCss - renderedPx);
-            const isLastSlice = renderedPx + sliceHeight >= totalHeightPxCss;
-            if (!isLastSlice) {
-              const idealCutY = renderedPx + sliceHeight;
-              const minCutY = renderedPx + pageHeightPxCss * 0.4;
-              let bestBreak = -1;
-              for (const bp of safeBreakPointsPxCss) {
-                if (bp <= idealCutY && bp > minCutY && bp > bestBreak) bestBreak = bp;
-              }
-              if (bestBreak > 0) sliceHeight = bestBreak - renderedPx;
-            }
-            if (sigTopPx >= renderedPx - 1 && sigTopPx < renderedPx + sliceHeight) {
-              pageStartPx = renderedPx;
-              break;
-            }
-            renderedPx += sliceHeight;
-          }
-          cutIdx = selectedContract.clauses.length;
-          for (const ce of clauseEls) {
-            const top = ce.getBoundingClientRect().top - elTop;
-            if (top >= pageStartPx - 1) { cutIdx = Number(ce.getAttribute("data-clause-index")); break; }
-          }
-        }
-        setRangkapCutIndex(cutIdx);
-        // Tunggu re-render dgn duplikasi baru (clauseListBlock(cutIdx,…) per
-        // rangkap), lalu stabilkan ulang tingginya — sama seperti loop reflow
-        // di atas, karena tinggi dokumen sekarang bertambah (ada pasal +
-        // closing + TTD ekstra per rangkap tambahan).
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        void el.offsetHeight;
-        let lastHeight2 = -1;
-        for (let i = 0; i < 12; i++) {
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          const currentHeight = el.scrollHeight;
-          if (currentHeight === lastHeight2) break;
-          lastHeight2 = currentHeight;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 120));
-      }
-
-      // html2canvas mengklon dokumen ke "jendela virtual" offscreen untuk
-      // capture-nya. Kalau cuma windowHeight yang di-override (seperti
-      // sebelumnya) sementara windowWidth dibiarkan default, defaultnya itu
-      // ambil lebar window/dokumen APA ADANYA saat itu — TAPI proses klon +
-      // reflow ini rawan tidak persis sama dengan yang tampil di layar,
-      // apalagi dengan layout responsive (`xl:grid-cols-12` di panel kiri
-      // vs kanan). Hasilnya: dua kolom yang di layar sejajar rapi malah
-      // ke-capture dengan lebar/posisi sedikit berbeda — persis gejala
-      // "garis vertikal belang" yang dilaporkan (dua area dengan warna latar
-      // BEDA yang bukan berasal dari CSS section manapun, karena memang
-      // bukan soal warna CSS, tapi dua PANEL BERBEDA yang ke-render
-      // tumpang tindih di kanvas yang sama). Kunci windowWidth ke lebar
-      // window NYATA saat ini supaya klon offscreen-nya reflow identik
-      // dengan yang di layar.
-      const elWidthPx = el.offsetWidth;
-      const elHeightPx = el.scrollHeight;
+      const stackWidthPx = stack.offsetWidth;
+      const stackHeightPx = stack.offsetHeight;
       const windowWidth = document.documentElement.clientWidth;
-      const windowHeight = Math.max(document.documentElement.clientHeight, elHeightPx);
-
-      // Jaring pengaman tambahan (bukan penyebab utama, tapi murah untuk
-      // dijaga): html2canvas-pro membatasi kanvas internalnya 3–5 megapiksel
-      // tergantung RAM perangkat (lihat FAQ resminya) — turunkan scale kalau
-      // dokumennya sangat panjang supaya tidak pernah mendekati batas itu.
+      const windowHeight = Math.max(document.documentElement.clientHeight, stackHeightPx);
+      // html2canvas-pro membatasi kanvas ±3–5 MP tergantung perangkat —
+      // turunkan skala untuk dokumen sangat panjang agar tidak gagal.
       const SAFE_CANVAS_MEGAPIXELS = 4_000_000;
       const requestedScale = 2;
-      const maxSafeScale = Math.sqrt(SAFE_CANVAS_MEGAPIXELS / (elWidthPx * elHeightPx));
-      const scale = Math.max(1, Math.min(requestedScale, maxSafeScale));
+      const maxSafeScale = Math.sqrt(SAFE_CANVAS_MEGAPIXELS / (stackWidthPx * stackHeightPx));
+      const targetPxPerCss = Math.max(1, Math.min(requestedScale, maxSafeScale));
+      // Aplikasi men-zoom <html> (--ui-zoom) di layar < 1517px; html2canvas
+      // bekerja di koordinat ter-zoom (getBoundingClientRect). Ukuran & skala
+      // diberikan dlm koordinat itu, lalu rasio kanvas/CSS dihitung dari hasil
+      // nyata — supaya potongan per lembar tidak bergeser di layar mana pun.
+      const stackRect = stack.getBoundingClientRect();
+      const zoomK = stackRect.width > 0 ? stackRect.width / stackWidthPx : 1;
 
-      // Catat batas bawah tiap CHILD LANGSUNG dari previewRef (kop surat,
-      // header dokumen, narasi pembuka, kalimat penutup, blok tanda tangan
-      // — semua dipisah `space-y-6`) DITAMBAH batas tiap pasal individual
-      // (elemen `.group/clause`) — soalnya semua pasal itu bersarang di
-      // DALAM SATU div pembungkus daftar pasal (bukan child langsung dari
-      // previewRef), jadi tanpa ini cuma batas SETELAH pasal terakhir yang
-      // ketangkep, bukan batas ANTAR tiap pasal (persis kenapa "Pasal 5:
-      // Kerahasiaan Informasi (Non-" masih kepotong dari "Disclosure)").
-      // Ini semua batas SEMANTIK asli dari DOM, bukan tebakan dari piksel
-      // kosong — pendekatan piksel sebelumnya masih salah (sempat motong
-      // pas di antara label "BAHASA INDONESIA" dengan paragrafnya sendiri).
-      // Potongan halaman PDF nanti HANYA boleh jatuh di salah satu batas ini.
-      const elTopCss = el.getBoundingClientRect().top;
-      const breakBoundaryElements = [
-        ...Array.from(el.children),
-        ...Array.from(el.querySelectorAll(".group\\/clause")),
-      ];
-      const safeBreakPointsPx: number[] = breakBoundaryElements.map(
-        (child) => ((child as HTMLElement).getBoundingClientRect().bottom - elTopCss) * scale,
-      );
-
-      // Titik PAKSA ganti halaman — beda dari safeBreakPointsPx di atas yang
-      // cuma titik BOLEH potong (dipakai kalau kebetulan pas). Ini dipakai
-      // HANYA oleh blok tanda tangan pihak ke-2/dst saat placeholder Meterai
-      // dinyalakan (lihat atribut data-pdf-force-break di blok TTD, dekat
-      // handleToggleMeteraiPlaceholder): tiap pihak WAJIB dapat halaman
-      // closing+TTD miliknya sendiri (meterai itu bea materai fisik yang
-      // ditempel per lembar asli tiap pihak — bukan cuma dekorasi bersama),
-      // jadi TIDAK BOLEH digabung ke halaman pihak lain walau isinya
-      // sebetulnya masih muat kalau disatukan.
-      const forceBreakPointsPx: number[] = Array.from(
-        el.querySelectorAll("[data-pdf-force-break]"),
-      ).map((elm) => ((elm as HTMLElement).getBoundingClientRect().top - elTopCss) * scale);
-
-      // Rentang tinggi tiap <img> di dalam preview (kop/logo perusahaan
-      // MAUPUN foto lampiran yang disisipkan lewat toolbar gambar) — dipakai
-      // di bawah supaya potongan halaman TIDAK PERNAH jatuh di TENGAH sebuah
-      // gambar. <img> di lampiran ditempel via dangerouslySetInnerHTML
-      // (bodyHtml section, lihat attachmentSectionsBlock), jadi bukan child
-      // langsung previewRef ataupun `.group/clause` — tidak ikut kehitung di
-      // safeBreakPointsPx di atas, itu sebabnya sebelum ini foto lampiran
-      // bisa kepotong pas separuh kalau titik potong per-halaman kebetulan
-      // jatuh persis di tengah tinggi fotonya.
-      const imageZonesPx: { top: number; bottom: number }[] = Array.from(
-        el.querySelectorAll("img"),
-      ).map((img) => {
-        const r = (img as HTMLElement).getBoundingClientRect();
-        return { top: (r.top - elTopCss) * scale, bottom: (r.bottom - elTopCss) * scale };
-      });
-
-      const canvas = await html2canvas(el, {
-        scale,
+      const canvas = await html2canvas(stack, {
+        scale: targetPxPerCss / zoomK,
         windowWidth,
         windowHeight,
-        height: el.scrollHeight,
-        // WAJIB diisi eksplisit: tanpa ini, elemen mana pun yang warna
-        // latarnya gagal di-parse html2canvas-pro (palet slate app ini
-        // didefinisikan via CSS variable di @theme, bukan warna Tailwind
-        // baku) jatuh jadi transparan penuh alih-alih putih. PNG dengan
-        // piksel transparan itu lalu dikompositkan beda-beda oleh tiap
-        // pembaca PDF (ada yang jadi putih, ada yang jadi abu-abu/hitam) —
-        // itulah kenapa hasil export kelihatan belang terang-gelap padahal
-        // di layar warnanya rata.
+        width: stackRect.width,
+        height: stackRect.height,
+        // Latar eksplisit putih — tanpa ini piksel transparan dikomposit
+        // beda-beda oleh tiap pembaca PDF (hasil belang terang-gelap).
         backgroundColor: "#ffffff",
       });
 
-      const pdf = new jsPDF({
-        orientation: "portrait",
-        unit: "pt",
-        format: "a4",
-      });
+      const pdf = new jsPDF({ orientation: "portrait", unit: "pt", format: "a4" });
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfPageHeight = pdf.internal.pageSize.getHeight();
-      const imgWidth = pdfWidth;
-      const MM_TO_PT = 2.834645669;
-      // Margin atas/bawah DITEGAKKAN DI SINI (bukan di padding DOM di atas —
-      // lihat komentar di el.style.padding) supaya SETIAP halaman, bukan cuma
-      // halaman pertama/terakhir, dapat jatah blank yang sama persis.
-      const topMarginPt = m.top * MM_TO_PT;
-      const bottomMarginPt = m.bottom * MM_TO_PT;
-      const pageContentHeightPt = pdfPageHeight - topMarginPt - bottomMarginPt;
+      const pxToCanvas = canvas.width / stackWidthPx;
 
-      // Slice the full-height canvas into A4-sized page chunks so long
-      // contracts (many clauses/signatures) aren't cut off or squeezed
-      // into a single page. pageHeightPx sekarang berdasarkan TINGGI KONTEN
-      // saja (halaman dikurangi margin atas+bawah), bukan tinggi halaman
-      // penuh — itu yang menjamin tiap halaman baru juga punya ruang kosong
-      // margin atas+bawah, bukan cuma halaman pertama/terakhir.
-      const pageHeightPx = (pageContentHeightPt * canvas.width) / imgWidth;
-      let renderedHeightPx = 0;
-      let pageIndex = 0;
-
-      while (renderedHeightPx < canvas.height) {
-        let sliceHeightPx = Math.min(
-          pageHeightPx,
-          canvas.height - renderedHeightPx,
-        );
-        // Titik PAKSA (forceBreakPointsPx) dicek LEBIH DULU, TIDAK PEDULI
-        // apakah sisa konten kelihatannya muat jadi satu halaman — soalnya
-        // kalau ditunda sampai pengecekan isLastSlice di bawah, dokumen
-        // pendek (mis. hanya 2 pihak, closing singkat) akan lolos dari
-        // pemisahan halaman per-pihak yang justru jadi inti fitur ini.
-        const nextForcedBreak = forceBreakPointsPx.find(
-          (fp) => fp > renderedHeightPx + 1 && fp < renderedHeightPx + sliceHeightPx - 1,
-        );
-        if (nextForcedBreak !== undefined) {
-          sliceHeightPx = nextForcedBreak - renderedHeightPx;
-        } else {
-          // Kalau ini bukan potongan terakhir (masih ada sisa konten di bawah),
-          // geser titik potongnya ke batas SEMANTIK (akhir kop surat/header/
-          // narasi pembuka/kalimat penutup/tiap pasal/blok tanda tangan) yang
-          // paling dekat dengan titik potong ideal — supaya tidak pernah motong
-          // di tengah satu blok. Minimal 40% tinggi halaman harus terisi supaya
-          // tidak ada halaman yang jadi nyaris kosong gara-gara satu blok
-          // sebelumnya pas² sedikit lebih panjang dari sisa halaman.
-          const isLastSlice = renderedHeightPx + sliceHeightPx >= canvas.height;
-          if (!isLastSlice) {
-            const idealCutY = renderedHeightPx + sliceHeightPx;
-            const minCutY = renderedHeightPx + pageHeightPx * 0.4;
-            let bestBreak = -1;
-            for (const bp of safeBreakPointsPx) {
-              if (bp <= idealCutY && bp > minCutY && bp > bestBreak) bestBreak = bp;
-            }
-            if (bestBreak > 0) {
-              sliceHeightPx = bestBreak - renderedHeightPx;
-            }
-            // Kalau tidak ketemu batas semantik yang cocok (mis. satu pasal
-            // kebetulan lebih panjang dari satu halaman penuh), sliceHeightPx
-            // tetap pakai potongan tetap di atas — jarang terjadi, tapi lebih
-            // baik daripada halaman kosong sama sekali.
-          }
-        }
-        // Jangan sampai potongan halaman jatuh di TENGAH sebuah <img> (poin
-        // revisi: foto lampiran kepotong karena kepanjangan). Cuma berlaku
-        // untuk gambar yang MULAI di halaman ini (img.top >= awal slice) —
-        // kalau gambar sudah mulai dari halaman SEBELUMNYA dan masih lanjut
-        // ke sini, itu berarti gambarnya sendiri lebih tinggi dari satu
-        // halaman penuh dan memang tidak mungkin dihindari (dibiarkan apa
-        // adanya, lebih baik daripada halaman kosong tak berujung). Kalau
-        // gambar baru mulai di halaman ini tapi tidak cukup ruang sampai
-        // akhir halaman, potongan digeser ke PERSIS sebelum gambar itu —
-        // otomatis membuat gambar tsb pindah utuh ke halaman berikutnya.
-        for (const img of imageZonesPx) {
-          const cutY = renderedHeightPx + sliceHeightPx;
-          const imgStartsThisSlice = img.top >= renderedHeightPx - 1;
-          const cutInsideImage = cutY > img.top + 1 && cutY < img.bottom - 1;
-          if (imgStartsThisSlice && cutInsideImage) {
-            const pushedBackHeight = img.top - renderedHeightPx;
-            // Guard minimal: kalau gambar itu mulai nyaris di awal halaman
-            // (mis. halaman ini memang KHUSUS diawali gambar itu), menggeser
-            // mundur cuma bikin slice ~0px (loop tak maju) — biarkan potongan
-            // asli jalan, gambar itu sendiri yang lebih tinggi dari 1 halaman.
-            if (pushedBackHeight > pageHeightPx * 0.05) {
-              sliceHeightPx = pushedBackHeight;
-            }
-            break;
-          }
-        }
-
-        // Bulatkan ke atas: pageCanvas.height (integer, dibulatkan browser)
-        // TIDAK BOLEH lebih kecil dari area yang mau digambar — kalau lebih
-        // kecil, sisa barisnya ketinggalan transparan (lihat fillRect di
-        // bawah untuk kenapa transparan ini yang bikin belang).
-        const sliceHeightPxRounded = Math.ceil(sliceHeightPx);
-
+      pages.forEach((pg, pageIndex) => {
+        const sy = Math.round(pg.top * pxToCanvas);
+        const sh = Math.min(canvas.height - sy, Math.ceil(pg.height * pxToCanvas));
         const pageCanvas = document.createElement("canvas");
         pageCanvas.width = canvas.width;
-        pageCanvas.height = sliceHeightPxRounded;
+        pageCanvas.height = Math.max(1, sh);
         const ctx = pageCanvas.getContext("2d");
-        if (!ctx) {
-          showToast("Gagal membuat konteks kanvas untuk PDF — halaman mungkin terpotong.", "warning");
-          break;
-        }
-        // WAJIB: kanvas baru selalu mulai TRANSPARAN, bukan putih. Kalau
-        // drawImage di bawah tidak menutupi 100% area kanvas ini persis
-        // piksel-per-piksel (sisa pembulatan, atau canvas sumber sedikit
-        // lebih pendek dari yang diharapkan), baris yang tersisa tetap
-        // transparan — lalu setiap pembaca PDF mengkompositkan piksel
-        // transparan itu BEDA-BEDA (ada yang jadi putih, ada yang jadi
-        // abu-abu/hitam). Itu penyebab hasil export belang terang-gelap,
-        // BUKAN warna latar elemen HTML-nya (yang sudah benar semua putih).
+        if (!ctx) return;
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, pageCanvas.width, pageCanvas.height);
-        ctx.drawImage(
-          canvas,
-          0,
-          renderedHeightPx,
-          canvas.width,
-          sliceHeightPx,
-          0,
-          0,
-          canvas.width,
-          sliceHeightPx,
-        );
-
-        const pageImgData = pageCanvas.toDataURL("image/png");
-        const pageImgHeight = (sliceHeightPx * imgWidth) / canvas.width;
-
+        ctx.drawImage(canvas, 0, sy, canvas.width, sh, 0, 0, canvas.width, sh);
         if (pageIndex > 0) pdf.addPage();
-        pdf.addImage(pageImgData, "PNG", 0, topMarginPt, imgWidth, pageImgHeight);
-
-        renderedHeightPx += sliceHeightPx;
-        pageIndex += 1;
-      }
-
-      // Footer nomor halaman — cuma dokumen 2+ halaman (dokumen 1 halaman
-      // konvensinya tidak perlu nomor sama sekali). Ditaruh di tengah ruang
-      // margin bawah (m.bottom), bukan menambah ruang baru — supaya tetap
-      // konsisten dengan margin yang sudah dikonfigurasi, tidak nabrak isi.
-      const totalPages = pdf.getNumberOfPages();
-      if (totalPages > 1) {
-        const docLang = selectedContract.documentLanguage || "id";
-        const label = docLang === "en"
-          ? (p: number) => `Page ${p} of ${totalPages}`
-          : docLang === "bilingual"
-            ? (p: number) => `Halaman ${p} dari ${totalPages} / Page ${p} of ${totalPages}`
-            : (p: number) => `Halaman ${p} dari ${totalPages}`;
-        const footerY = pdfPageHeight - bottomMarginPt / 2;
-        pdf.setFontSize(8);
-        pdf.setTextColor(140, 140, 140);
-        for (let p = 1; p <= totalPages; p++) {
-          pdf.setPage(p);
-          pdf.text(label(p), pdfWidth / 2, footerY, { align: "center" });
+        // Lembar normal = tepat 1 halaman A4. Lembar yang dipanjangkan (satu
+        // blok lebih tinggi dari 1 halaman) diperkecil agar muat utuh.
+        const imgHeight = (pg.height / A4_WIDTH_PX) * pdfWidth;
+        if (imgHeight <= pdfPageHeight + 1) {
+          pdf.addImage(pageCanvas.toDataURL("image/png"), "PNG", 0, 0, pdfWidth, Math.min(imgHeight, pdfPageHeight));
+        } else {
+          const w = pdfWidth * (pdfPageHeight / imgHeight);
+          pdf.addImage(pageCanvas.toDataURL("image/png"), "PNG", (pdfWidth - w) / 2, 0, w, pdfPageHeight);
         }
-      }
+      });
 
       // Watermark reaktif (CONTROLLED/UNCONTROLLED) — spec (teks & warna) SAMA
       // PERSIS dgn server (server.ts /api/contracts/:id/view-pdf) supaya PDF
@@ -9436,13 +9256,7 @@ export default function App() {
 
       return pdf;
     } finally {
-      el.style.maxHeight = prevMaxHeight;
-      el.style.overflow = prevOverflow;
-      el.style.width = prevWidth;
-      el.style.padding = prevPadding;
-      el.style.border = prevBorder;
       setIsExportingPdf(false);
-      setRangkapCutIndex(null);
       // Kembalikan Mode Edit persis seperti semula — user yang tadi sedang
       // mengedit draft tidak kehilangan mode kerjanya cuma gara-gara export.
       if (prevDocEditMode) setDocEditMode(true);
@@ -9687,9 +9501,6 @@ export default function App() {
     await handleUpdateContractDraft(`${next ? "Tampilkan" : "Sembunyikan"} gambar logo kop surat`, updated);
   };
 
-  // Nyala/matikan kotak placeholder "Meterai Rp10.000" di ruang TTD. Beda
-  // dari toggle kop di atas: default-nya OFF (opt-in), bukan ON — lihat
-  // komentar showMeteraiPlaceholder di types.ts.
   const [releaseSaving, setReleaseSaving] = useState(false);
   const [releaseModalOpen, setReleaseModalOpen] = useState(false);
   const [releaseExternalOpen, setReleaseExternalOpen] = useState(false);
@@ -9756,12 +9567,16 @@ export default function App() {
     }
   };
 
-  const handleToggleMeteraiPlaceholder = async () => {
-    if (!selectedContract) return;
-    const next = !selectedContract.showMeteraiPlaceholder;
-    const updated = { ...selectedContract, showMeteraiPlaceholder: next };
+  // Satu tombol "Format TTD" menggantikan toggle Meterai lama — tiga pilihan
+  // (lihat SignatureFormat di types.ts). showMeteraiPlaceholder ikut disetel
+  // supaya data lama/klien lama tetap konsisten.
+  const [signatureMenuOpen, setSignatureMenuOpen] = useState(false);
+  const handleChangeSignatureFormat = async (format: SignatureFormat) => {
+    setSignatureMenuOpen(false);
+    if (!selectedContract || getSignatureFormat(selectedContract) === format) return;
+    const updated = { ...selectedContract, signatureFormat: format, showMeteraiPlaceholder: format === "dua_rangkap" };
     setSelectedContract(updated);
-    await handleUpdateContractDraft(`${next ? "Tampilkan" : "Sembunyikan"} placeholder meterai`, updated);
+    await handleUpdateContractDraft(`Ubah format tanda tangan: ${SIGNATURE_FORMAT_OPTIONS.find((o) => o.value === format)?.label}`, updated);
   };
 
   // Simpan seluruh daftar Lampiran (foto+tabel) sekaligus — dipanggil dari
@@ -12845,13 +12660,16 @@ export default function App() {
               );
             } else {
               return (
+                // Teks & ukuran SAMA PERSIS dgn placeholder PDF ("[Key]", miring)
+                // supaya baris & halaman di preview identik dgn hasil export —
+                // bedanya cuma sorotan kuning yang bisa diklik utk isi cepat.
                 <span
                   key={index}
                   onClick={() => handleQuickFixVariable(key)}
-                  className="bg-amber-100 text-amber-800 px-1.5 py-0.5 mx-1 rounded border border-amber-300 font-mono text-[10px] uppercase font-bold cursor-pointer hover:bg-amber-200 transition shadow-sm"
-                  title={`Klik untuk mengisi variabel ${key}`}
+                  className="italic text-rose-500 bg-amber-200/70 rounded-sm cursor-pointer hover:bg-amber-300/80 transition"
+                  title={`Variabel ${key} masih kosong — klik untuk mengisi (Quick-Fix)`}
                 >
-                  {key} Kosong (Quick-Fix)
+                  [{key}]
                 </span>
               );
             }
@@ -12866,7 +12684,7 @@ export default function App() {
   // numLabel null = tidak ada baris nomor sama sekali (dipakai utk Addendum,
   // yang judul pasalnya sudah final apa adanya, tidak diberi nomor sintetis).
   const renderClauseHeading = (numLabel: string | null, title: string) => (
-    <div className="text-center">
+    <div className="text-center" data-pg-atom="1" data-pg-keep="1">
       {numLabel && (
         <p className="font-bold text-slate-100 uppercase tracking-wide">{numLabel}</p>
       )}
@@ -20653,17 +20471,20 @@ export default function App() {
                       Logo: {(selectedContract.showLetterheadLogo ?? true) ? "Nyala" : "Mati"}
                     </button>
                   )}
+                  {/* Format TTD — SATU tombol untuk tiga gaya tanda tangan
+                      (menggantikan toggle "Meterai: Nyala/Mati" lama). Panel
+                      pilihan dirender sbg <section> selebar toolbar (bukan
+                      popover melayang) supaya tidak terpotong overflow kartu
+                      header & tidak kena gaya `.ct-toolbar > div`. */}
                   <button
-                    onClick={handleToggleMeteraiPlaceholder}
-                    title="Tampilkan kotak placeholder 'Meterai Rp10.000' di ruang tanda tangan tiap pihak. Tidak menambah tinggi halaman — cuma mengisi ruang kosong TTD yang sudah ada. Matikan kalau meterai fisik/e-meterai ditempel manual di luar sistem ini."
-                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition flex items-center gap-1 ${
-                      selectedContract.showMeteraiPlaceholder
-                        ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
-                        : "bg-slate-900/50 hover:bg-slate-800 text-slate-500 border-slate-800"
-                    }`}
+                    onClick={() => setSignatureMenuOpen((v) => !v)}
+                    aria-expanded={signatureMenuOpen}
+                    title="Pilih format blok tanda tangan: 1 Rangkap, 2 Rangkap + Meterai, atau TTD Kolom Paraf."
+                    className="px-3 py-2 text-xs font-semibold rounded-xl border transition flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
                   >
-                    <Stamp className="w-3.5 h-3.5" />
-                    Meterai: {selectedContract.showMeteraiPlaceholder ? "Nyala" : "Mati"}
+                    <PenTool className="w-3.5 h-3.5" />
+                    Format TTD: {SIGNATURE_FORMAT_OPTIONS.find((o) => o.value === getSignatureFormat(selectedContract))?.label}
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${signatureMenuOpen ? "rotate-180" : ""}`} />
                   </button>
                   {/* Bahasa dokumen — terjemahan AI dijalankan sekali saat
                       pertama kali butuh teks Inggris, lalu tersimpan. */}
@@ -20825,6 +20646,38 @@ export default function App() {
                       </span>
                     )}
                   </button>
+                  {signatureMenuOpen && !isUploadedDocument(selectedContract) && (
+                    <section className="basis-full mt-1 p-3 bg-slate-900 border border-slate-800 rounded-2xl" aria-label="Pilih format tanda tangan">
+                      <div className="flex items-center justify-between mb-2 px-1">
+                        <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">Format Tanda Tangan</p>
+                        <button onClick={() => setSignatureMenuOpen(false)} className="text-slate-500 hover:text-slate-300 cursor-pointer" title="Tutup">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        {SIGNATURE_FORMAT_OPTIONS.map((opt) => {
+                          const active = getSignatureFormat(selectedContract) === opt.value;
+                          return (
+                            <button
+                              key={opt.value}
+                              onClick={() => handleChangeSignatureFormat(opt.value)}
+                              className={`text-left p-3 rounded-xl border transition cursor-pointer ${
+                                active
+                                  ? "border-indigo-500 bg-indigo-500/10"
+                                  : "border-slate-800 hover:border-slate-600 bg-slate-950/40"
+                              }`}
+                            >
+                              <span className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-bold text-slate-100">{opt.label}</span>
+                                {active && <Check className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                              </span>
+                              <span className="block mt-1 text-[11px] leading-snug text-slate-400">{opt.desc}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  )}
                 </div>
                 {/* Penjelas beda Perpanjangan vs Addendum di titik pilih — muncul
                     hanya saat salah satu tombolnya tersedia (pasca full-approve). */}
@@ -20990,25 +20843,177 @@ export default function App() {
                         atasnya, lihat <header className="... sticky top-0
                         z-40">), z-30 (di bawah header) supaya toolbar tetap
                         kelihatan tapi tidak menimpa header. */}
-                    {docEditMode && (
+                    {docEditMode && isContractEditable(selectedContract) && (
                       <div className="sticky top-[69px] z-30">
                         <DocToolbar />
                       </div>
                     )}
-                    {/* Standard Indonesian Style Document Formatting.
-                        Di layar, kertas ini mengikuti tema (gelap di dark mode).
-                        Saat export PDF kelas "paper-light" mengunci palet terang
-                        (lihat index.css) supaya hasil cetak SELALU kertas putih
-                        bertinta gelap, apa pun tema yang sedang aktif. */}
+                    {/* Info layar (bukan isi dokumen) — sengaja DI LUAR lembar
+                        kertas supaya tidak menggeser halaman: tampilan halaman di
+                        layar harus identik dgn hasil Export PDF. */}
+                      {/* Template sumber sudah direvisi setelah dokumen ini dibuat.
+                          Dokumen SENGAJA tidak ikut berubah — yang ditampilkan
+                          tetap redaksi versi yang dipakai saat pembuatan. Banner
+                          ini supaya perbedaannya tidak jadi kejutan. */}
+                      {templateDrift && (
+                        <div className="my-4 p-3 bg-sky-500/10 border border-sky-500/25 rounded-xl flex items-start gap-2.5 font-sans">
+                          <FileDigit className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
+                          <div className="text-[11px] text-sky-900/90 leading-relaxed">
+                            Dokumen ini memakai template{" "}
+                            <b>{selectedContract.templateSnapshot?.templateName}</b> <b>versi {templateDrift.dipakai}</b>;
+                            templatenya kini sudah di versi {templateDrift.terkini}. Isi dokumen sengaja tidak ikut
+                            berubah agar redaksi yang sudah disepakati tetap utuh — gunakan "Perpanjang / Extend"
+                            bila ingin dokumen baru dengan redaksi terkini.
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Kontrak tanpa pasal sama sekali: wizard & modal "Ajukan"
+                          sudah memperingatkan, tapi dokumen yang terlanjur dibuat
+                          kosong dulu tidak memberi tanda apa pun saat dibuka —
+                          badan dokumen hanya "hilang" begitu saja. Banner ini
+                          menutup celah itu. Tidak ikut tercetak ke PDF (ditaruh di luar lembar kertas). */}
+                      {true
+                        && selectedContract.clauses.length === 0
+                        && (selectedContract.creationMode === "upload" || !selectedContract.masterPdfUrl) && (
+                        <div className="my-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 font-sans">
+                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                          <div className="text-[11px] text-amber-200/90 leading-relaxed">
+                            <span className="font-bold text-amber-300">Dokumen ini belum punya pasal apa pun.</span>{" "}
+                            {selectedContract.creationMode === "upload" ? (
+                              <>
+                                Kemungkinan ekstraksi teks otomatis dari berkas yang diunggah gagal atau tidak menemukan teks yang bisa dibaca
+                                (misalnya berkas hasil scan/foto/screenshot, bukan PDF dengan teks asli) — berkas aslinya tetap tersimpan dan
+                                bisa dibuka lewat tombol "Buka Berkas" di atas.{" "}
+                              </>
+                            ) : (
+                              "Badan perjanjian masih kosong — bila diekspor atau diajukan sekarang, yang tercetak hanya pembuka dan kolom tanda tangan. "
+                            )}
+                            {isContractEditable(selectedContract)
+                              ? " Tambahkan pasal lewat \"Editor Pasal Kontrak Ini\" di bawah preview."
+                              : ` Status ${contractStatusLabel(selectedContract.status)} mengunci isi pasal — gunakan "Perpanjang / Extend" atau "Buat Addendum" untuk memperbaikinya.`}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Disclaimer terjemahan: dokumen yang SUMBERnya berkas
+                          upload/scan (bukan disusun asli di sistem) diterjemahkan
+                          dari hasil OCR — bisa salah baca, dan bukan terjemahan
+                          tersumpah/resmi secara hukum. Beda dari dokumen yang
+                          memang dwibahasa sejak awal, yang teksnya ketikan asli. */}
+                      {true
+                        && selectedContract.masterPdfUrl
+                        && (selectedContract.documentLanguage === "en" || selectedContract.documentLanguage === "bilingual") && (
+                        <div className="my-4 p-3 bg-sky-500/10 border border-sky-500/30 rounded-xl flex items-start gap-2.5 font-sans">
+                          <Languages className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+                          <div className="text-[11px] text-sky-200/90 leading-relaxed">
+                            <span className="font-bold text-sky-300">Terjemahan referensi, bukan terjemahan tersumpah.</span>{" "}
+                            Pasal di sini hasil OCR + AI dari berkas unggahan — berpotensi salah baca. Berkas asli
+                            (tombol "Buka Berkas") tetap satu-satunya dokumen yang mengikat secara hukum.
+                          </div>
+                        </div>
+                      )}
+
+                      {(selectedContract.translationWarnings?.length ?? 0) > 0 && (
+                        <div className="my-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 font-sans">
+                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                          <div className="text-[11px] text-amber-200/90 leading-relaxed">
+                            <span className="font-bold text-amber-300">
+                              {selectedContract.translationWarnings!.length} bagian gagal diterjemahkan otomatis
+                            </span>{" "}
+                            (variabel {"{{...}}"} berubah di hasil AI, jadi tidak dipakai demi keamanan): {selectedContract.translationWarnings!.join(", ")}.
+                            Bagian ini tetap tampil bahasa aslinya — terjemahkan ulang atau koreksi manual.
+                          </div>
+                        </div>
+                      )}
+                    {/* Tampilan kertas ala Word: lembar A4 (lebar asli 210mm, margin
+                        dari Konfigurasi) tersusun ke bawah; isi otomatis pindah ke
+                        lembar berikutnya bila penuh (src/paper-pagination.ts).
+                        Lembar hanya DIPERKECIL secara visual (transform) agar muat
+                        di panel, jadi pemenggalan baris & halaman = hasil PDF.
+                        Export PDF memotret lembar-lembar ini apa adanya. */}
+                    {(() => {
+                      const stackHeight = paperPages.length
+                        ? paperPages[paperPages.length - 1].top + paperPages[paperPages.length - 1].height
+                        : A4_HEIGHT_PX;
+                      const sheets = paperPages.length ? paperPages : [{ top: 0, height: A4_HEIGHT_PX }];
+                      const docLang = selectedContract.documentLanguage || "id";
+                      const pageLabel = (n: number, total: number) => docLang === "en"
+                        ? `Page ${n} of ${total}`
+                        : docLang === "bilingual" ? `Halaman ${n} dari ${total} / Page ${n} of ${total}` : `Halaman ${n} dari ${total}`;
+                      // TTD Kolom Paraf — ukuran sama dgn versi lama (pt → px).
+                      const PT = 96 / 72;
+                      const bottomMarginPt = contractMarginsMm.bottom * 72 / 25.4;
+                      const parafTotalPt = Math.min(52, bottomMarginPt - 30);
+                      const showParaf = getSignatureFormat(selectedContract) === "kolom_paraf" && parafTotalPt >= 34;
+                      const parafRoles: string[] = (selectedContract.parties?.length
+                        ? selectedContract.parties.map((p) => p.role || "")
+                        : ["Pihak Pertama", "Pihak Kedua"]).slice(0, 4);
+                      const parafCols = Math.max(parafRoles.length, 2);
+                      const parafColPt = parafCols > 2 ? 50 : 58;
+                      const titleCase = (t: string) => t.toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+                      const parafWord = docLang === "en" ? "Initial" : "Paraf";
+                      const pageNumberLeft = showParaf && parafCols > 2;
+                      return (
                     <div
-                      ref={previewRef}
-                      style={{ ...docTypographyStyle(), backgroundColor: isExportingPdf ? "#ffffff" : "var(--color-slate-900)" }}
-                      // p-6 di sini CUMA padding nyaman buat EDIT di layar (panel
-                      // ini bukan seukuran kertas A4 asli). Margin cetak yang
-                      // sesungguhnya (mm, dari Konfigurasi > Master Data > "Margin
-                      // Halaman Kontrak") dipaksakan terpisah, HANYA saat export,
-                      // di dalam generateContractPdf — lihat komentar di sana.
-                      className={`${isExportingPdf ? "paper-light space-y-3" : "space-y-6"} max-h-[600px] overflow-y-auto p-6 border border-slate-850 text-slate-300`}
+                      ref={paperDeskRef}
+                      className={`rounded-xl bg-slate-800/60 ${isExportingPdf ? "" : "max-h-[78vh] overflow-auto"} p-4`}
+                    >
+                    {/* Saat export skala tampilan dilepas (1:1) lewat React sendiri —
+                        jangan diubah imperatif, karena ResizeObserver panel bisa
+                        menghitung ulang skala & menimpanya di tengah pemotretan. */}
+                    <div style={{ width: A4_WIDTH_PX * (isExportingPdf ? 1 : paperScale), height: stackHeight * (isExportingPdf ? 1 : paperScale), margin: "0 auto" }}>
+                    <div
+                      ref={paperStackRef}
+                      style={{ position: "relative", width: A4_WIDTH_PX, height: stackHeight, transform: isExportingPdf ? "none" : `scale(${paperScale})`, transformOrigin: "top left" }}
+                    >
+                      {sheets.map((pg, idx) => (
+                        <div
+                          key={idx}
+                          aria-hidden="true"
+                          style={{
+                            position: "absolute", left: 0, top: pg.top, width: A4_WIDTH_PX, height: pg.height,
+                            // Bayangan hanya di layar — html2canvas menggambarnya sbg blok abu-abu.
+                            background: "#ffffff", boxShadow: isExportingPdf ? "none" : "0 1px 3px rgba(15,23,42,.18), 0 6px 18px rgba(15,23,42,.10)",
+                            fontFamily: "Helvetica, Arial, sans-serif",
+                          }}
+                        >
+                          <div
+                            style={{
+                              position: "absolute", bottom: (contractMarginsMm.bottom * MM_TO_PX) / 2 - 4, fontSize: "8pt", lineHeight: 1, color: "rgb(140,140,140)",
+                              ...(pageNumberLeft ? { left: contractMarginsMm.left * MM_TO_PX } : { left: 0, right: 0, textAlign: "center" as const }),
+                            }}
+                          >
+                            {pageLabel(idx + 1, sheets.length)}
+                          </div>
+                          {showParaf && (
+                            <div
+                              style={{
+                                position: "absolute", right: contractMarginsMm.right * MM_TO_PX, bottom: 22 * PT,
+                                display: "flex", color: "rgb(60,60,60)", fontSize: "6.5pt", lineHeight: 1.08,
+                              }}
+                            >
+                              {Array.from({ length: parafCols }, (_, i) => (
+                                <div key={i} style={{ width: parafColPt * PT, height: parafTotalPt * PT, border: "0.5pt solid rgb(60,60,60)", marginLeft: i ? "-0.5pt" : 0, display: "flex", flexDirection: "column" }}>
+                                  <div style={{ height: 18 * PT, borderBottom: "0.5pt solid rgb(60,60,60)", display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center", padding: "0 3pt", overflow: "hidden" }}>
+                                    <span style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                                      {parafWord} {titleCase(parafRoles[i] || `Pihak ${i + 1}`)}
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    <div
+                      ref={setPreviewNode}
+                      style={{
+                        ...docTypographyStyle(),
+                        position: "relative", zIndex: 1, width: A4_WIDTH_PX, boxSizing: "border-box",
+                        padding: `${contractMarginsMm.top}mm ${contractMarginsMm.right}mm 0 ${contractMarginsMm.left}mm`,
+                      }}
+                      className="paper-light space-y-3 text-slate-300"
                     >
                       {/* Kop Surat (Letterhead) — logo + identitas perusahaan, sumber
                           data sama dengan yang dipakai kop surat dokumen DCS
@@ -21037,7 +21042,7 @@ export default function App() {
                         // jatuh ke tampilan lama 1-logo di bawah, bukan kondisi error.
                         const hasParty2Logo = showLogo && !!selectedContract.party2LogoUrl;
                         return (
-                        <div className={`pb-3 ${isExportingPdf ? "mb-2" : "mb-4"}`}>
+                        <div className="pb-3 mb-2">
                           {hasParty2Logo ? (
                             <div className="flex items-start justify-between gap-4">
                               <div className="flex items-center gap-3 flex-1 min-w-0">
@@ -21099,7 +21104,7 @@ export default function App() {
                       {/* Document Header Title — mengikuti jenis dokumen kontrak,
                           atau format Addendum kalau kontrak ini mengamandemen
                           kontrak lain (amendsContractId terisi) */}
-                      <div className={`text-center space-y-1 ${isExportingPdf ? "pb-2" : "pb-4"}`}>
+                      <div className="text-center space-y-1 pb-2">
                         {selectedContractAddendumInfo ? (() => {
                           const docLang = selectedContract.documentLanguage || "id";
                           // Sebelumnya header Addendum ini hardcoded Bahasa Indonesia
@@ -21445,81 +21450,6 @@ export default function App() {
                         return <div>{renderPreambleBlock(closingIdValue, {})}</div>;
                       })()}
 
-                      {/* Template sumber sudah direvisi setelah dokumen ini dibuat.
-                          Dokumen SENGAJA tidak ikut berubah — yang ditampilkan
-                          tetap redaksi versi yang dipakai saat pembuatan. Banner
-                          ini supaya perbedaannya tidak jadi kejutan. */}
-                      {!isExportingPdf && templateDrift && (
-                        <div className="my-4 p-3 bg-sky-500/10 border border-sky-500/25 rounded-xl flex items-start gap-2.5 font-sans">
-                          <FileDigit className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
-                          <div className="text-[11px] text-sky-900/90 leading-relaxed">
-                            Dokumen ini memakai template{" "}
-                            <b>{selectedContract.templateSnapshot?.templateName}</b> <b>versi {templateDrift.dipakai}</b>;
-                            templatenya kini sudah di versi {templateDrift.terkini}. Isi dokumen sengaja tidak ikut
-                            berubah agar redaksi yang sudah disepakati tetap utuh — gunakan "Perpanjang / Extend"
-                            bila ingin dokumen baru dengan redaksi terkini.
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Kontrak tanpa pasal sama sekali: wizard & modal "Ajukan"
-                          sudah memperingatkan, tapi dokumen yang terlanjur dibuat
-                          kosong dulu tidak memberi tanda apa pun saat dibuka —
-                          badan dokumen hanya "hilang" begitu saja. Banner ini
-                          menutup celah itu. Tidak ikut tercetak ke PDF. */}
-                      {!isExportingPdf
-                        && selectedContract.clauses.length === 0
-                        && (selectedContract.creationMode === "upload" || !selectedContract.masterPdfUrl) && (
-                        <div className="my-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 font-sans">
-                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                          <div className="text-[11px] text-amber-200/90 leading-relaxed">
-                            <span className="font-bold text-amber-300">Dokumen ini belum punya pasal apa pun.</span>{" "}
-                            {selectedContract.creationMode === "upload" ? (
-                              <>
-                                Kemungkinan ekstraksi teks otomatis dari berkas yang diunggah gagal atau tidak menemukan teks yang bisa dibaca
-                                (misalnya berkas hasil scan/foto/screenshot, bukan PDF dengan teks asli) — berkas aslinya tetap tersimpan dan
-                                bisa dibuka lewat tombol "Buka Berkas" di atas.{" "}
-                              </>
-                            ) : (
-                              "Badan perjanjian masih kosong — bila diekspor atau diajukan sekarang, yang tercetak hanya pembuka dan kolom tanda tangan. "
-                            )}
-                            {isContractEditable(selectedContract)
-                              ? " Tambahkan pasal lewat \"Editor Pasal Kontrak Ini\" di bawah preview."
-                              : ` Status ${contractStatusLabel(selectedContract.status)} mengunci isi pasal — gunakan "Perpanjang / Extend" atau "Buat Addendum" untuk memperbaikinya.`}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Disclaimer terjemahan: dokumen yang SUMBERnya berkas
-                          upload/scan (bukan disusun asli di sistem) diterjemahkan
-                          dari hasil OCR — bisa salah baca, dan bukan terjemahan
-                          tersumpah/resmi secara hukum. Beda dari dokumen yang
-                          memang dwibahasa sejak awal, yang teksnya ketikan asli. */}
-                      {!isExportingPdf
-                        && selectedContract.masterPdfUrl
-                        && (selectedContract.documentLanguage === "en" || selectedContract.documentLanguage === "bilingual") && (
-                        <div className="my-4 p-3 bg-sky-500/10 border border-sky-500/30 rounded-xl flex items-start gap-2.5 font-sans">
-                          <Languages className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                          <div className="text-[11px] text-sky-200/90 leading-relaxed">
-                            <span className="font-bold text-sky-300">Terjemahan referensi, bukan terjemahan tersumpah.</span>{" "}
-                            Pasal di sini hasil OCR + AI dari berkas unggahan — berpotensi salah baca. Berkas asli
-                            (tombol "Buka Berkas") tetap satu-satunya dokumen yang mengikat secara hukum.
-                          </div>
-                        </div>
-                      )}
-
-                      {!isExportingPdf && (selectedContract.translationWarnings?.length ?? 0) > 0 && (
-                        <div className="my-4 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2.5 font-sans">
-                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-                          <div className="text-[11px] text-amber-200/90 leading-relaxed">
-                            <span className="font-bold text-amber-300">
-                              {selectedContract.translationWarnings!.length} bagian gagal diterjemahkan otomatis
-                            </span>{" "}
-                            (variabel {"{{...}}"} berubah di hasil AI, jadi tidak dipakai demi keamanan): {selectedContract.translationWarnings!.join(", ")}.
-                            Bagian ini tetap tampil bahasa aslinya — terjemahkan ulang atau koreksi manual.
-                          </div>
-                        </div>
-                      )}
 
                       {(() => {
                         // Bug staleness yang sama dengan baris ringkasan pihak
@@ -21582,6 +21512,7 @@ export default function App() {
                                   value={clause.title}
                                   onChange={(e) => updateClauseInline({ title: e.target.value })}
                                   placeholder="Judul pasal"
+                                  data-pg-keep="1"
                                   className="w-full bg-transparent font-bold text-slate-100 focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1"
                                 />
                                 <InlineRich
@@ -21598,6 +21529,7 @@ export default function App() {
                                   value={clause.titleEn || ""}
                                   onChange={(e) => updateClauseInline({ titleEn: e.target.value })}
                                   placeholder="Article title"
+                                  data-pg-keep="1"
                                   className="w-full bg-transparent font-bold text-slate-100 focus:outline-none focus:bg-indigo-500/5 rounded px-1 -mx-1"
                                 />
                                 <InlineRich
@@ -21610,8 +21542,8 @@ export default function App() {
                             );
                             return (
                               <div key={clause.id || index} className="space-y-1 group/clause border border-transparent hover:border-slate-800 rounded-lg p-1.5 -m-1.5">
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="flex-1 min-w-0">
+                                <div className="relative">
+                                  <div className="min-w-0">
                                     {docLang === "bilingual" ? (
                                       <BilingualPair stacked={bilingualStacked} id={idBlock} en={enBlock} />
                                     ) : docLang === "en" ? enBlock : idBlock}
@@ -21623,7 +21555,7 @@ export default function App() {
                                       setSelectedContract({ ...selectedContract, clauses: updated });
                                     }}
                                     title="Hapus pasal ini"
-                                    className="text-rose-400 hover:bg-rose-500/10 p-1 rounded shrink-0 cursor-pointer opacity-0 group-hover/clause:opacity-100"
+                                    className="absolute -right-7 top-0 text-rose-400 hover:bg-rose-500/10 p-1 rounded shrink-0 cursor-pointer opacity-0 group-hover/clause:opacity-100"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -21632,9 +21564,11 @@ export default function App() {
                             );
                           }
                           return (
-                          <div key={clause.id || index} data-clause-index={index} className="space-y-1 group/clause">
-                            <div className="flex items-center justify-between min-h-[1.375rem]">
-                              <div className="flex-1">
+                          <div key={clause.id || index} data-clause-index={index} className="relative space-y-1 group/clause">
+                            {/* Tombol-tombol layar diletakkan ABSOLUTE (tidak makan
+                                tempat) supaya tinggi pasal di layar = di PDF. */}
+                            <div className="relative min-h-[1.375rem]">
+                              <div>
                                 {docLang === "bilingual" && hasEn
                                   ? null
                                   : renderClauseHeading(docLang === "en" && hasEn ? numLabelEn : numLabelId, docLang === "en" && hasEn ? enTitle : clause.title)}
@@ -21652,7 +21586,7 @@ export default function App() {
                                     setCommentClauseTitle(clause.title);
                                     setShowCommentPanel(true);
                                   }}
-                                  className={`flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded transition opacity-0 group-hover/clause:opacity-100 ${
+                                  className={`absolute right-0 top-0 z-10 font-sans flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded transition opacity-0 group-hover/clause:opacity-100 ${
                                     unresolvedCount > 0
                                       ? "text-amber-400 bg-amber-500/10 border border-amber-500/20"
                                       : "text-slate-400 bg-slate-800 border border-slate-700 hover:text-indigo-400"
@@ -21668,7 +21602,7 @@ export default function App() {
                                 sudah diaktifkan (Aktif/OnReview/dst.), pasal terkunci
                                 dan tidak boleh lagi dianotasi baru. */}
                             {!isExportingPdf && isContractEditable(selectedContract) && (
-                              <div className="flex gap-1.5 opacity-0 group-hover/clause:opacity-100 transition">
+                              <div className="absolute right-0 top-6 z-10 font-sans flex gap-1.5 opacity-0 group-hover/clause:opacity-100 transition">
                                 <button
                                   onClick={() => startClauseAnchor(clause, index, "comment")}
                                   title="Blok/sorot kalimat pada klausul ini lalu klik untuk mengomentarinya (disorot kuning)."
@@ -21730,20 +21664,19 @@ export default function App() {
                                     : renderClauseContent(clause.content, selectedContract.variables)}
                               </p>
                             )}
-                            {/* Komentar mini preview */}
+                            {/* Penanda komentar — di margin kanan lembar (absolute),
+                                tidak menggeser isi; klik untuk buka panel komentar. */}
                             {cmtsForClause.length > 0 && !isExportingPdf && (
-                              <div className="ml-2 border-l-2 border-indigo-500/30 pl-3 space-y-1">
-                                {cmtsForClause.slice(-2).map((cmt) => (
-                                  <div key={cmt.id} className={`text-[10px] ${cmt.resolved ? "text-slate-600 line-through" : "text-slate-400"}`}>
-                                    <span className="font-semibold text-slate-300">{cmt.userName}:</span> {cmt.text.slice(0, 80)}{cmt.text.length > 80 ? "…" : ""}
-                                  </div>
-                                ))}
-                                {cmtsForClause.length > 2 && (
-                                  <button onClick={() => { setCommentClauseId(clause.id || String(index)); setCommentClauseTitle(clause.title); setShowCommentPanel(true); }} className="text-[10px] text-indigo-400 hover:underline">
-                                    +{cmtsForClause.length - 2} komentar lagi
-                                  </button>
-                                )}
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() => { setCommentClauseId(clause.id || String(index)); setCommentClauseTitle(clause.title); setShowCommentPanel(true); }}
+                                title={cmtsForClause.slice(-2).map((c) => `${c.userName}: ${c.text.slice(0, 80)}`).join("\n")}
+                                className={`absolute left-full top-0 ml-3 z-10 font-sans flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border cursor-pointer whitespace-nowrap ${
+                                  unresolvedCount > 0 ? "text-amber-600 bg-amber-500/10 border-amber-500/30" : "text-slate-500 bg-slate-800 border-slate-700"
+                                }`}
+                              >
+                                <MessageSquare className="w-3 h-3" /> {cmtsForClause.length}
+                              </button>
                             )}
                           </div>
                           );
@@ -21751,7 +21684,7 @@ export default function App() {
                         );
 
                         const clauseListBlock = (sliceStart?: number, sliceEnd?: number) => (
-                          <div className={`${isExportingPdf ? "space-y-3 py-2" : "space-y-4 py-4"} text-xs`}>
+                          <div className="space-y-3 py-2 text-xs">
                             {renderClauseList(sliceStart, sliceEnd)}
                             {docEditMode && isContractEditable(selectedContract) && (sliceStart === undefined) && (
                               <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800 font-sans">
@@ -21980,6 +21913,8 @@ export default function App() {
                           </div>
                         );
 
+                        const signatureFormat = getSignatureFormat(selectedContract);
+
                         // Duplikasi per RANGKAP — dulu SELURUH pasal diulang dari
                         // awal tiap rangkap (salah, bikin rangkap 2 dst nyetak
                         // ulang Pasal 1 dst yg sebetulnya sudah tercetak sekali
@@ -21993,7 +21928,7 @@ export default function App() {
                         // (data-pdf-force-break); rangkap PERTAMA menyambung
                         // alami tanpa paksaan (posisinya memang sudah pas di
                         // halaman yg sama dgn bagian umum di atas).
-                        if (isExportingPdf && selectedContract.showMeteraiPlaceholder) {
+                        if (!docEditMode && signatureFormat === "dua_rangkap" && parties.length > 1) {
                           // rangkapCutIndex null = belum diukur (measurement pass
                           // generateContractPdf) → fallback SATU salinan alami dulu
                           // (persis seperti tanpa-rangkap), supaya ada layout NYATA
@@ -22036,22 +21971,27 @@ export default function App() {
                             {clauseListBlock()}
                             {lampiranBlock()}
                             {closingParagraphBlock()}
-                            {signatureRow(-1)}
+                            {signatureFormat === "kolom_paraf" ? null : signatureRow(-1)}
                             {attachmentSectionsBlock()}
                           </>
                         );
                       })()}
-                      {!isExportingPdf && isContractEditable(selectedContract) && (
-                        <div className="mt-8 flex justify-center">
-                          <button
-                            onClick={handleAddDraftParty}
-                            className="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-indigo-500/50 text-indigo-400 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
-                          >
-                            <Plus className="w-4 h-4" /> Tambah Kolom TTD / Pihak
-                          </button>
-                        </div>
-                      )}
                     </div>
+                    </div>
+                    </div>
+                    </div>
+                      );
+                    })()}
+                    {!isExportingPdf && isContractEditable(selectedContract) && (
+                      <div className="mt-4 flex justify-center">
+                        <button
+                          onClick={handleAddDraftParty}
+                          className="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-indigo-500/50 text-indigo-400 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition"
+                        >
+                          <Plus className="w-4 h-4" /> Tambah Kolom TTD / Pihak
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
                 )}

@@ -200,6 +200,26 @@ export type ContractStatus = "Draft" | "OnReview" | "ApprovedInternal" | "Review
 
 export type ContractRevisionStage = "internal" | "eksternal";
 
+// Format blok tanda tangan (tombol "Format TTD" di preview dokumen template):
+//  - satu_rangkap : kolom TTD sebaris sekali cetak, tanpa meterai (perilaku lama
+//                   "Meterai: Mati").
+//  - dua_rangkap  : halaman TTD dicetak per rangkap fisik, kotak "Meterai
+//                   Rp10.000" bergantian di sisi tiap pihak (perilaku lama
+//                   "Meterai: Nyala").
+//  - kolom_paraf  : "TTD Kolom Paraf" (gaya PKS) — tabel "Paraf Pihak Pertama |
+//                   Paraf Pihak Kedua" + "Halaman X dari Y" di kaki SETIAP
+//                   halaman PDF (seperti footer dokumen Word PKS). Tidak ada
+//                   blok TTD sebaris terpisah, jadi tempat TTD tidak double.
+export type SignatureFormat = "satu_rangkap" | "dua_rangkap" | "kolom_paraf";
+export const SIGNATURE_FORMATS: SignatureFormat[] = ["satu_rangkap", "dua_rangkap", "kolom_paraf"];
+
+export function getSignatureFormat(c: { signatureFormat?: string; showMeteraiPlaceholder?: boolean }): SignatureFormat {
+  if (c.signatureFormat && (SIGNATURE_FORMATS as string[]).includes(c.signatureFormat)) {
+    return c.signatureFormat as SignatureFormat;
+  }
+  return c.showMeteraiPlaceholder ? "dua_rangkap" : "satu_rangkap";
+}
+
 export interface ContractRevisionEntry {
   id: string;
   stage: ContractRevisionStage;
@@ -566,6 +586,10 @@ export interface Contract {
   // luar template ini. TIDAK menambah tinggi halaman sama sekali kalau
   // dinyalakan — cuma mengisi ruang kosong TTD yang memang sudah ada.
   showMeteraiPlaceholder?: boolean;
+  // Format blok tanda tangan dokumen template (satu pilihan, lihat
+  // getSignatureFormat). Kosong = diturunkan dari showMeteraiPlaceholder lama
+  // supaya kontrak lama tampil persis seperti sebelumnya.
+  signatureFormat?: SignatureFormat;
   // Override narasi pembuka KHUSUS kontrak ini (prioritas TERTINGGI di atas
   // Template.openingParagraph & masterData.categoryOpeningParagraphs) —
   // diisi langsung di wizard/form registrasi. Kosong = ikuti rantai fallback

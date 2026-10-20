@@ -10,6 +10,7 @@ import {
   ContractPaymentTerm, ContractObligation, StoredDocumentRef, ContractVendorEvaluation, BudgetEntry,
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
+  SignatureFormat, SIGNATURE_FORMATS,
 } from "./src/types";
 import { R, canViewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
@@ -233,6 +234,10 @@ function normalizeLegalPic(raw: unknown): string | null {
 }
 function pushLegalTimeline(job: LegalJob, entry: Omit<LegalJobTimelineEntry, "id" | "at">, at?: string) {
   job.timeline.push({ id: "ljt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6), at: at || new Date().toISOString(), ...entry });
+}
+// Format TTD (lihat SignatureFormat di src/types.ts) — nilai di luar daftar diabaikan.
+function parseSignatureFormat(v: unknown): SignatureFormat | undefined {
+  return typeof v === "string" && (SIGNATURE_FORMATS as string[]).includes(v) ? (v as SignatureFormat) : undefined;
 }
 // ----- Alur status gabungan Pekerjaan Legal <-> Monitoring Kontrak -----
 // Satu fungsi murni, dipakai server-side untuk KEDUANYA (linkedContract di
@@ -3246,6 +3251,7 @@ app.post("/api/contracts", requireAuth, requireRole(...R.contractEditors), async
     party2Position: req.body.party2Position || undefined,
     party2IdLabel: req.body.party2IdLabel || undefined,
     party2IdNumber: req.body.party2IdNumber || undefined,
+    signatureFormat: parseSignatureFormat(req.body.signatureFormat),
     customOpeningParagraph: req.body.customOpeningParagraph || undefined,
     // closingStatement dari file upload — sekarang jarang terisi lewat
     // extract-text (isi file sudah nyatu utuh di clause tunggal), tapi field
@@ -3502,7 +3508,15 @@ app.put("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (r
     // tampilan, bukan isi naskah, jadi juga selalu diizinkan.
     showLetterheadLogo: req.body.showLetterheadLogo !== undefined ? !!req.body.showLetterheadLogo : oldContract.showLetterheadLogo,
     // showMeteraiPlaceholder: preferensi tampilan juga, alasan sama.
-    showMeteraiPlaceholder: req.body.showMeteraiPlaceholder !== undefined ? !!req.body.showMeteraiPlaceholder : oldContract.showMeteraiPlaceholder,
+    showMeteraiPlaceholder: req.body.signatureFormat !== undefined && parseSignatureFormat(req.body.signatureFormat)
+      ? req.body.signatureFormat === "dua_rangkap"
+      : req.body.showMeteraiPlaceholder !== undefined ? !!req.body.showMeteraiPlaceholder : oldContract.showMeteraiPlaceholder,
+    // signatureFormat (Format TTD): preferensi tampilan juga — boleh diganti di
+    // status apa pun (biasanya dipilih tepat sebelum cetak di Proses TTD).
+    // showMeteraiPlaceholder di atas ikut disinkronkan untuk kompatibilitas.
+    signatureFormat: req.body.signatureFormat !== undefined
+      ? (parseSignatureFormat(req.body.signatureFormat) ?? oldContract.signatureFormat)
+      : oldContract.signatureFormat,
     // Termin pembayaran SELALU boleh diperbarui, terlepas dari status —
     // justru setelah kontrak Aktif-lah tagihan berjalan dan realisasinya
     // dicatat. Mengunci ini di balik canEditContent (Draft saja) akan membuat

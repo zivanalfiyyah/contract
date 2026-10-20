@@ -1,5 +1,37 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #20] — Preview dokumen template bergaya Word (per halaman A4)
+
+### Ringkasan
+- **Preview & Mode Edit kini tampil per lembar A4** seperti Microsoft Word: lembar putih tersusun ke bawah dengan margin dari Konfigurasi › Margin Halaman Kontrak, nomor halaman ("Halaman X dari Y") di kaki tiap lembar, dan tabel paraf di kaki tiap lembar untuk format TTD Kolom Paraf. Bila satu halaman penuh, isi otomatis pindah ke halaman berikutnya.
+- **Layar = hasil Export PDF.** Export PDF tidak lagi menata ulang/memotong halaman sendiri — ia memotret lembar-lembar yang sama persis dengan yang tampil di preview (jumlah halaman, posisi potongan, nomor halaman, paraf). PDF tetap berupa gambar seperti sebelumnya.
+- **Aturan pindah halaman** (`src/paper-pagination.ts`): dipotong per paragraf/butir (pasal panjang boleh bersambung ke halaman berikutnya, halaman terisi penuh); judul pasal tidak pernah tertinggal sendirian di dasar halaman; satu blok yang lebih tinggi dari satu halaman tidak dipotong (lembarnya dipanjangkan, saat export diperkecil agar muat) sehingga tidak ada teks yang hilang.
+- **Mode Edit** juga per halaman; penyusunan ulang halaman berjalan ±0,4 detik setelah berhenti mengetik supaya kursor tidak meloncat. Penanda internal paginasi dibersihkan sebelum isi disimpan.
+- **2 Rangkap + Meterai** kini juga terlihat di preview (dulu hanya muncul di PDF): rangkap ke-2 dst mulai di halaman baru dan mengulang utuh pasal yang bersambung ke halaman TTD.
+- Elemen khusus layar dibuat tidak memakan tempat supaya tata letak identik dengan PDF: tombol Komentar / Sorot / Usulkan Coret melayang di atas pasal, penanda jumlah komentar pindah ke margin kanan, banner info (template berubah, belum ada pasal, terjemahan) pindah ke atas lembar, tombol "Tambah Kolom TTD / Pihak" pindah ke bawah lembar. Variabel kosong tampil sebagai `[NamaVariabel]` bersorot kuning (klik untuk Quick-Fix) — teks & lebarnya sama dengan di PDF.
+- Lembar dirender selebar 210 mm asli lalu hanya diperkecil secara visual agar muat di panel, sehingga pemenggalan baris sama di semua ukuran layar.
+
+### Catatan
+- Tampilan preview kini selalu kertas putih (juga di mode gelap), sama dengan hasil cetak.
+- Jarak antarbagian di layar mengikuti jarak versi cetak (sedikit lebih rapat dari preview lama).
+- Mode Edit menampilkan kontrol edit (label narasi, kotak judul pasal, tombol tambah pasal), jadi jumlah halamannya bisa sedikit berbeda dari preview; preview (Mode Edit mati) adalah yang identik dengan PDF.
+
+
+## [Unreleased #19] — Format TTD: 1 Rangkap / 2 Rangkap + Meterai / TTD Kolom Paraf
+
+### Ringkasan
+- Tombol **"Meterai: Nyala/Mati"** di preview dokumen template diganti satu tombol **"Format TTD"** dengan tiga pilihan (panel pilihan muncul di bawah toolbar):
+  - **1 Rangkap** — kolom TTD sebaris, dicetak sekali tanpa meterai (sama dengan "Meterai: Mati" lama).
+  - **2 Rangkap + Meterai** — halaman TTD dicetak per rangkap asli, kotak Meterai Rp10.000 bergantian di sisi tiap pihak (sama dengan "Meterai: Nyala" lama).
+  - **TTD Kolom Paraf** (baru, seperti footer dokumen PKS) — tabel **"Paraf Pihak Pertama | Paraf Pihak Kedua"** di kaki **setiap halaman** PDF, sejajar "Halaman X dari Y". Blok TTD sebaris tidak dicetak, jadi tempat TTD tidak double. Di preview layar tabel paraf ditampilkan di akhir dokumen sebagai pratinjau. Dilewati otomatis bila margin bawah < ±23 mm; bila pihak > 2, nomor halaman dipindah ke kiri.
+- **Nomor halaman** ("Halaman X dari Y") kini selalu dicetak di PDF hasil Export/Kirim PDF untuk semua format TTD, termasuk dokumen 1 halaman.
+
+### Data
+- `Contract.signatureFormat` (`"satu_rangkap" | "dua_rangkap" | "kolom_paraf"`) — opsional, preferensi tampilan: boleh diubah di status apa pun (seperti Kop Surat). `showMeteraiPlaceholder` tetap disimpan & disinkronkan (`true` hanya untuk `dua_rangkap`).
+
+### Migrasi
+- Tidak perlu migrasi. Kontrak lama tanpa `signatureFormat` dibaca dari `showMeteraiPlaceholder` (lihat `getSignatureFormat` di `src/types.ts`), jadi tampilannya tidak berubah.
+
 ## [Unreleased #18] — Peran baru, batas per divisi & Permintaan Kontrak
 
 ### Ringkasan

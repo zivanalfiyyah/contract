@@ -126,6 +126,15 @@ import {
   BarChart3,
 } from "lucide-react";
 import {
+  LEGAL_STAGES,
+  UNIFIED_STATUS_LABEL,
+  unifiedStatusLabel,
+  contractStage,
+  jobStage,
+  isInForce,
+  wasEverInForce,
+} from "./workflow";
+import {
   paginateFlow,
   clearPagination,
   stripPaginationMarks,
@@ -2084,14 +2093,14 @@ function LegalPicSelect({ value, onChange, className }: { value: string; onChang
 function LegalExternalFormPage({ token }: { token: string }) {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
-  const [meta, setMeta] = useState<{ tenantName: string; partnerSuggestions: string[] } | null>(null);
+  const [meta, setMeta] = useState<{ tenantName: string; partnerSuggestions: string[]; companies?: { id: string; name: string; code?: string }[] } | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
   const { notice, notify, dismissNotice } = useGuestNotice();
 
   const [form, setForm] = useState({
-    title: "", partnerName: "", docType: "", picName: "", deadline: "",
-    description: "", submitterName: "", submitterEmail: "",
+    companyId: "", title: "", partnerName: "", docType: "", picName: "", deadline: "",
+    description: "", submitterName: "", submitterEmail: "", documentLink: "",
   });
   const [file, setFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -2124,6 +2133,7 @@ function LegalExternalFormPage({ token }: { token: string }) {
   };
 
   const submit = async () => {
+    if (!form.companyId) return notify("Badan Hukum / Entitas Perusahaan wajib dipilih.");
     if (!form.title.trim()) return notify("Judul Pekerjaan wajib diisi.");
     if (!form.partnerName.trim()) return notify("Partner/Pihak wajib diisi.");
     if (!form.docType.trim()) return notify("Jenis Dokumen wajib diisi.");
@@ -2159,7 +2169,7 @@ function LegalExternalFormPage({ token }: { token: string }) {
         <h1 className="text-lg font-bold text-slate-100">Terkirim!</h1>
         <p className="text-sm text-slate-400 leading-relaxed">Terima kasih, permintaan Anda sudah kami terima dan akan diproses oleh tim Legal.</p>
         <button
-          onClick={() => { setDone(false); setForm({ title: "", partnerName: "", docType: "", picName: "", deadline: "", description: "", submitterName: "", submitterEmail: "" }); setFile(null); }}
+          onClick={() => { setDone(false); setForm({ companyId: "", title: "", partnerName: "", docType: "", picName: "", deadline: "", description: "", submitterName: "", submitterEmail: "", documentLink: "" }); setFile(null); }}
           className="mt-2 text-xs font-semibold text-indigo-400 hover:text-indigo-300 cursor-pointer"
         >
           Kirim permintaan lain
@@ -2182,6 +2192,14 @@ function LegalExternalFormPage({ token }: { token: string }) {
         </header>
 
         <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 sm:p-7 space-y-5">
+          <div className="space-y-1.5">
+            <label className={labelCls}>Badan Hukum / Entitas Perusahaan <span className="text-rose-500">*</span></label>
+            <select value={form.companyId} onChange={set("companyId")} className={inputCls + " cursor-pointer"}>
+              <option value="">Pilih badan hukum...</option>
+              {(meta?.companies || []).map((c) => <option key={c.id} value={c.id}>{c.name}{c.code ? ` (PT ${c.code})` : ""}</option>)}
+            </select>
+          </div>
+
           <div className="space-y-1.5">
             <label className={labelCls}>Judul Pekerjaan <span className="text-rose-500">*</span></label>
             <input value={form.title} onChange={set("title")} placeholder='Contoh: "PKS ASMaT ZTrans"' className={inputCls} />
@@ -2234,6 +2252,12 @@ function LegalExternalFormPage({ token }: { token: string }) {
                 </>
               )}
             </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className={labelCls}>Link Dokumen <span className="text-slate-500 font-normal">(opsional)</span></label>
+            <input type="url" value={form.documentLink} onChange={set("documentLink")} placeholder="https://drive.google.com/…" className={inputCls} />
+            <p className="text-[10px] text-slate-500">Contoh: link Google Drive, Canva, atau Dropbox — boleh diisi bersama atau tanpa unggah berkas.</p>
           </div>
 
           <div className="pt-2 border-t border-slate-800 grid sm:grid-cols-2 gap-4">
@@ -3387,42 +3411,53 @@ function TableSelectionOverlay() {
   );
 }
 
-// Label & urutan status kerja Pekerjaan Legal — dipakai kartu ringkasan,
-// filter tabel, dan tombol "lanjut tahap" di detail. Cocok dengan
-// LEGAL_JOB_WORKFLOW_STATUSES di src/types.ts (tanpa menunggu_persetujuan/ditolak,
-// yang masing-masing punya tabel/kartu sendiri).
-const LEGAL_STATUS_LABEL: Record<string, string> = {
-  menunggu_persetujuan: "Menunggu Persetujuan",
-  draft: "Draft",
-  review_internal: "Review Internal",
-  review_eksternal: "Review Eksternal",
-  revisi_negosiasi: "Revisi/Negosiasi",
-  finalisasi: "Finalisasi",
-  penomoran: "Penomoran",
-  ttd: "Proses TTD",
-  distribusi: "Distribusi",
-  arsip: "Arsip",
-  selesai: "Selesai",
-  ditolak: "Ditolak",
-  belum_diproses: "Belum Diproses",
+// Label & urutan status Pekerjaan Legal = 12 tahap alur bersama
+// (src/workflow.ts): Pekerjaan Masuk → Belum Diproses → Draft → Review
+// Internal → Review Pihak Kedua → Revisi/Negosiasi → Finalisasi → Proses TTD
+// → Dokumen Kembali → Arsip → Distribusi/Implementasi → Aktif. Pekerjaan yang
+// sudah punya kontrak MENGIKUTI status kontraknya (dihitung server: `stage`).
+const LEGAL_STATUS_LABEL: Record<string, string> = UNIFIED_STATUS_LABEL;
+const legalJobDisplayStatus = (j: { status: string; stage?: string; linkedContract?: any }): string =>
+  j.stage || (j.status === "menunggu_persetujuan" ? "PekerjaanMasuk"
+    : j.status === "ditolak" ? "Ditolak"
+    : j.linkedContract ? j.linkedContract.status : "BelumDiproses");
+const LEGAL_WORKFLOW_ORDER: string[] = [...LEGAL_STAGES];
+// Label ringkas untuk batang grafik (kolomnya sempit) — nama lengkap di tooltip.
+const LEGAL_CHART_SHORT_LABEL: Record<string, string> = {
+  PekerjaanMasuk: "Masuk", BelumDiproses: "Belum Diproses", ReviewInternal: "Review Internal",
+  ReviewPihakKedua: "Review Pihak 2", RevisiNegosiasi: "Revisi", DokumenKembali: "Dok. Kembali",
+  Distribusi: "Distribusi",
 };
-// Status yang DITAMPILKAN di Daftar Pekerjaan Legal: pekerjaan yang belum
-// dibuatkan Kontrak Eksternal-nya = "Belum Diproses". Begitu kontrak dibuat &
-// tertaut, status mengikuti kontrak (awalnya Draft). Pekerjaan masuk/ditolak
-// tidak terpengaruh.
-const legalJobDisplayStatus = (j: { status: string; linkedContract?: any }) =>
-  j.status === "menunggu_persetujuan" || j.status === "ditolak" || j.linkedContract ? j.status : "belum_diproses";
-const LEGAL_WORKFLOW_ORDER = ["draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "penomoran", "ttd", "distribusi", "arsip", "selesai"];
+// Pencarian Pekerjaan Legal: judul, mitra, jenis dokumen, nomor/judul kontrak
+// tertaut, status (nama tahap), PIC & peminta. Tidak peka huruf besar/kecil.
+const legalJobMatchesSearch = (j: LegalJobWithLink, q: string): boolean => {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [
+    j.title, j.partnerName, j.docType, j.picName, j.requesterName, j.description,
+    j.companyName, j.companyCode && `PT ${j.companyCode}`,
+    j.linkedContract?.contractNumber, j.linkedContract?.title,
+    LEGAL_STATUS_LABEL[legalJobDisplayStatus(j)],
+  ].filter(Boolean).join(" \u0001 ").toLowerCase();
+  return needle.split(/\s+/).every((w) => hay.includes(w));
+};
 const LEGAL_PRIORITY_STYLE: Record<string, string> = {
   Tinggi: "bg-brand-orange text-white border-transparent",
   Sedang: "bg-peach text-brand-orange border-transparent",
   Rendah: "bg-mist text-indigo-400 border-transparent",
 };
 const LEGAL_STATUS_ICON: Record<string, any> = {
-  menunggu_persetujuan: Inbox, draft: Pencil, review_internal: ClipboardList, review_eksternal: Scale,
-  revisi_negosiasi: MessageSquare, finalisasi: Stamp, ttd: PenTool, selesai: CheckCircle,
+  PekerjaanMasuk: Inbox, BelumDiproses: Hourglass, Draft: Pencil, ReviewInternal: ClipboardList,
+  ReviewPihakKedua: Scale, RevisiNegosiasi: MessageSquare, Finalisasi: Stamp, ProsesTTD: PenTool,
+  DokumenKembali: FileCheck, Arsip: Archive, Distribusi: Send, Aktif: CheckCircle,
 };
 const LEGAL_PILL = "text-[11px] px-2.5 py-1 rounded-full font-semibold whitespace-nowrap bg-mist text-indigo-400";
+// Sel "Badan Hukum" di tabel Pekerjaan Legal: kode singkat (PT TBK), nama
+// lengkap di tooltip; pekerjaan lama/tanpa badan hukum → "—".
+const legalJobEntityCell = (j: { companyName?: string; companyCode?: string }) =>
+  j.companyName
+    ? <span title={j.companyName} className="whitespace-nowrap">{j.companyCode ? `PT ${j.companyCode}` : j.companyName}</span>
+    : <span className="text-slate-500">—</span>;
 
 // Kepala halaman bergradasi + ikon samar (seragam dengan Konfigurasi).
 function LegalHero({ Icon, title, sub, right }: { Icon: any; title: string; sub: string; right?: any }) {
@@ -3449,7 +3484,7 @@ function LegalStatCard({ status, count, active, onClick }: { key?: any; status: 
   return (
     <button onClick={onClick}
       className={`text-left p-4 rounded-[22px] card-soft card-grad relative overflow-hidden transition cursor-pointer hover:brightness-[1.02] ${active ? "bg-mist ring-2 ring-soft-blue/60" : "bg-slate-900"}`}>
-      <span className={`w-8 h-8 rounded-full flex items-center justify-center mb-3 ${status === "menunggu_persetujuan" ? "bg-peach-strong" : "bg-peach"}`}><Icon className="w-4 h-4 text-slate-100" /></span>
+      <span className={`w-8 h-8 rounded-full flex items-center justify-center mb-3 ${status === "PekerjaanMasuk" ? "bg-peach-strong" : "bg-peach"}`}><Icon className="w-4 h-4 text-slate-100" /></span>
       <p className="text-[26px] leading-none font-medium text-slate-100 tabular">{count}</p>
       <p className="text-[11px] text-slate-500 leading-tight mt-1.5">{LEGAL_STATUS_LABEL[status]}</p>
     </button>
@@ -3503,13 +3538,15 @@ const LEGAL_BTN_PRIMARY = "px-6 py-2.5 rounded-full btn-grad-primary text-white 
 // SUDAH TERTAUT ke Kontrak — supaya labelnya identik dengan yang tampil di
 // Monitoring Kontrak, bukan cuma "mirip".
 const CONTRACT_STATUS_LABEL_ID: Record<string, string> = {
-  Draft: "Draft", OnReview: "Review Internal", FullyApproved: "Disetujui Penuh",
-  ApprovedInternal: "Disetujui Internal", ReviewEksternal: "Review Eksternal",
-  FinalReview: "Review Final Internal", ReviewFinalInternal: "Review Final Internal",
-  ReviewInternal: "Review Internal", RevisiInternal: "Revisi Internal", RevisiEksternal: "Revisi Eksternal",
-  Aktif: "Aktif", TidakAktif: "Tidak Aktif", Archived: "Diarsipkan", Terminated: "Diakhiri",
-  ReviewInternalEksternal: "Review Internal/Eksternal", RevisiNegosiasi: "Revisi/Negosiasi",
-  Finalisasi: "Finalisasi", ProsesTTD: "Proses TTD", DokumenKembali: "Dokumen Kembali",
+  // Label tahap alur (src/workflow.ts) + status mentah kontrak dipetakan ke
+  // tahap yang sama, supaya badge di mana pun memakai nama yang identik.
+  ...UNIFIED_STATUS_LABEL,
+  OnReview: "Review Internal",
+  ApprovedInternal: "Review Pihak Kedua", ReviewEksternal: "Review Pihak Kedua",
+  ReviewInternalEksternal: "Review Pihak Kedua",
+  FinalReview: "Finalisasi", ReviewFinalInternal: "Finalisasi",
+  RevisiInternal: "Revisi/Negosiasi", RevisiEksternal: "Revisi/Negosiasi",
+  FullyApproved: "Proses TTD",
 };
 const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
   // Pastel biru/oranye senada dashboard — biru = berjalan baik, oranye = perlu perhatian.
@@ -3532,11 +3569,18 @@ const CONTRACT_STATUS_BADGE_CLASS: Record<string, string> = {
   Finalisasi: "bg-mist text-indigo-400 border-transparent",
   ProsesTTD: "bg-mist text-indigo-400 border-transparent",
   DokumenKembali: "bg-peach text-brand-orange border-transparent",
+  PekerjaanMasuk: "bg-peach-strong text-white border-transparent",
+  BelumDiproses: "bg-slate-800 text-slate-300 border-transparent",
+  ReviewPihakKedua: "bg-violet-500/15 text-violet-400 border-transparent",
+  Arsip: "bg-teal-500/15 text-teal-400 border-transparent",
+  Distribusi: "bg-sky-500/15 text-sky-500 border-transparent",
+  Ditolak: "bg-rose-500/15 text-rose-400 border-transparent",
 };
 // Bentuk LegalJob yang dikembalikan API (lihat withLinkedContract di
 // server.ts) — nempel field `linkedContract` di atas LegalJob biasa, dihitung
 // ulang dari Contract tiap request, BUKAN disalin sekali (jadi selalu akurat).
 type LegalJobWithLink = LegalJob & {
+  stage?: string;
   linkedContract?: {
     id: string; title: string; contractNumber: string; status: string;
     rawStatus?: string;
@@ -3558,9 +3602,12 @@ function fmtDateTimeID(s?: string): string {
 // disk, sehingga malah membuka halaman aplikasi (Monitoring Kontrak). Jendela
 // dibuka SINKRON dulu (anti popup-blocker), lalu diarahkan ke blob hasil fetch.
 async function openLegalJobDocument(
-  jobId: string, doc: { id: string; name: string }, mode: "view" | "download",
+  jobId: string, doc: { id: string; name: string; linkUrl?: string }, mode: "view" | "download",
   notify: (t: string, k?: "error" | "success") => void,
 ) {
+  // Dokumen berupa LINK (Google Drive dsb.) → buka langsung di tab baru.
+  const linkUrl = (doc as { linkUrl?: string }).linkUrl;
+  if (linkUrl) { window.open(linkUrl, "_blank", "noopener"); return; }
   const w = mode === "view" ? window.open("", "_blank") : null;
   try {
     const res = await fetch(`/api/legal-jobs/${jobId}/documents/${doc.id}/file`);
@@ -3584,7 +3631,7 @@ async function openLegalJobDocument(
 // Bagikan Link Formulir (bukan form internal lagi); pekerjaan yang masuk
 // dari form eksternal direview lewat tabel "Pekerjaan Masuk" sebelum masuk
 // ke tabel utama. Lihat Spek-Dashboard-Pekerjaan-Legal.docx bagian 4.
-function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContract }: { currentUser: any; onOpenContract: (contractId: string) => void; onCreateExternalContract?: (job: { id: string; title: string }) => void }) {
+function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContract, focusJobId, onFocusHandled }: { currentUser: any; onOpenContract: (contractId: string) => void; onCreateExternalContract?: (job: { id: string; title: string; companyId?: string }) => void; focusJobId?: string | null; onFocusHandled?: () => void }) {
   const [jobs, setJobs] = useState<LegalJobWithLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ text: string; kind: "error" | "success" } | null>(null);
@@ -3614,14 +3661,25 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
     finally { setLoading(false); }
   };
   useEffect(() => { fetchJobs(); }, []);
+  // Dibuka dari notifikasi/pencarian: langsung tampilkan detail pekerjaannya.
+  useEffect(() => {
+    if (!focusJobId || loading) return;
+    const j = jobs.find((x) => x.id === focusJobId);
+    if (j) setDetailJob(j);
+    onFocusHandled?.();
+  }, [focusJobId, loading, jobs]);
 
   const incoming = jobs.filter((j) => j.status === "menunggu_persetujuan").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const rejected = jobs.filter((j) => j.status === "ditolak").sort((a, b) => (b.rejectedAt || "").localeCompare(a.rejectedAt || ""));
-  const mainJobs = jobs.filter((j) => j.status !== "menunggu_persetujuan" && j.status !== "ditolak")
-    .filter((j) => statusFilter === "semua" || legalJobDisplayStatus(j) === statusFilter)
+  const [jobSearch, setJobSearch] = useState("");
+  const mainJobs = jobs
+    // "Semua": tabel utama tanpa Pekerjaan Masuk/Ditolak (punya tabel sendiri);
+    // filter tahap tertentu: tampilkan persis pekerjaan pada tahap itu.
+    .filter((j) => statusFilter === "semua" ? (j.status !== "menunggu_persetujuan" && j.status !== "ditolak") : legalJobDisplayStatus(j) === statusFilter)
+    .filter((j) => legalJobMatchesSearch(j, jobSearch))
     .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 
-  const cardStatuses = ["menunggu_persetujuan", "belum_diproses", "draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "ttd", "selesai"];
+  const cardStatuses: string[] = [...LEGAL_STAGES];
   const countOf = (s: string) => jobs.filter((j) => legalJobDisplayStatus(j) === s).length;
 
   const refreshAfter = async (fn: () => Promise<Response>, successMsg: string, onDone?: () => void) => {
@@ -3655,7 +3713,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
         ) : undefined} />
 
       {/* Kartu ringkasan status — klik untuk filter tabel utama di bawah. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-9 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-6 gap-3">
         {cardStatuses.map((s) => (
           <LegalStatCard key={s} status={s} count={countOf(s)} active={statusFilter === s} onClick={() => setStatusFilter(s === statusFilter ? "semua" : s)} />
         ))}
@@ -3674,6 +3732,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
               <thead>
                 <tr className="text-left text-slate-500">
                   <th className="p-3 font-semibold">Judul Pekerjaan</th>
+                  <th className="p-3 font-semibold">Badan Hukum</th>
                   <th className="p-3 font-semibold">Partner/Pihak</th>
                   <th className="p-3 font-semibold">Jenis</th>
                   <th className="p-3 font-semibold">PIC Pemberi</th>
@@ -3687,6 +3746,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
                 {incoming.map((j) => (
                   <tr key={j.id}>
                     <td className="p-3 font-medium text-slate-100">{j.title}</td>
+                    <td className="p-3 text-slate-400">{legalJobEntityCell(j)}</td>
                     <td className="p-3 text-slate-400">{j.partnerName}</td>
                     <td className="p-3 text-slate-400">{j.docType}</td>
                     <td className="p-3 text-slate-400">{j.picName}{j.source === "divisi" && j.requesterName ? <span className="block text-[10.5px] text-slate-500">oleh {j.requesterName}</span> : null}</td>
@@ -3697,7 +3757,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
                           {j.documents.map((d, di) => (
                             <button key={d.id} type="button" onClick={() => openLegalJobDocument(j.id, d, "view", notify)}
                               title={d.name} className="text-left text-[#3a7fa8] font-semibold hover:underline text-[11.5px] cursor-pointer max-w-[160px] truncate">
-                              {j.documents.length > 1 ? `Berkas ${di + 1}: ${d.name}` : "Lihat berkas"}
+                              {j.documents.length > 1 ? `${d.linkUrl ? "Link" : "Berkas"} ${di + 1}: ${d.name}` : d.linkUrl ? "Buka link" : "Lihat berkas"}
                             </button>
                           ))}
                         </div>
@@ -3725,23 +3785,37 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
       {/* ===== Tabel "Pekerjaan Legal" Utama ===== */}
       <LegalPanel Icon={Layers} title="Daftar Pekerjaan Legal" subtitle={statusFilter === "semua" ? "Semua status" : `Filter: ${LEGAL_STATUS_LABEL[statusFilter]}`}
         right={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex items-center gap-2 bg-slate-950 rounded-full pl-3 pr-3 py-1.5">
+            <Search className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            <input
+              value={jobSearch}
+              onChange={(e) => setJobSearch(e.target.value)}
+              placeholder="Cari judul, mitra, nomor, jenis, status…"
+              className="bg-transparent text-[12px] text-slate-200 placeholder:text-slate-500 focus:outline-none w-52"
+              style={{ border: "none", boxShadow: "none" }}
+            />
+            {jobSearch && <button onClick={() => setJobSearch("")} aria-label="Hapus pencarian" className="text-slate-500 hover:text-slate-200 cursor-pointer"><X className="w-3.5 h-3.5" /></button>}
+          </div>
           <div className="flex items-center gap-2 bg-slate-950 rounded-full pl-3 pr-2 py-1.5">
             <Filter className="w-3.5 h-3.5 text-slate-500" />
             <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-transparent text-[12px] text-slate-300 focus:outline-none cursor-pointer" style={{ border: "none", boxShadow: "none" }}>
               <option value="semua">Semua Status</option>
-              <option value="belum_diproses">{LEGAL_STATUS_LABEL.belum_diproses}</option>
               {LEGAL_WORKFLOW_ORDER.map((s) => <option key={s} value={s}>{LEGAL_STATUS_LABEL[s]}</option>)}
+              <option value="Ditolak">{LEGAL_STATUS_LABEL.Ditolak}</option>
             </select>
+          </div>
           </div>
         }>
         {mainJobs.length === 0 ? (
-          <p className="py-6 text-center text-xs text-slate-500">Belum ada pekerjaan pada status ini.</p>
+          <p className="py-6 text-center text-xs text-slate-500">{jobSearch.trim() ? `Tidak ada pekerjaan yang cocok dengan "${jobSearch.trim()}".` : "Belum ada pekerjaan pada status ini."}</p>
         ) : (
           <div className="overflow-x-auto no-scrollbar">
             <table className="w-full text-[12.5px]">
               <thead>
                 <tr className="text-left text-slate-500">
                   <th className="p-3 font-semibold">Judul Pekerjaan</th>
+                  <th className="p-3 font-semibold">Badan Hukum</th>
                   <th className="p-3 font-semibold">Jenis</th>
                   <th className="p-3 font-semibold">Partner</th>
                   <th className="p-3 font-semibold">PIC Pemberi</th>
@@ -3755,6 +3829,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
                 {mainJobs.map((j) => (
                   <tr key={j.id}>
                     <td className="p-3 font-medium text-slate-100">{j.title}</td>
+                    <td className="p-3 text-slate-400">{legalJobEntityCell(j)}</td>
                     <td className="p-3 text-slate-400">{j.docType}</td>
                     <td className="p-3 text-slate-400">{j.partnerName}</td>
                     <td className="p-3 text-slate-400">{j.picName}</td>
@@ -3902,7 +3977,13 @@ function AddLegalJobChooser({ onClose, onShare, onDirect }: { onClose: () => voi
 // asRequest: dipakai divisi bisnis untuk PERMINTAAN KONTRAK ke Legal — PIC
 // otomatis divisinya, tanpa prioritas (ditentukan Legal saat menyetujui).
 function DirectLegalJobModal({ onClose, notify, onSaved, asRequest, divisionLabel }: { onClose: () => void; notify: (t: string, k?: "error" | "success") => void; onSaved: () => void; asRequest?: boolean; divisionLabel?: string }) {
-  const [f, setF] = useState({ title: "", partnerName: "", docType: "", picName: "", deadline: "", priority: "", description: "", submitterName: "" });
+  const [f, setF] = useState({ companyId: "", title: "", partnerName: "", docType: "", picName: "", deadline: "", priority: "", description: "", submitterName: "", documentLink: "" });
+  // Badan hukum / entitas perusahaan (sumber sama dgn dropdown PT di form kontrak).
+  const [companies, setCompanies] = useState<{ id: string; name: string; code?: string }[]>([]);
+  useEffect(() => {
+    if (asRequest) return;
+    fetch("/api/number-companies").then((r) => (r.ok ? r.json() : null)).then((d) => setCompanies(d?.companies || [])).catch(() => setCompanies([]));
+  }, [asRequest]);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -3920,6 +4001,7 @@ function DirectLegalJobModal({ onClose, notify, onSaved, asRequest, divisionLabe
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!asRequest && !f.companyId) return notify("Badan Hukum / Entitas Perusahaan wajib dipilih.");
     if (!f.title.trim()) return notify("Judul Pekerjaan wajib diisi.");
     if (!f.partnerName.trim()) return notify("Partner/Pihak wajib diisi.");
     if (!f.docType.trim()) return notify("Jenis Dokumen wajib diisi.");
@@ -3951,7 +4033,15 @@ function DirectLegalJobModal({ onClose, notify, onSaved, asRequest, divisionLabe
           </div>
         </div>
 
-        <div className="space-y-1.5"><label className={lbl}>Judul Pekerjaan *</label><input value={f.title} onChange={set("title")} placeholder='Contoh: "PKS ASMaT ZTrans"' className={inp} autoFocus /></div>
+        {!asRequest && (
+          <div className="space-y-1.5"><label className={lbl}>Badan Hukum / Entitas Perusahaan *</label>
+            <select value={f.companyId} onChange={set("companyId")} className={inp + " cursor-pointer"} autoFocus>
+              <option value="">Pilih badan hukum...</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}{c.code ? ` (PT ${c.code})` : ""}</option>)}
+            </select>
+          </div>
+        )}
+        <div className="space-y-1.5"><label className={lbl}>Judul Pekerjaan *</label><input value={f.title} onChange={set("title")} placeholder='Contoh: "PKS ASMaT ZTrans"' className={inp} autoFocus={!!asRequest} /></div>
         <div className="grid sm:grid-cols-2 gap-4">
           <div className="space-y-1.5"><label className={lbl}>Partner / Pihak *</label><input value={f.partnerName} onChange={set("partnerName")} placeholder="Nama partner/mitra" className={inp} /></div>
           <div className="space-y-1.5"><label className={lbl}>Jenis Dokumen *</label><input value={f.docType} onChange={set("docType")} placeholder='Contoh: "PKS", "NDA", "Addendum"' className={inp} /></div>
@@ -3985,6 +4075,11 @@ function DirectLegalJobModal({ onClose, notify, onSaved, asRequest, divisionLabe
           </button>
           <input ref={fileRef} type="file" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png" onChange={(e) => { pickFile(e.target.files?.[0] || null); e.target.value = ""; }} />
           {file && <button type="button" onClick={() => setFile(null)} className="text-[11px] text-slate-500 hover:text-slate-300 cursor-pointer pl-2">Hapus berkas</button>}
+        </div>
+        <div className="space-y-1.5">
+          <label className={lbl}>Link Dokumen <span className="normal-case font-normal">(opsional)</span></label>
+          <input type="url" value={f.documentLink} onChange={set("documentLink")} placeholder="https://drive.google.com/…" className={inp} />
+          <p className="text-[10px] text-slate-500 pl-2">Contoh: link Google Drive, Canva, atau Dropbox — boleh diisi bersama atau tanpa unggah berkas.</p>
         </div>
 
         <div className="flex items-center justify-end gap-2 pt-1">
@@ -4110,12 +4205,25 @@ function RejectReasonModal({ job, onClose, onConfirm }: { job: LegalJob; onClose
 function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, onOpenContract, onCreateExternalContract }: {
   job: LegalJobWithLink; currentUser: any; onClose: () => void; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void;
   onOpenContract: (contractId: string) => void;
-  onCreateExternalContract?: (job: { id: string; title: string }) => void;
+  onCreateExternalContract?: (job: { id: string; title: string; companyId?: string }) => void;
 }) {
   const [tab, setTab] = useState<"dokumen" | "timeline" | "catatan">("timeline");
   const [noteText, setNoteText] = useState("");
   const [busy, setBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [linkText, setLinkText] = useState("");
+
+  const addLink = async () => {
+    if (!linkText.trim()) return;
+    setBusy(true);
+    try {
+      const fd = new FormData(); fd.append("documentLink", linkText.trim());
+      const res = await fetch(`/api/legal-jobs/${job.id}/documents`, { method: "POST", body: fd });
+      if (!res.ok) { const j = await res.json().catch(() => ({})); notify(j.error || "Gagal menambahkan link."); }
+      else { setLinkText(""); notify("Link dokumen ditambahkan.", "success"); onChanged(); }
+    } catch { notify("Gagal terhubung ke server."); }
+    finally { setBusy(false); }
+  };
 
   const addNote = async () => {
     if (!noteText.trim()) return;
@@ -4156,6 +4264,7 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
         <div className="px-6 pb-6 space-y-5">
           {/* Info umum */}
           <div className="card-grad card-soft bg-slate-900 rounded-[22px] p-4 grid grid-cols-2 gap-x-4 gap-y-3 text-[12.5px]">
+            {job.companyName && <div className="col-span-2"><InfoField label="Badan Hukum" value={`${job.companyName}${job.companyCode ? ` (PT ${job.companyCode})` : ""}`} /></div>}
             <InfoField label="Jenis" value={job.docType} />
             <InfoField label="Partner" value={job.partnerName} />
             <InfoField label="PIC Pemberi" value={job.picName} />
@@ -4193,17 +4302,17 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
               </div>
               <button onClick={() => onOpenContract(job.linkedContract!.id)}
                 className="w-full flex items-center justify-center gap-2 py-2.5 rounded-full btn-grad-primary text-white text-[12.5px] font-bold cursor-pointer">
-                <ArrowRight className="w-3.5 h-3.5" /> Buka Kontrak
+                <ArrowRight className="w-3.5 h-3.5" /> Buka Dokumen
               </button>
             </div>
           ) : (
             <div className="p-4 bg-slate-950 rounded-[22px] space-y-3">
-              <p className="text-[11.5px] text-slate-500 leading-relaxed">Pekerjaan ini <b className="text-slate-100">belum diproses</b>. Begitu Kontrak Eksternal dibuat dari sini, pekerjaan otomatis tertaut ke kontrak itu dan statusnya berubah menjadi <b className="text-slate-100">Draft</b>, lalu mengikuti status Kontrak.</p>
+              <p className="text-[11.5px] text-slate-500 leading-relaxed">Pekerjaan ini <b className="text-slate-100">belum diproses</b>. Klik <b className="text-slate-100">Mulai Kerjakan</b> untuk menyusun dokumennya (kontrak, surat konfirmasi, atau dokumen lain) — pekerjaan otomatis tertaut ke dokumen itu dan statusnya berubah menjadi <b className="text-slate-100">Draft</b>, lalu mengikuti status dokumennya.</p>
               {onCreateExternalContract && job.status !== "menunggu_persetujuan" && job.status !== "ditolak" && (
                 <div className="flex justify-end">
-                  <button onClick={() => { onClose(); onCreateExternalContract({ id: job.id, title: job.title }); }}
+                  <button onClick={() => { onClose(); onCreateExternalContract({ id: job.id, title: job.title, companyId: job.companyId }); }}
                     className="flex items-center gap-2 px-5 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[12.5px] font-bold cursor-pointer">
-                    <Plus className="w-3.5 h-3.5" /> Buat Kontrak Eksternal
+                    <Plus className="w-3.5 h-3.5" /> Mulai Kerjakan
                   </button>
                 </div>
               )}
@@ -4233,17 +4342,17 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
               {job.documents.length === 0 && <p className="text-xs text-slate-500 text-center py-4">Belum ada dokumen.</p>}
               {job.documents.map((d) => (
                 <div key={d.id} className="flex items-center gap-2.5 px-3.5 py-3 bg-slate-950/60 rounded-[18px] hover:bg-slate-950 transition">
-                  <button type="button" onClick={() => openLegalJobDocument(job.id, d, "view", notify)} title="Buka berkas"
+                  <button type="button" onClick={() => openLegalJobDocument(job.id, d, "view", notify)} title={d.linkUrl ? d.linkUrl : "Buka berkas"}
                     className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer">
-                    <span className="w-8 h-8 rounded-full bg-mist flex items-center justify-center shrink-0"><FileText className="w-4 h-4 text-indigo-400" /></span>
+                    <span className="w-8 h-8 rounded-full bg-mist flex items-center justify-center shrink-0">{d.linkUrl ? <Link2 className="w-4 h-4 text-indigo-400" /> : <FileText className="w-4 h-4 text-indigo-400" />}</span>
                     <div className="min-w-0 flex-1">
                       <p className="text-[12px] font-medium text-slate-100 truncate">{d.name}</p>
                       <p className="text-[10.5px] text-slate-500">{d.uploadedBy} · {fmtDateTimeID(d.uploadedAt)}</p>
                     </div>
                   </button>
-                  <button type="button" onClick={() => openLegalJobDocument(job.id, d, "download", notify)} title="Unduh"
+                  <button type="button" onClick={() => openLegalJobDocument(job.id, d, "download", notify)} title={d.linkUrl ? "Buka link" : "Unduh"}
                     className="w-8 h-8 rounded-full text-slate-500 hover:text-slate-100 hover:bg-slate-900 flex items-center justify-center cursor-pointer shrink-0">
-                    <Download className="w-3.5 h-3.5" />
+                    {d.linkUrl ? <ExternalLink className="w-3.5 h-3.5" /> : <Download className="w-3.5 h-3.5" />}
                   </button>
                 </div>
               ))}
@@ -4253,6 +4362,16 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
               </button>
               <input ref={fileInputRef} type="file" className="hidden" accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
                 onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadDoc(f); e.target.value = ""; }} />
+              <div className="flex items-center gap-2">
+                <input type="url" value={linkText} onChange={(e) => setLinkText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addLink(); } }}
+                  placeholder="Atau tempel link dokumen (Google Drive, dll.)"
+                  className="flex-1 min-w-0 px-4 py-2.5 bg-slate-950 rounded-full text-xs text-slate-100 placeholder:text-slate-500 focus:outline-none" />
+                <button type="button" onClick={addLink} disabled={busy || !linkText.trim()}
+                  className="shrink-0 flex items-center gap-1.5 px-4 py-2.5 rounded-full bg-mist text-indigo-400 hover:brightness-95 text-[12px] font-semibold cursor-pointer disabled:opacity-50">
+                  <Link2 className="w-3.5 h-3.5" /> Tambah Link
+                </button>
+              </div>
             </div>
           )}
 
@@ -4292,9 +4411,10 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
     </div>
   );
 }
-// Tahap Proses TTD -> Dokumen Kembali -> Aktif di Detail Pekerjaan Legal:
+// Tahap Proses TTD -> Dokumen Kembali -> Arsip di Detail Pekerjaan Legal:
 // 1) pengiriman dokumen fisik (rangkap, tanggal kirim, media), 2) penerimaan
-// kembali (rangkap, tanggal terima), 3) upload bukti TTD lalu Aktifkan.
+// kembali (rangkap, tanggal terima), 3) upload bukti TTD basah → status Arsip.
+// (Arsip → Distribusi/Implementasi → Aktif lewat pengumuman rilis internal.)
 // Tiap langkah baru terbuka setelah langkah sebelumnya tersimpan — aturan yang
 // sama dijaga juga di server (signing-dispatch / signing-receipt / activate).
 const SIGNING_MEDIA = ["Kurir", "Antar Langsung", "Pos", "Lainnya"];
@@ -4376,9 +4496,9 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
         )}
       </div>
 
-      {/* 3. Bukti TTD + Aktifkan */}
+      {/* 3. Bukti TTD basah → Arsip */}
       <div className={`p-4 rounded-[22px] space-y-3 ${received ? "bg-mist" : "bg-slate-950 opacity-60"}`}>
-        {stepHead(3, "Bukti TTD & Aktifkan", false)}
+        {stepHead(3, "Bukti TTD Basah → Arsip", false)}
         {!received && <p className="text-[11px] text-slate-500">Catat penerimaan dokumen dulu untuk membuka langkah ini.</p>}
         <div className="flex items-center gap-2">
           <button disabled={!received || busy} onClick={() => proofRef.current?.click()}
@@ -4390,10 +4510,11 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
             onChange={(e) => { const f = e.target.files?.[0]; if (f) setProof(f); e.target.value = ""; }} />
         </div>
         <button disabled={!received || !proof || busy}
-          onClick={() => { const fd = new FormData(); fd.append("file", proof!); post("activate", fd, "Kontrak diaktifkan dan masuk Kontrak Eksternal."); }}
+          onClick={() => { const fd = new FormData(); fd.append("file", proof!); post("activate", fd, "Bukti TTD basah diunggah — status kontrak kini Arsip. Umumkan rilis internal untuk lanjut ke Distribusi/Implementasi."); }}
           className="w-full flex items-center justify-center gap-2 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[12.5px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
-          <CheckCircle className="w-3.5 h-3.5" /> Aktifkan Kontrak
+          <CheckCircle className="w-3.5 h-3.5" /> Unggah TTD Basah &amp; Arsipkan
         </button>
+        <p className="text-[10.5px] text-slate-500 leading-snug">Setelah Arsip: umumkan rilis ke tim internal (Distribusi/Implementasi). Kontrak otomatis <b>Aktif</b> begitu semua penerima membuka notifikasi pengumumannya.</p>
       </div>
     </div>
   );
@@ -4428,7 +4549,8 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
   if (loading) return <p className="text-xs text-slate-500 text-center py-10">Memuat dashboard…</p>;
   if (!data) return <p className="text-xs text-rose-400 text-center py-10">Gagal memuat data dashboard.</p>;
 
-  const cardStatuses = ["menunggu_persetujuan", "draft", "review_internal", "review_eksternal", "revisi_negosiasi", "finalisasi", "ttd", "selesai"];
+  // 12 tahap alur (src/workflow.ts), hitungan dari server = status asli.
+  const cardStatuses: string[] = [...LEGAL_STAGES];
   const maxChart = Math.max(1, ...data.chartByStatus.map((c: any) => c.count));
 
   return (
@@ -4436,7 +4558,7 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
       <LegalHero Icon={Scale} title="Dashboard Legal" sub="Ringkasan kondisi semua pekerjaan legal — data real-time, klik kartu untuk melihat daftarnya." />
 
       {/* Ringkasan Pekerjaan Legal */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-6 gap-3">
         {cardStatuses.map((s) => (
           <LegalStatCard key={s} status={s} count={data.statusCounts[s] || 0} onClick={onOpenPekerjaanLegal} />
         ))}
@@ -4444,10 +4566,10 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
 
       {/* Monitoring Kontrak — lebar penuh (kartu Surat-Menyurat dihapus) */}
       <div>
-        <LegalPanel Icon={FileCheck} title="Kontrak Eksternal" subtitle="Masa berlaku kontrak berjalan">
+        <LegalPanel Icon={FileCheck} title="Kontrak Eksternal" subtitle="Masa berlaku kontrak berjalan (sejak Arsip: Arsip, Distribusi/Implementasi, Aktif)">
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-center">
             {[
-              { v: data.monitoringKontrak.aktif, l: "Aktif", c: "bg-mist text-indigo-400" },
+              { v: data.monitoringKontrak.aktif, l: "Berlaku", c: "bg-mist text-indigo-400" },
               { v: data.monitoringKontrak.akanBerakhir30, l: "< 30 hari", c: "bg-peach text-brand-orange" },
               { v: data.monitoringKontrak.akanBerakhir60, l: "30–60 hari", c: "bg-peach text-brand-orange" },
               { v: data.monitoringKontrak.akanBerakhir90, l: "60–90 hari", c: "bg-peach text-brand-orange" },
@@ -4533,7 +4655,7 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
               <div key={c.status} className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
                 <span className="text-[10.5px] font-semibold text-slate-300 tabular">{c.count}</span>
                 <div className={`w-full max-w-[22px] rounded-full transition-all ${c.count > 0 ? (i % 2 === 0 ? "bg-soft-blue" : "bg-peach-strong") : "bg-mist"}`} style={{ height: `${Math.max(8, (c.count / maxChart) * 104)}px` }} />
-                <span className="text-[9px] text-slate-500 text-center leading-tight">{LEGAL_STATUS_LABEL[c.status]}</span>
+                <span title={LEGAL_STATUS_LABEL[c.status]} className="text-[9px] text-slate-500 text-center leading-tight w-full min-h-[2.4em]">{LEGAL_CHART_SHORT_LABEL[c.status] || LEGAL_STATUS_LABEL[c.status] || c.status}</span>
               </div>
             ))}
           </div>
@@ -4926,7 +5048,13 @@ function ReleaseAnnouncementsCard({
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Bell className="w-5 h-5 text-slate-300" /></span>
           <div className="min-w-0">
             <h3 className="text-[17px] font-semibold text-slate-100 leading-tight">Pengumuman Rilis Kontrak</h3>
-            <p className="text-xs text-slate-500 mt-0.5">Kontrak ini sudah aktif 100%. Beri tahu tim internal (per nama) atau bagikan link PDF resmi ke pihak eksternal.</p>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {contract.status === "Arsip"
+                ? "TTD basah sudah diunggah (Arsip). Umumkan rilis ke tim internal (per nama) untuk masuk tahap Distribusi/Implementasi — kontrak otomatis Aktif setelah semua penerima membuka notifikasinya."
+                : contract.status === "Distribusi"
+                  ? "Distribusi/Implementasi — menunggu semua penerima membuka notifikasi pengumuman. Kontrak otomatis Aktif setelah semuanya membuka."
+                  : "Kontrak sudah Aktif. Beri tahu tim internal (per nama) atau bagikan link PDF resmi ke pihak eksternal."}
+            </p>
           </div>
         </div>
         {canEdit && (
@@ -4957,7 +5085,7 @@ function ReleaseAnnouncementsCard({
               {isExternal ? (
                 <div className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="inline-flex items-center gap-1.5 text-slate-400"><Link2 className="w-3.5 h-3.5" /> Link publik PDF dibagikan</span>
-                  {externalUrl && contract.status === "Aktif" && (
+                  {externalUrl && isInForce(contract.status) && (
                     <>
                       <button type="button" onClick={copyLink} className="text-[11px] font-semibold text-[#3a7fa8] hover:underline cursor-pointer inline-flex items-center gap-1">
                         {copied ? <><Check className="w-3 h-3" /> Tersalin</> : <><Copy className="w-3 h-3" /> Salin link</>}
@@ -4969,12 +5097,35 @@ function ReleaseAnnouncementsCard({
                   )}
                 </div>
               ) : (
-                <div className="flex flex-wrap gap-1.5">
-                  {a.names.map((n, i) => (
-                    <span key={n + i} className="inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full bg-soft-blue/15 text-xs text-slate-200">
-                      <span className="w-5 h-5 rounded-full bg-peach flex items-center justify-center text-[9px] font-bold text-slate-300">{releaseInitials(n)}</span>{n}
-                    </span>
-                  ))}
+                <div className="space-y-1.5">
+                  <div className="flex flex-wrap gap-1.5">
+                    {a.names.map((n, i) => {
+                      // Status buka per penerima (openedBy). Pengumuman lama
+                      // (sebelum fitur ini) tidak punya data → tanpa penanda.
+                      const uid = a.userIds?.[i];
+                      const tracked = !!a.openedBy;
+                      const openedAt = tracked && uid ? a.openedBy![uid] : undefined;
+                      return (
+                        <span key={n + i}
+                          title={!tracked ? undefined : openedAt ? `Dibuka ${new Date(openedAt).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}` : "Belum membuka notifikasi"}
+                          className={`inline-flex items-center gap-1.5 pl-1 pr-2.5 py-0.5 rounded-full text-xs ${tracked && !openedAt ? "bg-peach/60 text-slate-300" : "bg-soft-blue/15 text-slate-200"}`}>
+                          <span className="w-5 h-5 rounded-full bg-peach flex items-center justify-center text-[9px] font-bold text-slate-300">{releaseInitials(n)}</span>{n}
+                          {tracked && (openedAt
+                            ? <CheckCircle className="w-3 h-3 text-emerald-500" aria-label="sudah dibuka" />
+                            : <Clock className="w-3 h-3 text-brand-orange" aria-label="belum dibuka" />)}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  {a.openedBy && (() => {
+                    const total = a.userIds.length;
+                    const opened = a.userIds.filter((u) => !!a.openedBy![u]).length;
+                    return (
+                      <p className={`text-[11px] ${opened === total ? "text-emerald-500" : "text-slate-500"}`}>
+                        {opened === total ? `✓ Semua penerima (${total}) sudah membuka notifikasi.` : `${opened} dari ${total} penerima sudah membuka notifikasi — ${total - opened} belum.`}
+                      </p>
+                    );
+                  })()}
                 </div>
               )}
               {a.note && <p className="text-xs text-slate-400 leading-relaxed">“{a.note}”</p>}
@@ -6110,7 +6261,11 @@ export default function App() {
     const meta = new Map<string, string>();
     const isi = new Map<string, string>();
     for (const c of contracts) {
-      meta.set(c.id, [c.title, c.contractNumber, c.party1Name, c.party2Name, c.category, c.docType, c.status]
+      // Termasuk nama TAHAP alur (mis. "Arsip", "Review Pihak Kedua",
+      // "Distribusi/Implementasi") supaya bisa dicari lewat status.
+      const stage = (c as any).unifiedStatus || contractStage(c);
+      meta.set(c.id, [c.title, c.contractNumber, c.party1Name, c.party2Name, c.category, c.docType, c.status,
+        UNIFIED_STATUS_LABEL[stage], unifiedStatusLabel(contractStage({ status: c.status })), (c as any).platform, (c as any).employmentType, (c as any).companyName]
         .filter(Boolean).join("   ").toLowerCase());
       const pasal = (c.clauses || []).map((cl) => `${cl.title || ""} ${stripHtmlOnly(String(cl.content || ""))}`).join("   ");
       isi.set(c.id, `${pasal}   ${c.ocrText || ""}`.toLowerCase());
@@ -6122,7 +6277,11 @@ export default function App() {
   const matchContract = (c: Contract, query: string): "meta" | "isi" | null => {
     const q = query.trim().toLowerCase();
     if (!q) return "meta";
-    if ((contractSearchIndex.meta.get(c.id) || "").includes(q)) return "meta";
+    const meta = contractSearchIndex.meta.get(c.id) || "";
+    if (meta.includes(q)) return "meta";
+    // Beberapa kata (mis. "PKS kencana arsip") cocok bila SEMUA kata ada di metadata.
+    const words = q.split(/\s+/).filter(Boolean);
+    if (words.length > 1 && words.every((w) => meta.includes(w))) return "meta";
     if ((contractSearchIndex.isi.get(c.id) || "").includes(q)) return "isi";
     return null;
   };
@@ -6141,6 +6300,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [navbarSearch, appSettings, currentUser]);
 
+  // Pekerjaan Legal untuk pencarian navbar — dimuat saat kotak cari dipakai
+  // (bukan di setiap halaman), disegarkan bila datanya > 60 detik.
+  const [navbarJobs, setNavbarJobs] = useState<LegalJobWithLink[]>([]);
+  const navbarJobsLoadedAt = useRef(0);
+  useEffect(() => {
+    if (!navbarSearch.trim() || Date.now() - navbarJobsLoadedAt.current < 60000) return;
+    navbarJobsLoadedAt.current = Date.now();
+    fetch("/api/legal-jobs").then((r) => (r.ok ? r.json() : [])).then((d) => setNavbarJobs(Array.isArray(d) ? d : [])).catch(() => setNavbarJobs([]));
+  }, [navbarSearch]);
+  const navbarJobResults = useMemo(() => {
+    const q = navbarSearch.trim();
+    if (!q) return [] as LegalJobWithLink[];
+    return navbarJobs.filter((j) => legalJobMatchesSearch(j, q)).slice(0, 5);
+  }, [navbarSearch, navbarJobs]);
+
   const navbarDocResults = useMemo(() => {
     const q = navbarSearch.trim();
     if (!q) return [] as Contract[];
@@ -6150,6 +6324,13 @@ export default function App() {
 
   const goToNavbarFeature = (menuId: string) => {
     setActiveTab(menuId);
+    setSelectedContract(null);
+    setNavbarSearch("");
+    setNavbarSearchFocused(false);
+  };
+
+  const goToNavbarJob = (j: LegalJobWithLink) => {
+    openLegalJobById(j.id);
     setSelectedContract(null);
     setNavbarSearch("");
     setNavbarSearchFocused(false);
@@ -6216,7 +6397,7 @@ export default function App() {
   // diunduh sama sekali — cerminan client-side dari guard yang sama di
   // server (export-share, view-pdf).
   const isContractDownloadable = (c: Contract | null) =>
-    !!c && ["FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(c.status);
+    !!c && (c.status === "FullyApproved" || wasEverInForce(c.status));
 
   // Perpanjang/Addendum HANYA masuk akal setelah matriks approval selesai
   // penuh — sebelumnya (Draft/OnReview/FullyApproved-belum-aktif) kontrak
@@ -6228,9 +6409,10 @@ export default function App() {
   // tidak masuk akal, itu kasusnya Perpanjang. Dua tombol, dua hasil
   // berbeda (renewedFromId vs amendsContractId), syarat sama-sama "sudah
   // pernah full approved" — bukan digabung jadi satu.
-  const isContractRenewable = (c: Contract | null) =>
-    !!c && ["Aktif", "TidakAktif", "Archived", "Terminated"].includes(c.status);
-  const isContractAmendable = (c: Contract | null) => !!c && c.status === "Aktif";
+  // "Berlaku" = Arsip / Distribusi / Aktif (TTD basah sudah diunggah) — lihat
+  // isInForce di src/workflow.ts.
+  const isContractRenewable = (c: Contract | null) => !!c && wasEverInForce(c.status);
+  const isContractAmendable = (c: Contract | null) => !!c && isInForce(c.status);
 
   // Warna badge status kontrak — satu sumber kebenaran dipakai di semua
   // tempat status ditampilkan (header workspace, tabel dokumen, panel
@@ -6239,6 +6421,8 @@ export default function App() {
   const contractStatusBadgeClass = (status: ContractStatus) =>
     `text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
       status === "Aktif" ? "bg-emerald-500/15 text-emerald-400"
+      : status === "Arsip" ? "bg-teal-500/15 text-teal-400"
+      : status === "Distribusi" ? "bg-sky-500/15 text-sky-500"
       : status === "TidakAktif" ? "bg-orange-500/15 text-orange-400"
       : status === "Draft" ? "bg-amber-500/15 text-amber-400"
       : status === "OnReview" ? "bg-indigo-500/15 text-indigo-400"
@@ -6253,15 +6437,8 @@ export default function App() {
   // dst.) tetap dipakai sebagai value/pembanding di seluruh kode; ini murni
   // teks yang ditampilkan ke user, satu sumber kebenaran sama seperti badge.
   const contractStatusLabel = (status: ContractStatus) =>
-    status === "OnReview" ? "Review Internal"
-    : status === "ApprovedInternal" ? "Disetujui Internal"
-    : status === "ReviewEksternal" ? "Review Eksternal"
-    : status === "FinalReview" ? "Review Final Internal"
-    : status === "TidakAktif" ? "Tidak Aktif"
-    : status === "FullyApproved" ? "Disetujui Penuh"
-    : status === "Archived" ? "Diarsipkan"
-    : status === "Terminated" ? "Diakhiri"
-    : status;
+    // Nama tahap alur yang sama di mana pun (src/workflow.ts).
+    unifiedStatusLabel(contractStage({ status }));
 
   // Cermin dari computeUnifiedLegalStatus di server.ts (satu-satunya sumber
   // kebenaran ASLI ada di server, dipakai GET /api/contracts & GET
@@ -6273,23 +6450,7 @@ export default function App() {
   // sini padahal "Proses TTD" di tabel — itu status yang sama, cuma beda
   // representasi: FullyApproved berarti isi kontrak sudah disetujui penuh
   // TAPI TTD basah belum diunggah, makanya di tabel disebut "Proses TTD").
-  const computeUnifiedContractStatusClient = (c: Contract): string => {
-    if (c.status === "Draft") {
-      if (c.revisionStage === "internal") return "RevisiInternal";
-      if (c.revisionStage === "eksternal") return "RevisiEksternal";
-      if (!c.externalRoundCount) {
-        if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
-        if (c.externalReviewToken) return "ReviewInternalEksternal";
-      }
-      return "Draft";
-    }
-    if (c.status === "OnReview") return "ReviewInternal";
-    if (c.status === "ApprovedInternal") return "ApprovedInternal";
-    if (c.status === "ReviewEksternal") return "ReviewEksternal";
-    if (c.status === "FinalReview") return "ReviewFinalInternal";
-    if (c.status === "FullyApproved") return c.signingReceipt ? "DokumenKembali" : "ProsesTTD";
-    return c.status;
-  };
+  const computeUnifiedContractStatusClient = (c: Contract): string => contractStage(c);
   // Dua tahap yang diputuskan lewat matriks approval internal.
   const isInternalApprovalStage = (status?: string) => status === "OnReview" || status === "FinalReview";
   // Giliran approver pada kontrak yang sedang dibuka (dipakai panel status
@@ -6321,8 +6482,7 @@ export default function App() {
   // itu, jadi tetap masuk Approve meski kontraknya sudah berakhir/diarsipkan.
   // Draft/OnReview/FullyApproved belum ada bukti TTD sama sekali, jadi masuk
   // bucket Draft.
-  const isSignedContract = (c: Contract) =>
-    c.status === "Aktif" || c.status === "TidakAktif" || c.status === "Archived" || c.status === "Terminated";
+  const isSignedContract = (c: Contract) => wasEverInForce(c.status);
 
   // Snapshot kontrak persis seperti terakhir dimuat/disimpan dari server —
   // dibandingkan (via JSON.stringify) terhadap selectedContract saat ini
@@ -7262,7 +7422,7 @@ export default function App() {
         body: JSON.stringify({ expiresInDays: days, ...(shareLinkModal.newRound ? { note: shareLinkModal.note || "" } : {}) }),
       });
       const data = await res.json();
-      if (!data.success) { showToast(data.error || "Gagal membuat link review eksternal", "warning"); setShareLinkModal((m) => (m ? { ...m, busy: false } : m)); return; }
+      if (!data.success) { showToast(data.error || "Gagal membuat link review pihak kedua", "warning"); setShareLinkModal((m) => (m ? { ...m, busy: false } : m)); return; }
       setShareLinkModal((m) => (m ? { ...m, url: data.url, busy: false } : m));
       // Sinkronkan state kontrak di client: tanpa ini polling komentar eksternal
       // & tombol "Buka Akses Kembali" baru aktif setelah halaman di-refresh.
@@ -7275,11 +7435,11 @@ export default function App() {
       }
       try {
         await navigator.clipboard.writeText(data.url);
-        showToast(`Link review eksternal disalin ke clipboard (berlaku ${days} hari).`, "success");
+        showToast(`Link review pihak kedua disalin ke clipboard (berlaku ${days} hari).`, "success");
       } catch {
         showToast("Link dibuat — salin manual dari kotak di modal.", "info");
       }
-    } catch { showToast("Gagal membuat link review eksternal", "warning"); setShareLinkModal((m) => (m ? { ...m, busy: false } : m)); }
+    } catch { showToast("Gagal membuat link review pihak kedua", "warning"); setShareLinkModal((m) => (m ? { ...m, busy: false } : m)); }
   };
 
   // Buka kembali akses komentar/setuju eksternal setelah terkunci (tamu sudah
@@ -7292,7 +7452,7 @@ export default function App() {
       if (!data.success) { showToast(data.error || "Gagal membuka akses kembali", "warning"); return; }
       setContracts((prev) => prev.map((c) => c.id === selectedContract.id ? { ...c, externalReviewLocked: false } : c));
       setSelectedContract((prev: any) => prev ? { ...prev, externalReviewLocked: false } : prev);
-      showToast("Akses review eksternal dibuka kembali — tamu bisa komentar/setuju lagi lewat link yang sama.", "success");
+      showToast("Akses review pihak kedua dibuka kembali — tamu bisa komentar/setuju lagi lewat link yang sama.", "success");
     } catch { showToast("Gagal membuka akses kembali", "warning"); }
   };
 
@@ -7330,7 +7490,7 @@ export default function App() {
       "Disetujui eksternal — kontrak masuk Review Final Internal."),
   });
   const handleSkipExternalReview = () => askText({
-    title: "Lewati Review Eksternal",
+    title: "Lewati Review Pihak Kedua",
     label: "Alasan (wajib, tercatat di audit)",
     placeholder: "mis. Pihak kedua sudah menyetujui draf versi ini lewat rapat",
     onConfirm: (reason) => postContractFlowAction("skip-external-review", { reason },
@@ -8331,6 +8491,30 @@ export default function App() {
   };
 
   // Real-time notification helper
+  // Pekerjaan Legal yang harus langsung dibuka detailnya (dari klik notifikasi
+  // atau hasil pencarian) — dikonsumsi PekerjaanLegalPage.
+  const [focusLegalJobId, setFocusLegalJobId] = useState<string | null>(null);
+  const openLegalJobById = (jobId: string) => {
+    setSelectedContract(null);
+    setFocusLegalJobId(jobId);
+    setActiveTab("pekerjaan-legal");
+  };
+  const openContractById = async (contractId: string): Promise<boolean> => {
+    let c = contracts.find((con) => con.id === contractId);
+    if (!c) {
+      try {
+        const res = await fetch(`/api/contracts/${contractId}`);
+        if (res.ok) c = await res.json();
+      } catch { /* abaikan */ }
+    }
+    if (!c) { showToast("Kontrak terkait tidak ditemukan atau Anda tidak punya akses.", "warning"); return false; }
+    // Sama seperti "Buka Kontrak" dari Pekerjaan Legal: pindah ke halaman
+    // kontrak supaya detailnya tidak tampil menumpuk di bawah halaman lain.
+    setActiveTab("monitoring");
+    handleOpenWorkspace(c);
+    return true;
+  };
+
   const handleMarkNotificationsRead = async () => {
     try {
       await fetch("/api/notifications/read-all", { method: "POST" });
@@ -8805,7 +8989,7 @@ export default function App() {
       if (data.success) {
         showToast(
           decision === "approved"
-            ? (data.contract?.status === "ApprovedInternal" ? "Disetujui internal — kontrak siap dikirim ke Review Eksternal"
+            ? (data.contract?.status === "ApprovedInternal" ? "Disetujui internal — kontrak siap dikirim ke Review Pihak Kedua"
               : data.contract?.status === "FullyApproved" ? "Review final disetujui — kontrak masuk Proses TTD"
               : "Kontrak disetujui")
             : "Revisi diminta — kontrak masuk Revisi Internal",
@@ -8857,7 +9041,7 @@ export default function App() {
       const res = await fetch(`/api/contracts/${activateModalContractId}/activate`, { method: "POST", body: fd });
       const data = await res.json();
       if (data.success) {
-        showToast(`Kontrak ${data.contract.contractNumber} kini Aktif — bukti TTD tersimpan sebagai berkas utama`, "success");
+        showToast(`Kontrak ${data.contract.contractNumber} kini berstatus Arsip — bukti TTD basah tersimpan sebagai berkas utama. Umumkan rilis internal untuk lanjut ke Distribusi/Implementasi.`, "success");
         setActivateModalContractId(null);
         setActivateModalFile(null);
         if (selectedContract?.id === data.contract.id) {
@@ -8877,7 +9061,7 @@ export default function App() {
   // snapshot versi + audit trail).
   const handleChangeContractStatus = async (status: "TidakAktif" | "Archived" | "Terminated") => {
     if (!selectedContract) return;
-    const label = status === "Archived" ? "mengarsipkan" : status === "Terminated" ? "mengakhiri" : "menonaktifkan";
+    const label = status === "Archived" ? "menandai Tidak Berlaku" : status === "Terminated" ? "mengakhiri" : "menonaktifkan";
     if (!(await askConfirm(`Yakin ${label} kontrak "${selectedContract.title}"? Kontrak keluar dari monitoring reminder.`, { title: "Ubah Status Kontrak" }))) return;
     try {
       const res = await fetch(`/api/contracts/${selectedContract.id}`, {
@@ -9199,7 +9383,7 @@ export default function App() {
         ];
         const docRef = selectedContract.contractNumber;
         let spec: WmSpec;
-        if (selectedContract.status === "Aktif") {
+        if (isInForce(selectedContract.status)) {
           spec = {
             banner: "CONTROLLED COPY",
             footer: `CONTROLLED COPY · ${docRef}`,
@@ -12843,7 +13027,7 @@ export default function App() {
 
   // Total Portfolio Values
   const totalValueActive = contracts
-    .filter((c) => c.status === "Aktif")
+    .filter((c) => isInForce(c.status))
     .reduce((sum, c) => sum + c.contractValue, 0);
 
   // Agregat SHARING FEE untuk dashboard — SENGAJA memisahkan nominal (rupiah,
@@ -12852,7 +13036,7 @@ export default function App() {
   // kontrak pasti). Persentase hanya diberi estimasi Rp untuk kontrak yang
   // nilai kontraknya diketahui (>0), dan angka itu dilabeli "estimasi".
   const sharingFeeStats = (() => {
-    const active = contracts.filter((c) => c.status === "Aktif");
+    const active = contracts.filter((c) => isInForce(c.status));
     let nominalSum = 0, nominalContracts = 0;
     let pctContracts = 0, pctEstSum = 0, pctEstCoveredContracts = 0;
     for (const c of active) {
@@ -12880,7 +13064,7 @@ export default function App() {
     (c) => c.status === "Draft",
   ).length;
   const criticalExpiryContracts = contracts.filter((c) => {
-    if (c.status !== "Aktif") return false;
+    if (!isInForce(c.status)) return false;
     const days = getDaysRemaining(c.endDate);
     return days >= 0 && days <= c.reminderDaysBefore;
   });
@@ -14233,7 +14417,7 @@ export default function App() {
                     (e.target as HTMLInputElement).blur();
                   }
                 }}
-                placeholder="Cari fitur, kontrak & dokumen…"
+                placeholder="Cari pekerjaan, mitra, nomor, jenis, status, arsip…"
                 className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
               />
             </div>
@@ -14256,8 +14440,32 @@ export default function App() {
                   </div>
                 )}
 
-                {navbarDocResults.length > 0 && (
+                {navbarJobResults.length > 0 && (
                   <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 ? "border-t border-slate-800" : ""}`}>
+                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Pekerjaan Legal</p>
+                    {navbarJobResults.map((j) => (
+                      <button
+                        key={j.id}
+                        onClick={() => goToNavbarJob(j)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <Briefcase className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-slate-200 truncate">{j.title}</span>
+                          <span className="block text-[10px] text-slate-500 truncate">
+                            {[j.partnerName, j.docType, j.linkedContract?.contractNumber].filter(Boolean).join(" · ")}
+                          </span>
+                        </span>
+                        <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[legalJobDisplayStatus(j)] || "bg-slate-800 text-slate-400"}`}>
+                          {UNIFIED_STATUS_LABEL[legalJobDisplayStatus(j)] || legalJobDisplayStatus(j)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {navbarDocResults.length > 0 && (
+                  <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 || navbarJobResults.length > 0 ? "border-t border-slate-800" : ""}`}>
                     <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kontrak &amp; Dokumen</p>
                     {navbarDocResults.map((c) => (
                       <button
@@ -14268,7 +14476,10 @@ export default function App() {
                         <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                         <span className="flex-1 min-w-0">
                           <span className="block text-slate-200 truncate">{c.title || "Tanpa judul"}</span>
-                          {c.contractNumber && <span className="block text-[10px] text-slate-500 truncate">{c.contractNumber}</span>}
+                          <span className="block text-[10px] text-slate-500 truncate">{[c.contractNumber, c.party2Name, c.docType].filter(Boolean).join(" · ")}</span>
+                        </span>
+                        <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[unifiedContractStatusOf(c)] || "bg-slate-800 text-slate-400"}`}>
+                          {CONTRACT_STATUS_LABEL_ID[unifiedContractStatusOf(c)] || contractStatusLabel(c.status)}
                         </span>
                       </button>
                     ))}
@@ -14281,9 +14492,9 @@ export default function App() {
                   </div>
                 )}
 
-                {navbarFeatureResults.length === 0 && navbarDocResults.length === 0 && (
+                {navbarFeatureResults.length === 0 && navbarDocResults.length === 0 && navbarJobResults.length === 0 && (
                   <div className="px-2">
-                    <p className="px-2.5 py-2 text-xs text-slate-500">Tidak ada fitur/kontrak yang cocok dengan "{navbarSearch}".</p>
+                    <p className="px-2.5 py-2 text-xs text-slate-500">Tidak ada fitur, pekerjaan, atau kontrak yang cocok dengan "{navbarSearch}".</p>
                     <button
                       onClick={submitNavbarSearch}
                       className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
@@ -14336,14 +14547,25 @@ export default function App() {
                 return `${Math.floor(h / 24)} hari lalu`;
               };
               const openNotif = (n: any) => {
+                // Catat "sudah dibuka" PER ORANG di server. Untuk pengumuman
+                // rilis internal, ini yang dihitung sebagai penerima membuka
+                // notifikasinya (semua sudah buka → kontrak otomatis Aktif).
+                if (!n.read) setNotifications((prev) => prev.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+                fetch(`/api/notifications/${n.id}/open`, { method: "POST" })
+                  .then((r) => r.json())
+                  .then((d) => { if (d?.contractActivated) fetchInitialData(); })
+                  .catch(() => { /* abaikan */ });
                 if (n.linkUrl) {
                   // Notifikasi dengan tautan langsung (mis. "Kontrak Telah Rilis")
-                  // → buka PDF resmi di tab baru, sama seperti link eksternal.
+                  // → buka PDF resmi di tab baru (sinkron, anti popup-blocker).
                   setNotifOpen(false);
                   window.open(n.linkUrl, "_blank", "noopener");
                 } else if (n.contractId) {
-                  const c = contracts.find((con) => con.id === n.contractId);
-                  if (c) { setNotifOpen(false); handleOpenWorkspace(c); }
+                  setNotifOpen(false);
+                  openContractById(n.contractId);
+                } else if (n.legalJobId) {
+                  setNotifOpen(false);
+                  openLegalJobById(n.legalJobId);
                 } else if (n.dcsDocumentId) {
                   const d = dcsDocs.find((doc) => doc.id === n.dcsDocumentId);
                   if (d) {
@@ -14441,7 +14663,7 @@ export default function App() {
                   className="hidden sm:flex items-center gap-2 px-5 h-11 bg-soft-blue hover:opacity-90 text-white rounded-full text-[13px] font-medium transition cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
-                  Request kontrak baru
+                  Request dokumen baru
                 </button>
                 ) : null}
               </>
@@ -15976,7 +16198,7 @@ export default function App() {
 
           {/* VIEW: PEKERJAAN LEGAL */}
           {activeTab === "pekerjaan-legal" && (
-            <PekerjaanLegalPage currentUser={currentUser} onOpenContract={(contractId) => {
+            <PekerjaanLegalPage currentUser={currentUser} focusJobId={focusLegalJobId} onFocusHandled={() => setFocusLegalJobId(null)} onOpenContract={(contractId) => {
               const c = contracts.find((x) => x.id === contractId);
               if (c) { setSelectedContract(c); setActiveTab("monitoring"); }
               else showToast("Kontrak terhubung tidak ditemukan.", "warning");
@@ -15989,6 +16211,8 @@ export default function App() {
                 ...f,
                 party2Type: masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type,
                 linkedLegalJobId: job.id,
+                // Badan hukum yang dipilih saat input pekerjaan → PT dokumen.
+                ...(job.companyId ? { companyId: job.companyId, platform: "", platformCustom: false } : {}),
               }));
               setCreationStep(1);
               setIsCreating(true);
@@ -16009,7 +16233,7 @@ export default function App() {
               const t = parseD(c.startDate);
               return t && t.getFullYear() === k.y && t.getMonth() === k.m ? sum + val(c) : sum;
             }, 0));
-          const aktifList = contracts.filter((c) => c.status === "Aktif");
+          const aktifList = contracts.filter((c) => isInForce(c.status));
           const draftList = contracts.filter((c) => c.status === "Draft");
           const weeklyExpiry = [0, 1, 2, 3].map((w) =>
             aktifList.filter((c) => { const dl = getDaysRemaining(c.endDate); return dl >= w * 7 && dl < (w + 1) * 7 + (w === 3 ? 2 : 0); }).length);
@@ -18838,8 +19062,11 @@ export default function App() {
                   setMonitorSearch(""); setMonitorCategory("Semua"); setMonitorHealth(""); setMonitorScope("all");
                   setMonitorStatus("Semua"); setMonitorExtra(EMPTY_MONITOR_EXTRA); setMonitorPage(1);
                 };
-                const statusOptions = Array.from(new Set<string>(contracts.map((c) => c.unifiedStatus || c.status)))
-                  .sort()
+                // Urut mengikuti alur 12 tahap (src/workflow.ts), status akhir di belakang.
+                const STATUS_ORDER = [...LEGAL_STAGES, "TidakAktif", "Archived", "Terminated"] as string[];
+                const rankOf = (st: string) => { const i = STATUS_ORDER.indexOf(st); return i < 0 ? 99 : i; };
+                const statusOptions = Array.from(new Set<string>(contracts.map((c) => c.unifiedStatus || contractStage(c))))
+                  .sort((a, b) => rankOf(a) - rankOf(b) || a.localeCompare(b))
                   .map((st) => ({ value: st, label: CONTRACT_STATUS_LABEL_ID[st] || contractStatusLabel(st as ContractStatus) }));
                 const docTypeOptions = Array.from(new Set<string>(scoped.map((c) => c.docType || "").filter(Boolean))).sort();
                 const party2TypeOptions = Array.from(new Set<string>(scoped.map((c) => c.party2Type || "").filter(Boolean))).sort();
@@ -19936,7 +20163,7 @@ export default function App() {
             const adq = allDocsSearch.toLowerCase();
             const onAllDocsSort = (k: string) => setAllDocsSort((s) => nextSort(s, k));
             const visibleContracts = sortRows<Contract>(contracts.filter((c) =>
-              (allDocsStatusFilter === "all" ? true : allDocsStatusFilter === "aktif" ? c.status === "Aktif" : c.status !== "Aktif")
+              (allDocsStatusFilter === "all" ? true : allDocsStatusFilter === "aktif" ? isInForce(c.status) : !isInForce(c.status))
               // Sama seperti Monitoring: cocok di metadata ATAU di isi pasal/OCR.
               && matchContract(c, allDocsSearch) !== null
             ), allDocsSort, { tipe: () => "Kontrak", judul: (c) => c.title, status: (c) => c.status });
@@ -19953,7 +20180,7 @@ export default function App() {
               && (!adq || d.title.toLowerCase().includes(adq) || d.documentNumber.toLowerCase().includes(adq))
             ), allDocsSort, { tipe: () => "DCS", judul: (d) => d.title, status: (d) => (dcsIsControlled(d) ? "Aktif" : "Non-Aktif") });
             const totalCount = contracts.length + dcsDocs.length;
-            const aktifCount = contracts.filter((c) => c.status === "Aktif").length + dcsDocs.filter(dcsIsControlled).length;
+            const aktifCount = contracts.filter((c) => isInForce(c.status)).length + dcsDocs.filter(dcsIsControlled).length;
             // Pagination atas GABUNGAN kontrak + DCS, dalam urutan tampil yang
             // sama seperti render (kontrak dulu, baru DCS) — supaya nomor
             // halaman konsisten dengan apa yang terlihat di layar.
@@ -19977,7 +20204,7 @@ export default function App() {
               const barisKontrak = visibleContracts.map((c) => [
                 "Kontrak", c.contractNumber, c.title, c.category, "", c.party2Name,
                 c.startDate, c.endDate, Number(c.contractValue) || 0, contractStatusLabel(c.status),
-                c.status === "Aktif" ? "Aktif" : "Non-Aktif",
+                isInForce(c.status) ? "Aktif" : "Non-Aktif",
               ]);
               const barisDcs = visibleDcsDocs.map((d) => [
                 "Dokumen Internal (DCS)", d.documentNumber, d.title, d.docTypeCode, d.department, "",
@@ -20001,10 +20228,10 @@ export default function App() {
                 </div>
                 <button
                   onClick={() => handleOpenActivateModal()}
-                  title="Unggah bukti TTD untuk kontrak yang sudah FullyApproved — statusnya otomatis jadi Aktif"
+                  title="Unggah bukti TTD basah untuk kontrak yang sudah di tahap Proses TTD — statusnya menjadi Arsip"
                   className="btn-grad-primary px-5 h-11 text-white rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shrink-0"
                 >
-                  <Upload className="w-3.5 h-3.5" /> Unggah &amp; Aktifkan
+                  <Upload className="w-3.5 h-3.5" /> Unggah TTD Basah
                 </button>
               </div>
 
@@ -20542,7 +20769,7 @@ export default function App() {
                       !isContractDownloadable(selectedContract)
                         ? "Tersedia setelah approval matriks selesai (status FullyApproved ke atas)"
                         : appSettings.contractWatermark
-                          ? `PDF akan diberi watermark ${selectedContract.status === "Aktif" ? "CONTROLLED COPY (biru)" : "UNCONTROLLED COPY (merah)"} sesuai status kontrak`
+                          ? `PDF akan diberi watermark ${isInForce(selectedContract.status) ? "CONTROLLED COPY (biru)" : "UNCONTROLLED COPY (merah)"} sesuai status kontrak`
                           : undefined
                     }
                     className="px-4 py-2 bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 text-xs font-semibold rounded-xl border border-rose-600/30 transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -20609,7 +20836,7 @@ export default function App() {
                       Buat Addendum
                     </button>
                   )}
-                  {selectedContract.status === "Aktif" && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin") && (
+                  {isInForce(selectedContract.status) && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin") && (
                     <>
                       <button
                         onClick={() => setReleaseModalOpen(true)}
@@ -20635,7 +20862,7 @@ export default function App() {
                       dipindah ke sini agar tetap terlihat sekilas. */}
                   <button
                     onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
-                    title="Buka dokumen dalam Mode Tinjau: kartu komentar melayang di margin kanan sejajar kalimatnya, persis fitur Comment di Microsoft Word. Di sini juga tempat membuat/menyalin Link Review Eksternal."
+                    title="Buka dokumen dalam Mode Tinjau: kartu komentar melayang di margin kanan sejajar kalimatnya, persis fitur Comment di Microsoft Word. Di sini juga tempat membuat/menyalin Link Review Pihak Kedua."
                     className="relative px-4 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-xs font-bold rounded-xl border border-amber-500/30 transition flex items-center gap-1.5 cursor-pointer"
                   >
                     <MessageSquare className="w-3.5 h-3.5" />
@@ -20726,7 +20953,7 @@ export default function App() {
                         sbg penanda supaya cuma tampil utk kontrak yang benar-benar
                         lewat alur unggah bukti TTD (bukan status Aktif dari jalur
                         lain, mis. data lama/import). */}
-                    {selectedContract.status === "Aktif" && selectedContract.activationProofHash && (
+                    {isInForce(selectedContract.status) && selectedContract.activationProofHash && (
                       <div className="mb-6 p-4 bg-blue-500/5 border border-blue-500/25 rounded-xl space-y-2">
                         <div className="flex items-center justify-between flex-wrap gap-2">
                           <h4 className="text-xs font-bold text-blue-300 flex items-center gap-1.5">
@@ -20768,7 +20995,7 @@ export default function App() {
                       <h3 className="font-bold text-sm tracking-wide flex items-center gap-1.5 text-slate-300">
                         <FileCheck className="text-indigo-400 w-4 h-4" />
                         PREVIEW DOKUMEN DIGITAL (LIVE)
-                        {selectedContract.status === "Aktif" && selectedContract.activationProofHash && (
+                        {isInForce(selectedContract.status) && selectedContract.activationProofHash && (
                           <span className="text-[9px] text-slate-500 font-normal normal-case">— draf digital, bukan salinan resmi (lihat Berkas Resmi di atas)</span>
                         )}
                         {selectedContract.ocrSimulated && (
@@ -20798,7 +21025,7 @@ export default function App() {
                               href={`/api/contracts/${selectedContract.id}/view-pdf`}
                               target="_blank"
                               rel="noreferrer"
-                              title={`Buka PDF dengan watermark ${selectedContract.status === "Aktif" ? "CONTROLLED COPY (biru)" : "UNCONTROLLED COPY (merah)"} sesuai status kontrak`}
+                              title={`Buka PDF dengan watermark ${isInForce(selectedContract.status) ? "CONTROLLED COPY (biru)" : "UNCONTROLLED COPY (merah)"} sesuai status kontrak`}
                               className="text-[10px] text-rose-400 hover:text-rose-300 font-semibold flex items-center gap-1"
                             >
                               <FileText className="w-3 h-3" /> Buka Berkas{appSettings.contractWatermark ? " (Watermarked)" : ""}
@@ -20821,13 +21048,13 @@ export default function App() {
                             punya berkas upload/export. */}
                         <span
                           className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                            selectedContract.status === "Aktif"
+                            isInForce(selectedContract.status)
                               ? "bg-blue-500/15 text-blue-400 border border-blue-500/20"
                               : "bg-rose-500/15 text-rose-400 border border-rose-500/20"
                           }`}
                           title="Status watermark: CONTROLLED = dokumen berlaku (biru); UNCONTROLLED = dokumen tidak berlaku/diarsipkan/draft (merah). Berlaku sbg label status meski belum ada berkas PDF."
                         >
-                          {selectedContract.status === "Aktif" ? "CONTROLLED" : "UNCONTROLLED"}
+                          {isInForce(selectedContract.status) ? "CONTROLLED" : "UNCONTROLLED"}
                         </span>
                         <span className="text-[10px] text-slate-500">
                           Auto-filled via Clause Variables
@@ -21997,10 +22224,10 @@ export default function App() {
                 )}
               </div>
 
-              {(selectedContract.status === "Aktif" || (selectedContract.releaseAnnouncements || []).length > 0) && (
+              {(isInForce(selectedContract.status) || (selectedContract.releaseAnnouncements || []).length > 0) && (
                 <ReleaseAnnouncementsCard
                   contract={selectedContract}
-                  canEdit={selectedContract.status === "Aktif" && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin")}
+                  canEdit={isInForce(selectedContract.status) && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin")}
                   onOpenInternal={() => setReleaseModalOpen(true)}
                   onOpenExternal={() => setReleaseExternalOpen(true)}
                 />
@@ -22186,29 +22413,19 @@ export default function App() {
                         </span>
                       </div>
 
-                      {/* Alur: Draft → Review Internal → Disetujui Internal →
-                          Review Eksternal → Proses TTD → Aktif. Revisi (internal
-                          maupun eksternal) ditandai merah di tahap asalnya. */}
+                      {/* Alur kontrak (tahap 3–12 dari src/workflow.ts): Draft →
+                          Review Internal → Review Pihak Kedua → Revisi/Negosiasi →
+                          Finalisasi → Proses TTD → Dokumen Kembali → Arsip →
+                          Distribusi/Implementasi → Aktif. */}
                       {(() => {
                         const st = selectedContract.status;
                         const rev = selectedContract.revisionStage;
-                        const stages: { key: string; label: string }[] = [
-                          { key: "draft", label: "Draft" },
-                          { key: "ri", label: "Review Internal" },
-                          { key: "ai", label: "Acc Internal" },
-                          { key: "re", label: "Review Eksternal" },
-                          { key: "rf", label: "Review Final" },
-                          { key: "ttd", label: "Proses TTD" },
-                          { key: "aktif", label: "Aktif" },
-                        ];
-                        const currentIdx =
-                          st === "Draft" ? (rev === "internal" ? 1 : rev === "eksternal" ? 3 : 0)
-                          : st === "OnReview" ? 1
-                          : st === "ApprovedInternal" ? 2
-                          : st === "ReviewEksternal" ? 3
-                          : st === "FinalReview" ? 4
-                          : st === "FullyApproved" ? 5
-                          : 6;
+                        const stageKeys = LEGAL_STAGES.slice(2) as readonly string[];
+                        const stages: { key: string; label: string }[] = stageKeys.map((k) => ({ key: k, label: UNIFIED_STATUS_LABEL[k] }));
+                        const curStage = contractStage(selectedContract);
+                        const idx = stageKeys.indexOf(curStage);
+                        // Status akhir (Tidak Aktif / Tidak Berlaku / Diakhiri): semua tahap sudah dilewati.
+                        const currentIdx = idx >= 0 ? idx : stages.length;
                         const isRevising = st === "Draft" && !!rev;
                         return (
                           <div className="flex items-center gap-1 overflow-x-auto pb-1">
@@ -22222,7 +22439,7 @@ export default function App() {
                               return (
                                 <React.Fragment key={stg.key}>
                                   <span className={`text-[10px] font-semibold px-2 py-1 rounded-full border whitespace-nowrap ${cls}`}>
-                                    {cur && isRevising ? `Revisi ${rev === "internal" ? "Internal" : "Eksternal"}` : stg.label}
+                                    {cur && isRevising ? `Revisi/Negosiasi (${rev === "internal" ? "internal" : "pihak kedua"})` : stg.label}
                                   </span>
                                   {i < stages.length - 1 && <span className={`w-3 h-px shrink-0 ${done ? "bg-emerald-500/40" : "bg-slate-800"}`} />}
                                 </React.Fragment>
@@ -22447,7 +22664,7 @@ export default function App() {
                           <div className="space-y-2">
                             <div className="p-2.5 bg-amber-500/10 border border-amber-500/25 rounded-lg text-[11px] text-amber-700 space-y-1">
                               <p><b>Review Final Internal</b> — pihak eksternal sudah setuju{lastExt ? <> (<b>{lastExt.name}</b>, {new Date(lastExt.approvedAt).toLocaleDateString("id-ID")})</> : null}. Tim internal mengonfirmasi versi ini dulu sebelum Proses TTD, supaya benar-benar disetujui dua pihak.</p>
-                              <p className="text-slate-400">Setuju → Proses TTD. Minta Revisi → kembali ke awal (Revisi Internal → Review Internal → … → Review Eksternal lagi).</p>
+                              <p className="text-slate-400">Setuju → Proses TTD. Minta Revisi → kembali ke awal (Revisi Internal → Review Internal → … → Review Pihak Kedua lagi).</p>
                             </div>
                             {!hasPending && (
                               <button
@@ -22470,7 +22687,7 @@ export default function App() {
                             onClick={handleShareExternalReview}
                             className="w-full py-2 bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                           >
-                            <ExternalLink className="w-4 h-4" /> Kirim ke Review Eksternal
+                            <ExternalLink className="w-4 h-4" /> Kirim ke Review Pihak Kedua
                           </button>
                           {(currentUser?.role === "admin" || currentUser?.role === "super_admin" || currentUser?.role === "legal" || currentUser?.role === "manajemen") && (
                             <button
@@ -22478,7 +22695,7 @@ export default function App() {
                               title="Untuk dokumen yang tidak perlu ditinjau pihak kedua. Wajib alasan, tercatat di audit."
                               className="w-full py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer"
                             >
-                              Lewati Review Eksternal → Proses TTD
+                              Lewati Review Pihak Kedua → Proses TTD
                             </button>
                           )}
                         </div>
@@ -22489,7 +22706,7 @@ export default function App() {
                         return (
                           <div className="space-y-2">
                             <div className="p-2.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-[11px] text-violet-600 space-y-1">
-                              <p>Review Eksternal{(selectedContract.externalRoundCount || 1) > 1 ? ` (ronde ${selectedContract.externalRoundCount})` : ""} — menunggu pihak eksternal. Mereka bisa <b>Setuju/OK</b> (→ Review Final Internal) atau <b>Ajukan Revisi</b> (→ Revisi Eksternal).</p>
+                              <p>Review Pihak Kedua{(selectedContract.externalRoundCount || 1) > 1 ? ` (ronde ${selectedContract.externalRoundCount})` : ""} — menunggu pihak eksternal. Mereka bisa <b>Setuju/OK</b> (→ Review Final Internal) atau <b>Ajukan Revisi</b> (→ Revisi Eksternal).</p>
                               {(() => {
                                 const cur = (selectedContract.externalRounds || []).find((r) => r.round === selectedContract.externalRoundCount);
                                 return cur?.note ? <p className="text-slate-400">Catatan pengantar terkirim: <i>"{cur.note}"</i></p> : null;
@@ -22557,21 +22774,26 @@ export default function App() {
                       {selectedContract.status === "FullyApproved" && (
                         <div className="space-y-2">
                           <div className="p-2.5 bg-teal-500/10 border border-teal-500/20 rounded-lg text-[11px] text-teal-300">
-                            Disetujui penuh — dokumen siap diunduh/dikirim untuk dicetak &amp; TTD basah. Setelah ditandatangani, klik tombol di bawah untuk mengunggah hasil scan — kontrak otomatis Aktif begitu berkas terunggah.
+                            Proses TTD — dokumen siap diunduh/dikirim untuk dicetak &amp; TTD basah. Setelah ditandatangani, klik tombol di bawah untuk mengunggah hasil scan — status kontrak menjadi <b>Arsip</b>, lalu umumkan rilis internal (Distribusi/Implementasi); kontrak <b>Aktif</b> setelah semua penerima membuka notifikasinya.
                           </div>
                           <button
                             onClick={() => handleOpenActivateModal(selectedContract.id)}
                             className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                           >
-                            <Upload className="w-4 h-4" /> {selectedContract.amendsContractId ? "Unggah Bukti TTD & Aktifkan Addendum" : "Unggah Bukti TTD & Aktifkan"}
+                            <Upload className="w-4 h-4" /> {selectedContract.amendsContractId ? "Unggah TTD Basah Addendum → Arsip" : "Unggah TTD Basah → Arsip"}
                           </button>
                         </div>
                       )}
 
-                      {selectedContract.status === "Aktif" && (
+                      {isInForce(selectedContract.status) && (
                         <div className="space-y-2">
-                          <div className="px-4 py-2.5 bg-emerald-500/10 rounded-full text-[11px] text-emerald-400">
-                            Kontrak aktif & terpantau — reminder otomatis berjalan hingga {new Date(selectedContract.endDate).toLocaleDateString("id-ID")}.
+                          <div className="px-4 py-2.5 bg-emerald-500/10 rounded-[18px] text-[11px] text-emerald-400">
+                            {selectedContract.status === "Arsip"
+                              ? <>Status <b>Arsip</b> — TTD basah sudah diunggah. Langkah berikutnya: <b>Rilis Internal</b> (umumkan ke tim) agar masuk Distribusi/Implementasi.</>
+                              : selectedContract.status === "Distribusi"
+                                ? <>Status <b>Distribusi/Implementasi</b> — menunggu semua penerima pengumuman rilis membuka notifikasinya; setelah itu otomatis <b>Aktif</b>.</>
+                                : <>Kontrak <b>Aktif</b> — semua penerima pengumuman rilis sudah membuka notifikasinya.</>}
+                            {" "}Masa berlaku terpantau — reminder otomatis berjalan hingga {new Date(selectedContract.endDate).toLocaleDateString("id-ID")}.
                           </div>
                           <div className="grid grid-cols-3 gap-2">
                             <button
@@ -22585,7 +22807,7 @@ export default function App() {
                               onClick={() => handleChangeContractStatus("Archived")}
                               className="py-2 bg-mist text-slate-100 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer"
                             >
-                              Arsipkan
+                              Tidak Berlaku
                             </button>
                             <button
                               onClick={() => handleChangeContractStatus("Terminated")}
@@ -22607,7 +22829,7 @@ export default function App() {
                               onClick={() => handleChangeContractStatus("Archived")}
                               className="py-2 bg-mist text-slate-100 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer"
                             >
-                              Arsipkan
+                              Tidak Berlaku
                             </button>
                             <button
                               onClick={() => handleChangeContractStatus("Terminated")}
@@ -22622,7 +22844,7 @@ export default function App() {
                       {(selectedContract.status === "Archived" || selectedContract.status === "Terminated") && (
                         <div className="space-y-1">
                           <p className="text-[11px] text-slate-500 leading-relaxed">
-                            Kontrak {selectedContract.status === "Archived" ? "diarsipkan" : "diakhiri"} — tidak lagi dipantau reminder. Gunakan "Perpanjang / Extend" untuk membuat draft kontrak lanjutan.
+                            Kontrak {selectedContract.status === "Archived" ? "ditandai Tidak Berlaku" : "diakhiri"} — tidak lagi dipantau reminder. Gunakan "Perpanjang / Extend" untuk membuat draft kontrak lanjutan.
                           </p>
                           {(selectedContract.masterPdfUrl || selectedContract.exportedPdfUrl) && (
                             <p className="text-[10px] text-rose-400/80 flex items-center gap-1">
@@ -23876,7 +24098,7 @@ export default function App() {
             };
             const items: ItemKalender[] = [];
             for (const c of contracts) {
-              if ((c.status === "Aktif" || c.status === "TidakAktif") && c.endDate) {
+              if ((isInForce(c.status) || c.status === "TidakAktif") && c.endDate) {
                 items.push({
                   tanggal: c.endDate, kategori: "Kontrak Berakhir",
                   judul: c.title, ket: `${c.contractNumber} · ${c.party2Name || "-"}`,
@@ -24752,7 +24974,7 @@ export default function App() {
                             onChange={() => setNewContractForm({...newContractForm, creationMode: "smart"})}
                             className="text-indigo-500 bg-slate-900 border-slate-700"
                           />
-                          <span className="text-sm text-slate-300">Buat dari Template (Pasal Otomatis)</span>
+                          <span className="text-sm text-slate-300">Buat Dokumen di Sistem</span>
                         </label>
                         <label className="flex items-center gap-2 cursor-pointer">
                           <input
@@ -24763,13 +24985,13 @@ export default function App() {
                             onChange={() => setNewContractForm({...newContractForm, creationMode: "upload", contractNumber: ""})}
                             className="text-indigo-500 bg-slate-900 border-slate-700"
                           />
-                          <span className="text-sm text-slate-300">Upload Dokumen (Hardcopy / Softcopy)</span>
+                          <span className="text-sm text-slate-300">Upload Dokumen yang Sudah Ada</span>
                         </label>
                       </div>
                       <p className="text-[11px] text-slate-500">
                         {newContractForm.creationMode === "smart"
-                          ? "Pasal & klausul akan otomatis tersusun dari template yang dipilih, dan bisa Anda ubah pada tahap berikutnya."
-                          : "Pakai dokumen/template kerjasama Anda sendiri (bukan template sistem) sebagai isi kontrak ini. Kontrak tetap lahir berstatus Draft — status baru berubah Aktif lewat proses yang sama seperti kontrak lain (approval/aktivasi), BUKAN otomatis saat unggah, karena file ini belum tentu sudah ditandatangani basah oleh semua pihak. Untuk dokumen yang memang sudah 100% final & ber-TTD basah, unggah lewat menu Arsip Dokumen."}
+                          ? "Drafting langsung di sistem — gunakan template yang tersedia atau susun dokumennya di sini. Pasal & klausul bisa Anda ubah pada tahap berikutnya."
+                          : "Untuk dokumen yang sudah dibuat atau di-drafting sendiri (mis. di Microsoft Word), lalu diunggah ke sistem untuk melanjutkan proses Legal. Dokumen tetap mulai berstatus Draft dan melewati alur yang sama (review, TTD, dst.) — bukan otomatis berlaku saat diunggah. Untuk dokumen yang sudah final & ber-TTD basah, unggah lewat menu Arsip Dokumen."}
                       </p>
                     </div>
 
@@ -26377,7 +26599,7 @@ export default function App() {
                 <h3 className="font-bold text-slate-100 text-sm">Minta Revisi{isFinal ? " — Review Final" : ""}</h3>
                 <p className="text-[12px] text-slate-400 leading-relaxed">
                   {isFinal
-                    ? "Versi yang disetujui pihak eksternal belum sesuai. Kontrak kembali ke awal (Revisi Internal) dan harus lewat Review Internal → Review Eksternal → Review Final lagi."
+                    ? "Versi yang disetujui pihak eksternal belum sesuai. Kontrak kembali ke awal (Revisi Internal) dan harus lewat Review Internal → Review Pihak Kedua → Review Final lagi."
                     : "Kontrak kembali ke pembuat (Revisi Internal). Begitu diajukan ulang, status otomatis kembali ke Review Internal."}
                 </p>
                 <div className="rounded-xl border border-slate-800 bg-slate-950 p-3 space-y-1.5 max-h-56 overflow-y-auto">
@@ -26424,7 +26646,7 @@ export default function App() {
             <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-start">
               <div>
                 <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
-                  <ExternalLink className="text-indigo-400 w-4 h-4" /> Bagikan Link Review Eksternal
+                  <ExternalLink className="text-indigo-400 w-4 h-4" /> Bagikan Link Review Pihak Kedua
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   {shareLinkModal.kind === "contract" ? "Pihak kedua tanpa akun bisa melihat & mengomentari, atau menyetujui." : "Peninjau eksternal dokumen DCS bisa melihat & mengomentari sebelum approval."}
@@ -27714,10 +27936,10 @@ export default function App() {
             <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-start">
               <div>
                 <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
-                  <Upload className="text-emerald-400 w-4 h-4" /> Unggah Bukti TTD &amp; Aktifkan
+                  <Upload className="text-emerald-400 w-4 h-4" /> Unggah Bukti TTD Basah
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
-                  Status berpindah ke Aktif begitu berkas bukti tanda tangan terunggah dan tersimpan sebagai berkas utama kontrak ini.
+                  Status berpindah ke <b>Arsip</b> begitu berkas bukti tanda tangan terunggah dan tersimpan sebagai berkas utama kontrak ini. Setelah itu umumkan rilis internal (Distribusi/Implementasi); kontrak Aktif setelah semua penerima membuka notifikasinya.
                 </p>
               </div>
               <button onClick={() => setActivateModalContractId(null)} className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer">✕</button>
@@ -27731,13 +27953,13 @@ export default function App() {
                   onChange={(e) => setActivateModalContractId(e.target.value)}
                   className="w-full px-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
                 >
-                  <option value="" disabled>-- Pilih kontrak yang sudah FullyApproved --</option>
+                  <option value="" disabled>-- Pilih kontrak di tahap Proses TTD --</option>
                   {eligibleContracts.map((c) => (
                     <option key={c.id} value={c.id}>{c.contractNumber} — {c.title}</option>
                   ))}
                 </select>
                 {eligibleContracts.length === 0 && (
-                  <p className="text-[11px] text-amber-400">Belum ada kontrak berstatus FullyApproved yang siap diaktifkan.</p>
+                  <p className="text-[11px] text-amber-400">Belum ada kontrak di tahap Proses TTD / Dokumen Kembali.</p>
                 )}
               </div>
 
@@ -27785,7 +28007,7 @@ export default function App() {
                 className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition shadow-lg flex items-center gap-1.5 cursor-pointer"
               >
                 {isActivateSubmitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
-                Unggah &amp; Aktifkan
+                Unggah &amp; Arsipkan
               </button>
             </div>
           </div>
@@ -27857,7 +28079,7 @@ export default function App() {
           : isInternalApprovalStage(selectedContract.status)
             ? "Dokumen sedang direview & terkunci. Usulan diterapkan saat tahap revisi: approver klik \"Minta Revisi\", lalu pembuat dokumen menerima/menolak usulan ini."
             : selectedContract.status === "ReviewEksternal"
-              ? "Dokumen sedang di Review Eksternal & terkunci. Klik \"Ada Revisi Eksternal\" (atau tunggu pihak eksternal mengajukan revisi) supaya usulan bisa diterapkan."
+              ? "Dokumen sedang di Review Pihak Kedua & terkunci. Klik \"Ada Revisi Eksternal\" (atau tunggu pihak eksternal mengajukan revisi) supaya usulan bisa diterapkan."
               : "Usulan hanya bisa diterapkan saat kontrak berstatus Draft / Revisi.";
         const docMarkupItems: MarkupItem[] = visible
           .filter((c) => c.docAnchor && c.anchor)
@@ -28067,12 +28289,12 @@ export default function App() {
                 const canShareExt = selectedContract.status === "ApprovedInternal" || selectedContract.status === "ReviewEksternal";
                 return (
                   <button
-                    onClick={canShareExt ? handleShareExternalReview : () => showToast("Link review eksternal baru bisa dibagikan setelah dokumen disetujui internal.", "info")}
+                    onClick={canShareExt ? handleShareExternalReview : () => showToast("Link review pihak kedua baru bisa dibagikan setelah dokumen disetujui internal.", "info")}
                     title={canShareExt
-                      ? (selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Eksternal: buat & salin link untuk PIHAK KEDUA (tanpa akun)." : "Salin link review eksternal yang sedang berjalan.")
-                      : "Tersedia setelah dokumen disetujui internal (Draft → Review Internal → Acc Internal → Review Eksternal)."}
+                      ? (selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Pihak Kedua: buat & salin link untuk PIHAK KEDUA (tanpa akun)." : "Salin link review pihak kedua yang sedang berjalan.")
+                      : "Tersedia setelah dokumen disetujui internal (Draft → Review Internal → Acc Internal → Review Pihak Kedua)."}
                     className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border whitespace-nowrap ${canShareExt ? "bg-violet-600/20 text-violet-600 border-violet-500/30 hover:bg-violet-600/30 cursor-pointer" : "bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed"}`}
-                  >🔗 {selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Eksternal" : "Link Review Eksternal"}</button>
+                  >🔗 {selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Pihak Kedua" : "Link Review Pihak Kedua"}</button>
                 );
               })()}
               {selectedContract.externalReviewToken && selectedContract.externalReviewLocked && !selectedContract.externalRoundCount && (
@@ -28263,7 +28485,7 @@ export default function App() {
                   onClick={handleShareExternalReview}
                   title="Buat & salin link review untuk PIHAK KEDUA (tanpa akun). Mereka bisa melihat klausul, menyorot & mengomentari, atau klik Setuju/OK."
                   className="text-[10px] font-semibold px-2 py-1 rounded-lg bg-violet-600/20 text-violet-300 border border-violet-500/30 hover:bg-violet-600/30 cursor-pointer whitespace-nowrap"
-                >🔗 Link Review Eksternal</button>
+                >🔗 Link Review Pihak Kedua</button>
                 )}
                 <button onClick={() => setShowCommentPanel(false)} className="text-slate-400 hover:text-slate-100 cursor-pointer font-bold">✕</button>
               </div>

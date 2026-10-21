@@ -2,6 +2,7 @@ import { loadDB, saveDB } from "./db.js";
 import { logger } from "./logger.js";
 import { sendPushToTenant } from "./push.js";
 import type { Contract } from "./src/types";
+import { isInForce, jobStage } from "./src/workflow";
 
 // Proactive expiry reminders — runs on a timer instead of only computing
 // "days remaining" client-side when someone happens to open the dashboard.
@@ -27,7 +28,9 @@ function getDaysRemaining(endDate: string): number {
 // keputusan lanjutannya (renew/Archived/Terminated) ada di tangan manusia
 // lewat dashboard, bukan notifikasi berulang.
 function isActive(contract: Contract): boolean {
-  return contract.status === "Aktif";
+  // Sejak alur Okt 2026 masa berlaku dipantau mulai "Arsip" (TTD basah
+  // diunggah) — Arsip, Distribusi/Implementasi, dan Aktif (lihat src/workflow.ts).
+  return isInForce(contract.status);
 }
 
 /**
@@ -190,6 +193,47 @@ export function nextObligationDate(dueDate: string, recurrence: string): string 
   return `${tahunBaru}-${String(bulanBaru + 1).padStart(2, "0")}-${String(tanggalBaru).padStart(2, "0")}`;
 }
 
+/**
+ * Pengingat DEADLINE Pekerjaan Legal: pekerjaan yang masih berjalan (belum
+ * Aktif, bukan Ditolak/status akhir) dengan deadline ≤ 3 hari lagi atau sudah
+ * lewat diingatkan sekali per hari ke Legal/Admin + peminta (divisi). Dedup
+ * memakai penanda tanggal pada pekerjaan, pola yang sama dgn reminder lain.
+ */
+export function checkLegalJobDeadlines(db: any, today: string): number {
+  let count = 0;
+  const contracts = new Map((db.contracts as Contract[]).map((c) => [c.id, c]));
+  for (const job of (db.legalJobs || []) as any[]) {
+    if (!job.deadline || job.lastDeadlineNoticeDate === today) continue;
+    const stage = jobStage(job, job.linkedContractId ? contracts.get(job.linkedContractId) : null);
+    if (["Aktif", "Ditolak", "TidakAktif", "Archived", "Terminated"].includes(stage)) continue;
+    const days = getDaysRemaining(job.deadline);
+    if (days > 3) continue;
+    const targets = new Set<string>(
+      ((db.users || []) as any[])
+        .filter((u) => u.tenantId === job.tenantId && u.active && (u.role === "legal" || u.role === "admin"))
+        .map((u) => u.id),
+    );
+    if (job.requesterId) targets.add(job.requesterId);
+    if (targets.size === 0) continue;
+    const when = days < 0 ? `sudah lewat ${Math.abs(days)} hari` : days === 0 ? "hari ini" : `${days} hari lagi`;
+    db.notifications.unshift({
+      id: "not-deadline-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+      tenantId: job.tenantId,
+      title: days < 0 ? "Deadline Pekerjaan Legal Terlewat" : "Deadline Pekerjaan Legal",
+      message: `"${job.title}" (${job.partnerName}) — deadline ${when}.`,
+      type: days < 0 ? "danger" : days <= 1 ? "warning" : "info",
+      createdAt: new Date().toISOString(),
+      read: false,
+      targetUserIds: Array.from(targets),
+      // Klik → langsung ke detail pekerjaan (bukan ke kontrak).
+      legalJobId: job.id,
+    });
+    job.lastDeadlineNoticeDate = today;
+    count++;
+  }
+  return count;
+}
+
 export async function runReminderCheck() {
   const db = loadDB();
   const today = new Date().toISOString().split("T")[0];
@@ -210,7 +254,7 @@ export async function runReminderCheck() {
     // (itu selalu keputusan manusia eksplisit lewat PUT), murni penanda
     // "sudah kedaluwarsa, butuh tindak lanjut". Draft/OnReview/FullyApproved
     // tidak pernah "expired" begini karena belum pernah benar-benar berjalan.
-    if (overdue && contract.status === "Aktif") {
+    if (overdue && isInForce(contract.status)) {
       contract.status = "TidakAktif";
       contract.updatedAt = new Date().toISOString();
     }
@@ -243,9 +287,10 @@ export async function runReminderCheck() {
   const slaCount = checkApprovalSla(db, today);
   const payCount = checkPaymentDue(db, today);
   const oblCount = checkObligationDue(db, today);
-  if (sentCount > 0 || slaCount > 0 || payCount > 0 || oblCount > 0) {
+  const jobDeadlineCount = checkLegalJobDeadlines(db, today);
+  if (sentCount > 0 || slaCount > 0 || payCount > 0 || oblCount > 0 || jobDeadlineCount > 0) {
     saveDB(db);
-    logger.info({ sentCount, slaCount, payCount, oblCount }, "Sent proactive expiry / approval-SLA / payment-due / obligation-due notification(s)");
+    logger.info({ sentCount, slaCount, payCount, oblCount, jobDeadlineCount }, "Sent proactive expiry / approval-SLA / payment-due / obligation-due / legal-job-deadline notification(s)");
 
     for (const job of pushJobs) {
       try {

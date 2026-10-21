@@ -196,7 +196,13 @@ export interface ContractTemplateSnapshot {
 // tim internal meninjau sekali lagi (approver yang sama dengan ronde acc
 // internal terakhir) sebelum Proses TTD — supaya benar-benar disetujui DUA
 // pihak. Minta revisi di tahap ini = kembali ke awal (Revisi Internal).
-export type ContractStatus = "Draft" | "OnReview" | "ApprovedInternal" | "ReviewEksternal" | "FinalReview" | "FullyApproved" | "Aktif" | "TidakAktif" | "Archived" | "Terminated";
+// Alur Okt 2026 (lihat src/workflow.ts): setelah scan TTD basah diunggah
+// kontrak menjadi "Arsip" (bukan langsung Aktif) → setelah Legal mengumumkan
+// rilis internal: "Distribusi" (Distribusi/Implementasi) → setelah SEMUA
+// penerima membuka notifikasinya: "Aktif". Arsip/Distribusi/Aktif sama-sama
+// "sudah berlaku" (isInForce) untuk monitoring & pengingat masa berlaku.
+// "Archived" = ditutup manual, kini berlabel "Tidak Berlaku" (bukan "Arsip").
+export type ContractStatus = "Draft" | "OnReview" | "ApprovedInternal" | "ReviewEksternal" | "FinalReview" | "FullyApproved" | "Arsip" | "Distribusi" | "Aktif" | "TidakAktif" | "Archived" | "Terminated";
 
 export type ContractRevisionStage = "internal" | "eksternal";
 
@@ -307,6 +313,12 @@ export interface ReleaseAnnouncement {
   userIds: string[];
   names: string[];
   note?: string;
+  // Pengumuman INTERNAL: kapan tiap penerima membuka notifikasi pengumuman
+  // ini (userId → ISO). Bila semua penerima semua pengumuman internal sudah
+  // membuka, kontrak naik dari Distribusi/Implementasi ke Aktif.
+  openedBy?: Record<string, string>;
+  // id notifikasi yang dikirim untuk pengumuman ini (penanda klik).
+  notificationId?: string;
 }
 
 export interface Contract {
@@ -702,6 +714,14 @@ export interface SystemNotification {
   // seluruh tenant (perilaku lama, tidak berubah). Dipakai eskalasi SLA supaya
   // teguran keterlambatan tidak disiarkan ke seisi perusahaan.
   targetUserIds?: string[];
+  // Status baca PER ORANG (userId → ISO). `read` lama berlaku untuk semua
+  // orang sekaligus — tidak bisa menjawab "siapa yang sudah membuka".
+  readBy?: Record<string, string>;
+  // Tujuan klik di dalam aplikasi (selain contractId/dcsDocumentId di atas).
+  legalJobId?: string;
+  // Notifikasi pengumuman rilis internal — klik = penerima "sudah membuka"
+  // (lihat ReleaseAnnouncement.openedBy).
+  releaseAnnouncementId?: string;
 }
 
 // Simulasi Modul Integrasi
@@ -998,6 +1018,9 @@ export interface LegalJobDocument {
   size?: number;
   uploadedAt: string;
   uploadedBy: string; // nama staff, atau "Eksternal (form)" utk lampiran submission
+  // Diisi bila "dokumen" ini berupa LINK (mis. Google Drive / Canva), bukan
+  // berkas yang diunggah — dibuka langsung di tab baru, tidak lewat server.
+  linkUrl?: string;
 }
 
 export interface LegalJobNote {
@@ -1021,6 +1044,12 @@ export interface LegalJob {
   title: string;             // Judul Pekerjaan
   partnerName: string;       // Partner / Pihak
   docType: string;           // Jenis Dokumen
+  // Badan hukum / entitas perusahaan yang memproses dokumen (PT pemilik
+  // dokumen) — wajib di form Input Pekerjaan oleh Staff Legal. companyId =
+  // id perusahaan (sama dgn dropdown PT di form kontrak).
+  companyId?: string;
+  companyName?: string;
+  companyCode?: string;
   picName: string;           // PIC Pemberi Pekerjaan
   deadline: string;           // YYYY-MM-DD
   description?: string;       // Keterangan

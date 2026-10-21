@@ -1,5 +1,55 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #24] — Badan Hukum di formulir publik & tabel, label tombol "Dokumen"
+
+### Ringkasan
+- **Formulir publik** (link pemberi pekerjaan): kolom wajib **Badan Hukum / Entitas Perusahaan** di paling atas, pilihan sama dengan form Staff Legal (perusahaan aktif di Kelola Perusahaan).
+- **Pekerjaan Legal**: kolom **Badan Hukum** di tabel Pekerjaan Masuk & Daftar Pekerjaan Legal (kode singkat "PT TBK", nama lengkap di tooltip; pekerjaan lama tanpa badan hukum tampil "—"). Pencarian juga mencakup badan hukum.
+- Tombol **"Request kontrak baru"** (Dashboard) → **"Request dokumen baru"**; tombol **"Buka Kontrak"** (Detail Pekerjaan Legal) → **"Buka Dokumen"**. Fungsinya tidak berubah.
+
+### Endpoint
+- `GET /api/legal-form/:token` menyertakan `companies` (id, nama, kode). `POST /api/legal-form/:token/submit` mewajibkan `companyId` perusahaan aktif → 400 bila kosong.
+
+## [Unreleased #23] — Metode pembuatan dokumen & Badan Hukum di Input Pekerjaan
+
+### Ringkasan
+- Wizard Buat Kontrak › Metode Pembuatan: **"Buat Dokumen di Sistem"** (dulu "Buat dari Template (Pasal Otomatis)") — drafting langsung di sistem memakai template atau menyusun sendiri; **"Upload Dokumen yang Sudah Ada"** (dulu "Upload Dokumen (Hardcopy / Softcopy)") — dokumen yang sudah dibuat/di-drafting sendiri (mis. di Microsoft Word) lalu diunggah untuk melanjutkan proses Legal. Keterangan di bawahnya disesuaikan. Fungsinya tidak berubah.
+- Form **Input Pekerjaan oleh Staff Legal**: kolom wajib baru **Badan Hukum / Entitas Perusahaan** di paling atas ("Pilih badan hukum..."), pilihan diambil dari daftar perusahaan (Kelola Perusahaan) — sama dengan dropdown Perusahaan (PT) di form kontrak, ditampilkan "Nama PT (PT KODE)". Badan hukum tampil di Detail Pekerjaan & timeline, dan otomatis terisi sebagai Perusahaan (PT) saat klik **Mulai Kerjakan**. Form Permintaan Kontrak divisi & formulir publik tidak berubah.
+
+### Data / Endpoint
+- `LegalJob.companyId`, `.companyName`, `.companyCode` (opsional; pekerjaan lama tidak terpengaruh). `POST /api/legal-jobs` (input Staff Legal) mewajibkan `companyId` perusahaan aktif → 400 bila kosong.
+
+## [Unreleased #22] — Link Dokumen di Pekerjaan Legal & tombol "Mulai Kerjakan"
+
+### Ringkasan
+- Kolom **Link Dokumen** (opsional) di bawah Upload Dokumen pada: formulir publik untuk PIC, form Input Staff Legal, dan form Permintaan Kontrak divisi. Bisa diisi bersama atau tanpa unggah berkas (mis. link Google Drive / Canva). Di Detail Pekerjaan › Dokumen ada kolom "Tambah Link". Link tampil dengan ikon tautan dan dibuka langsung di tab baru.
+- Tombol **"Buat Kontrak Eksternal"** di Detail Pekerjaan Legal diganti menjadi **"Mulai Kerjakan"** (pekerjaan Legal tidak hanya kontrak, juga surat konfirmasi & dokumen lain). Fungsinya tetap sama.
+
+### Data / Endpoint
+- `LegalJobDocument.linkUrl` (opsional). `POST /api/legal-jobs`, `POST /api/legal-form/:token/submit`, dan `POST /api/legal-jobs/:id/documents` menerima `documentLink` (hanya http/https). Tidak perlu migrasi.
+
+## [Unreleased #21] — Alur 12 status pekerjaan legal, Arsip → Distribusi → Aktif, pencarian & notifikasi
+
+### Ringkasan
+- **Satu alur status di seluruh sistem** (`src/workflow.ts`, dipakai server & frontend): Pekerjaan Masuk → Belum Diproses → Draft → Review Internal → **Review Pihak Kedua** (dulu "Review Eksternal") → Revisi/Negosiasi → Finalisasi → Proses TTD → Dokumen Kembali → **Arsip** → **Distribusi/Implementasi** → **Aktif**. Label, urutan, badge, filter, dan grafik sama di Dashboard Legal, Pekerjaan Legal, Kontrak Eksternal, detail kontrak, dan pencarian. Status antara dipetakan: Disetujui Internal → Review Pihak Kedua; Revisi Internal/Eksternal → Revisi/Negosiasi; Review Final Internal → Finalisasi; Disetujui Penuh → Proses TTD.
+- **Unggah TTD basah tidak lagi langsung Aktif** → status **Arsip**. "Umumkan Rilis untuk Internal" → **Distribusi/Implementasi**. Kontrak otomatis **Aktif** begitu SEMUA penerima pengumuman membuka (mengklik) notifikasinya; pengumum mendapat notifikasi "Kontrak Aktif". Kartu Pengumuman Rilis menampilkan siapa yang sudah/belum membuka.
+- **Masa berlaku dipantau sejak Arsip**: pengingat "akan berakhir", kedaluwarsa otomatis → Tidak Aktif, monitoring Dashboard Legal, watermark CONTROLLED, perpanjangan & addendum berlaku untuk Arsip, Distribusi/Implementasi, dan Aktif (`isInForce`).
+- Status lama **"Diarsipkan" (Archived) kini berlabel "Tidak Berlaku"** (tombol "Arsipkan" → "Tidak Berlaku") supaya tidak tertukar dengan Arsip yang baru.
+- **Dashboard Legal**: 12 kartu status sesuai alur; angkanya dihitung dari status asli (pekerjaan yang sudah punya kontrak mengikuti status kontraknya — sebelumnya memakai status pekerjaan yang berhenti di "draft"). Grafik 12 batang; kotak "Aktif" di panel masa berlaku menjadi "Berlaku".
+- **Pencarian**: kotak cari atas kini juga menampilkan Pekerjaan Legal (judul, mitra, jenis, nomor kontrak, status) dan kontrak bisa dicari lewat nama mitra, jenis, nomor, status/tahap (mis. "arsip", "review pihak kedua"); halaman Pekerjaan Legal punya kotak cari sendiri. Beberapa kata dicocokkan sekaligus.
+- **Notifikasi**: status baca kini per orang; klik notifikasi membuka pekerjaan atau kontrak terkait di aplikasi. Baru: pengingat **deadline** Pekerjaan Legal (≤ 3 hari / terlewat, sekali sehari ke Legal/Admin + peminta), "Dokumen Kembali", "Kontrak Masuk Arsip", "Kontrak Aktif"; "Kontrak Disetujui Penuh" menjadi "Proses TTD: Kontrak Siap Ditandatangani".
+
+### Endpoint baru / berubah
+- `POST /api/notifications/:id/open` — tandai dibuka oleh user ini; untuk pengumuman rilis internal mencatat `openedBy` dan menaikkan kontrak Distribusi → Aktif bila semua penerima sudah membuka.
+- `GET /api/notifications` mengembalikan `read` per user; `POST /api/notifications/read-all` menandai terbaca hanya untuk user tsb (tidak dihitung "membuka" pengumuman rilis).
+- `POST /api/contracts/:id/activate` → status `Arsip`. `POST /api/contracts/:id/announce-release` → status `Distribusi` (boleh sejak Arsip).
+- `GET /api/legal-jobs` & detail menyertakan `stage`; `GET /api/legal-dashboard` menghitung per tahap.
+
+### Data / Migrasi
+- `ContractStatus` baru: `Arsip`, `Distribusi`. `ReleaseAnnouncement.openedBy`, `.notificationId`; `SystemNotification.readBy`, `.legalJobId`, `.releaseAnnouncementId` — semuanya opsional.
+- Tidak perlu migrasi. Kontrak yang sudah Aktif tetap Aktif. Pengumuman lama (tanpa `openedBy`) dianggap sudah dibuka. Notifikasi lama memakai status `read` lama sampai dibuka lagi.
+
+
 ## [Unreleased #20] — Preview dokumen template bergaya Word (per halaman A4)
 
 ### Ringkasan

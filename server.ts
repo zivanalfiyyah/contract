@@ -13,6 +13,7 @@ import {
   SignatureFormat, SIGNATURE_FORMATS,
 } from "./src/types";
 import { R, canViewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
+import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
 import { startBackupScheduler, runBackup, listBackups } from "./backup.js";
@@ -240,46 +241,13 @@ function parseSignatureFormat(v: unknown): SignatureFormat | undefined {
   return typeof v === "string" && (SIGNATURE_FORMATS as string[]).includes(v) ? (v as SignatureFormat) : undefined;
 }
 // ----- Alur status gabungan Pekerjaan Legal <-> Monitoring Kontrak -----
-// Satu fungsi murni, dipakai server-side untuk KEDUANYA (linkedContract di
-// legal-jobs API, dan unifiedStatus di /api/contracts), supaya nilainya
-// dijamin identik di kedua tabel — bukan dihitung ulang terpisah di dua
-// tempat yang bisa diam-diam melenceng.
-// Pemicu tiap tahap (lihat Revisi-Alur-Status-Pekerjaan-Legal-Monitoring-Kontrak.docx):
-//   Draft                     -> Contract.status === "Draft", belum generate link review
-//   ReviewInternalEksternal   -> externalReviewToken sudah dibuat, belum ada respons eksternal
-//   RevisiNegosiasi           -> pihak eksternal sudah isi nama+komentar+Setuju/OK (externalApprovals)
-//   Finalisasi                -> Contract.status === "OnReview" (diajukan, approval matrix berjalan)
-//   ProsesTTD                 -> Contract.status === "FullyApproved" (disetujui penuh, TTD blm diunggah)
-//   Aktif / TidakAktif / Archived / Terminated -> tetap sama seperti Contract.status (tidak diubah)
-//   DokumenKembali            -> FullyApproved + dokumen fisik sudah diterima kembali (signingReceipt terisi), belum diaktifkan
-//
-// Alur baru (Okt 2026) — revisi internal/eksternal:
-//   Draft             -> status Draft, tidak sedang revisi
-//   RevisiInternal    -> status Draft + revisionStage "internal" (ditolak approver)
-//   RevisiEksternal   -> status Draft + revisionStage "eksternal" (pihak eksternal minta revisi)
-//   ReviewInternal    -> status OnReview (matriks approval internal berjalan)
-//   ApprovedInternal  -> status ApprovedInternal (acc internal, belum dibuka ke eksternal)
-//   ReviewEksternal   -> status ReviewEksternal (link review eksternal aktif)
-//   ProsesTTD / DokumenKembali -> FullyApproved (sama seperti sebelumnya)
-// Status lama "ReviewInternalEksternal"/"RevisiNegosiasi" tetap dihasilkan
-// untuk kontrak LAMA (review eksternal dibuka saat Draft, sebelum alur baru).
-type UnifiedLegalStatus = "Draft" | "RevisiInternal" | "RevisiEksternal" | "ReviewInternal" | "ReviewFinalInternal" | "ReviewInternalEksternal" | "RevisiNegosiasi" | "Finalisasi" | "ProsesTTD" | "DokumenKembali" | ContractStatus;
+// Satu fungsi murni (src/workflow.ts → contractStage), dipakai server-side
+// untuk linkedContract di legal-jobs API, unifiedStatus di /api/contracts,
+// hitungan Dashboard Legal, dan pencarian — supaya nilainya identik di semua
+// tabel. Alur 12 tahap & pemetaannya dijelaskan di src/workflow.ts.
+type UnifiedLegalStatus = UnifiedStatus;
 function computeUnifiedLegalStatus(c: Contract): UnifiedLegalStatus {
-  if (c.status === "Draft") {
-    if (c.revisionStage === "internal") return "RevisiInternal";
-    if (c.revisionStage === "eksternal") return "RevisiEksternal";
-    if (!c.externalRoundCount) {
-      if ((c.externalApprovals?.length || 0) > 0) return "RevisiNegosiasi";
-      if (c.externalReviewToken) return "ReviewInternalEksternal";
-    }
-    return "Draft";
-  }
-  if (c.status === "OnReview") return "ReviewInternal";
-  if (c.status === "ApprovedInternal") return "ApprovedInternal";
-  if (c.status === "ReviewEksternal") return "ReviewEksternal";
-  if (c.status === "FinalReview") return "ReviewFinalInternal";
-  if (c.status === "FullyApproved") return c.signingReceipt ? "DokumenKembali" : "ProsesTTD";
-  return c.status; // Aktif, TidakAktif, Archived, Terminated — lolos apa adanya
+  return contractStage(c);
 }
 // dibaca (bukan disalin sekali ke LegalJob) — satu-satunya sumber kebenaran
 // status untuk pekerjaan yang sudah bertaut adalah Contract.status itu sendiri.
@@ -349,8 +317,34 @@ function legalJobLinkedContractInfo(db: any, job: LegalJob): { id: string; title
   if (!c) return null;
   return { id: c.id, title: c.title, contractNumber: c.contractNumber, status: computeUnifiedLegalStatus(c), rawStatus: c.status, signingDispatch: c.signingDispatch, signingReceipt: c.signingReceipt };
 }
+// Link Dokumen (mis. Google Drive) di formulir Pekerjaan Legal — opsional,
+// boleh bersama/tanpa unggah berkas. Hanya http(s); nilai lain = error.
+function parseLegalDocLink(raw: unknown): { link?: string; error?: string } {
+  const v = String(raw || "").trim();
+  if (!v) return {};
+  if (v.length > 2000) return { error: "Link dokumen terlalu panjang." };
+  try {
+    const u = new URL(v);
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error("bad");
+    return { link: u.toString() };
+  } catch {
+    return { error: "Link dokumen tidak valid — gunakan alamat lengkap yang diawali https://" };
+  }
+}
+function legalDocFromLink(link: string, uploadedBy: string, at: string): LegalJobDocument {
+  let host = "";
+  try { host = new URL(link).hostname.replace(/^www\./, ""); } catch { /* sudah divalidasi */ }
+  return {
+    id: "ljd-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    name: `Link dokumen${host ? ` (${host})` : ""}`, url: link, linkUrl: link,
+    uploadedAt: at, uploadedBy,
+  };
+}
 function withLinkedContract(db: any, job: LegalJob) {
-  return { ...job, linkedContract: legalJobLinkedContractInfo(db, job) };
+  const linked = job.linkedContractId ? (db.contracts as Contract[]).find((x) => x.id === job.linkedContractId) : null;
+  // `stage` = tahap alur 12 langkah (src/workflow.ts) — satu nilai yang sama
+  // dipakai Dashboard Legal, tabel Pekerjaan Legal, dan pencarian.
+  return { ...job, linkedContract: legalJobLinkedContractInfo(db, job), stage: jobStage(job, linked) };
 }
 // Filter koleksi ke tenant tertentu.
 function scoped<T extends { tenantId?: string }>(arr: T[], tid: string): T[] {
@@ -3377,6 +3371,11 @@ const CONTRACT_PUT_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   ReviewEksternal: [],
   FinalReview: [],
   FullyApproved: [],
+  // Arsip→Distribusi→Aktif hanya lewat pengumuman rilis & pembukaan notifikasi
+  // (POST /:id/announce-release, POST /api/notifications/:id/open) — tidak
+  // lewat PUT. Penutupan manual tetap boleh dari tahap mana pun yang berlaku.
+  Arsip: ["TidakAktif", "Archived", "Terminated"],
+  Distribusi: ["TidakAktif", "Archived", "Terminated"],
   Aktif: ["TidakAktif", "Archived", "Terminated"],
   TidakAktif: ["Archived", "Terminated"],
   Archived: [],
@@ -3836,7 +3835,7 @@ app.post("/api/contracts/:id/mark-destroyed", requireAuth, requireRole(...R.lega
   if (c.destroyedAt) return res.status(400).json({ error: "Dokumen ini sudah tercatat dimusnahkan sebelumnya." });
   if (c.legalHold) return res.status(400).json({ error: "Tidak bisa dimusnahkan — sedang dalam legal hold. Lepas legal hold-nya dulu." });
   if (c.status !== "Archived" && c.status !== "Terminated" && c.status !== "TidakAktif") {
-    return res.status(400).json({ error: "Hanya dokumen yang sudah tidak aktif (Archived/Terminated/TidakAktif) yang bisa ditandai dimusnahkan." });
+    return res.status(400).json({ error: "Hanya dokumen yang sudah tidak aktif (Tidak Berlaku/Diakhiri/Tidak Aktif) yang bisa ditandai dimusnahkan." });
   }
   const batas = retentionEligibleDate(db, tid, c);
   const hariIni = new Date().toISOString().slice(0, 10);
@@ -3866,7 +3865,7 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requireRole(...R.contractE
     // Dokumen yang sudah selesai jalannya tidak punya tindakan tersisa —
     // mengingatkannya cuma jadi gangguan.
     if (c.status === "Archived" || c.status === "Terminated") {
-      dilewati.push({ contractNumber: c.contractNumber, alasan: `berstatus ${c.status}` });
+      dilewati.push({ contractNumber: c.contractNumber, alasan: `berstatus ${unifiedStatusLabel(c.status)}` });
       continue;
     }
     const penerima = new Set<string>();
@@ -4146,8 +4145,8 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
       details: `${req.user!.name} mengonfirmasi versi yang disetujui pihak eksternal — kontrak "${contract.title}" masuk Proses TTD`,
     });
     pushNotif(db, tid, {
-      title: "Kontrak Disetujui Penuh",
-      message: `Kontrak ${contract.contractNumber} disetujui internal & eksternal — siap diunduh untuk TTD basah.`,
+      title: "Proses TTD: Kontrak Siap Ditandatangani",
+      message: `Kontrak ${contract.contractNumber} disetujui internal & pihak kedua — masuk tahap Proses TTD, siap diunduh untuk TTD basah.`,
       type: "success", contractId: contract.id,
     });
     saveDB(db);
@@ -4469,6 +4468,12 @@ app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole(...R.con
     details: `${copies} rangkap diterima kembali pada ${receivedDate}`,
   });
   pushLinkedJobTimeline(db, contract, req, "Dokumen kembali", `${copies} rangkap diterima · ${receivedDate}`);
+  pushNotif(db, tenantOf(req), {
+    title: "Dokumen Kembali",
+    message: `Dokumen TTD kontrak ${contract.contractNumber} (${contract.title}) sudah diterima kembali (${copies} rangkap). Langkah berikutnya: unggah scan TTD basah → Arsip.`,
+    type: "info", contractId: contract.id,
+    legalJobId: ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === contract.id && j.tenantId === contract.tenantId)?.id,
+  });
   saveDB(db);
   res.json({ success: true, contract });
 });
@@ -4499,19 +4504,22 @@ app.post("/api/contracts/:id/activate", requireAuth, requireRole(...R.contractEd
   contract.masterPdfUrl = stored.url;
   contract.activationProofHash = proofHash;
   contract.activationProofKey = stored.key;
-  contract.status = "Aktif";
+  // Alur Okt 2026: unggah TTD basah → "Arsip" (BUKAN langsung Aktif). Kontrak
+  // sudah mengikat & masuk monitoring masa berlaku sejak sini (isInForce);
+  // Aktif baru setelah rilis diumumkan & semua penerima membuka notifikasinya.
+  contract.status = "Arsip";
   contract.updatedAt = new Date().toISOString();
 
   pushAudit(db, req, {
     contractId: contract.id, contractNumber: contract.contractNumber,
     action: "Activate Contract",
-    details: `Mengaktifkan kontrak "${contract.title}" dengan bukti TTD "${req.file.originalname}" (SHA-256: ${proofHash.slice(0, 16)}…) — terkunci dari editing & masuk monitoring`,
+    details: `Mengunggah bukti TTD basah kontrak "${contract.title}" ("${req.file.originalname}", SHA-256: ${proofHash.slice(0, 16)}…) — status Arsip, terkunci dari editing & masuk monitoring masa berlaku`,
   });
-  pushLinkedJobTimeline(db, contract, req, "Kontrak diaktifkan", `Bukti TTD: ${req.file.originalname}`);
+  pushLinkedJobTimeline(db, contract, req, "Status → Arsip (TTD basah diunggah)", `Bukti TTD: ${req.file.originalname}`);
   pushNotif(db, tenantOf(req), {
-    title: "Kontrak Diaktifkan",
-    message: `Kontrak ${contract.contractNumber} kini berstatus Aktif dan masuk monitoring & reminder.`,
-    type: "success", contractId: contract.id,
+    title: "Kontrak Masuk Arsip",
+    message: `Bukti TTD basah kontrak ${contract.contractNumber} sudah diunggah — status Arsip. Langkah berikutnya: umumkan rilis ke tim internal (Distribusi/Implementasi).`,
+    type: "success", contractId: contract.id, legalJobId: linkedJobForActivation?.id,
   });
 
   // Addendum: kalau mengamandemen kontrak induk & jangka waktu/nilainya
@@ -4522,7 +4530,7 @@ app.post("/api/contracts/:id/activate", requireAuth, requireRole(...R.contractEd
   if (contract.amendsContractId) {
     try {
       const parent = (db.contracts as Contract[]).find((c) => c.id === contract.amendsContractId && c.tenantId === contract.tenantId);
-      if (parent && parent.status === "Aktif") {
+      if (parent && isInForce(parent.status)) {
         const changedFields: string[] = [];
         if (contract.endDate && contract.endDate !== parent.endDate) {
           changedFields.push(`Tanggal Berakhir: ${parent.endDate} → ${contract.endDate}`);
@@ -4559,38 +4567,61 @@ app.post("/api/contracts/:id/announce-release", requireAuth, requireRole(...R.le
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
-  if (contract.status !== "Aktif") {
-    return res.status(400).json({ error: "Pengumuman rilis hanya bisa dikirim setelah kontrak berstatus Aktif." });
+  if (!isInForce(contract.status)) {
+    return res.status(400).json({ error: "Pengumuman rilis hanya bisa dikirim setelah bukti TTD basah diunggah (status Arsip)." });
   }
   const ids = sanitizeReleaseRecipients(db, tid, req.body.userIds);
   if (ids.length === 0) return res.status(400).json({ error: "Pilih minimal satu penerima." });
   const note = String(req.body.note || "").trim().slice(0, 1000);
   const names = (db.users as User[]).filter((u) => ids.includes(u.id)).map((u) => u.name);
+  const entryId = "rel-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+  const job = ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === contract.id && j.tenantId === contract.tenantId);
   pushNotif(db, tid, {
     title: "Kontrak Telah Rilis",
-    message: `Kontrak "${contract.title}" (${contract.contractNumber}) kini AKTIF dan resmi berlaku. Diumumkan oleh ${req.user!.name}.${note ? ` Keterangan: ${note}` : ""}`,
+    message: `Kontrak "${contract.title}" (${contract.contractNumber}) sudah ditandatangani dan resmi berlaku. Diumumkan oleh ${req.user!.name}.${note ? ` Keterangan: ${note}` : ""}`,
     type: "success", contractId: contract.id, targetUserIds: ids,
-    // Klik notifikasi → langsung buka PDF resmi kontrak (tab baru), sama
-    // seperti yang dilihat pihak eksternal lewat link rilis publik.
+    // Klik notifikasi → tercatat "sudah dibuka" oleh penerima tsb (POST
+    // /api/notifications/:id/open), lalu PDF resmi kontrak terbuka di tab baru.
     linkUrl: `/api/contracts/${contract.id}/view-pdf`,
+    releaseAnnouncementId: entryId,
+    legalJobId: job?.id,
   });
+  const notificationId = (db.notifications as SystemNotification[])[0]?.id;
   const entry = {
-    id: "rel-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
+    id: entryId,
     createdAt: new Date().toISOString(),
     byId: req.user!.id, byName: req.user!.name,
     audience: "internal" as const,
     userIds: ids, names, note: note || undefined,
+    openedBy: {} as Record<string, string>,
+    notificationId,
   };
   contract.releaseAnnouncements = [entry, ...(contract.releaseAnnouncements || [])];
+  // Arsip → Distribusi/Implementasi. Kontrak yang sudah Aktif lalu
+  // mengumumkan lagi ke penerima tambahan kembali ke Distribusi sampai
+  // penerima baru itu juga membuka notifikasinya.
+  const prevStatus = contract.status;
+  contract.status = "Distribusi";
   contract.updatedAt = new Date().toISOString();
   pushAudit(db, req, {
     contractId: contract.id, contractNumber: contract.contractNumber,
     action: "Announce Release",
     details: `Mengumumkan rilis kontrak "${contract.title}" ke: ${names.join(", ")}${note ? ` — Keterangan: ${note}` : ""}`,
   });
+  if (prevStatus !== "Distribusi") {
+    pushLinkedJobTimeline(db, contract, req, "Status → Distribusi/Implementasi", `Rilis diumumkan ke ${names.length} orang: ${names.join(", ")}`);
+  }
   saveDB(db);
   res.json({ success: true, contract });
 });
+
+// Semua penerima SEMUA pengumuman rilis internal sudah membuka notifikasinya?
+function releaseAllOpened(contract: Contract): boolean {
+  const internal = (contract.releaseAnnouncements || []).filter((a) => (a.audience || "internal") === "internal");
+  if (internal.length === 0) return false;
+  // Pengumuman lama (sebelum fitur ini, tanpa openedBy) dianggap sudah dibuka.
+  return internal.every((a) => !a.openedBy || (a.userIds || []).every((uid) => !!a.openedBy?.[uid]));
+}
 
 // Pengumuman rilis EKSTERNAL: tidak ada penerima per nama — sistem membuat
 // LINK PUBLIK (tanpa login) ke PDF resmi kontrak, lalu Legal/Admin menyalin
@@ -4604,8 +4635,8 @@ app.post("/api/contracts/:id/announce-release-external", requireAuth, requireRol
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
-  if (contract.status !== "Aktif") {
-    return res.status(400).json({ error: "Pengumuman rilis hanya bisa dikirim setelah kontrak berstatus Aktif." });
+  if (!isInForce(contract.status)) {
+    return res.status(400).json({ error: "Pengumuman rilis hanya bisa dikirim setelah bukti TTD basah diunggah (status Arsip)." });
   }
   if (!contract.masterPdfUrl && !contract.exportedPdfUrl && !contract.currentDocument) {
     return res.status(409).json({ error: "Kontrak ini belum memiliki berkas PDF resmi untuk dibagikan." });
@@ -4681,8 +4712,8 @@ app.post("/api/contracts/:id/addendum", requireAuth, requireRole(...R.contractEd
   const tid = tenantOf(req);
   const parent = findOwnedContract(db, req, req.params.id);
   if (!parent) return res.status(404).json({ error: "Contract not found" });
-  if (parent.status !== "Aktif") {
-    return res.status(400).json({ error: "Addendum hanya bisa dibuat untuk kontrak berstatus Aktif." });
+  if (!isInForce(parent.status)) {
+    return res.status(400).json({ error: "Addendum hanya bisa dibuat untuk kontrak yang sudah berlaku (Arsip / Distribusi / Aktif)." });
   }
 
   // Pertahanan berlapis — validasi yang sama sudah ada di frontend
@@ -4797,7 +4828,8 @@ async function stampContractWatermark(cleanBuf: Buffer, contract: Contract, user
   const docRef = `${contract.contractNumber}`;
 
   let spec: WmSpec;
-  if (contract.status === "Aktif") {
+  // Arsip/Distribusi/Aktif = sudah ditandatangani & berlaku → salinan terkendali.
+  if (isInForce(contract.status)) {
     spec = {
       banner: "CONTROLLED COPY",
       footer: `CONTROLLED COPY · ${docRef} · Accessed by ${userName} on ${accessedAt}`,
@@ -4820,7 +4852,7 @@ async function stampContractWatermark(cleanBuf: Buffer, contract: Contract, user
     };
   } else if (contract.status === "Archived") {
     spec = {
-      banner: "UNCONTROLLED COPY — DIARSIPKAN / ARCHIVED",
+      banner: "UNCONTROLLED COPY — TIDAK BERLAKU / ARCHIVED",
       footer: `UNCONTROLLED / ARCHIVED · ${docRef} · Retrieved by ${userName} on ${accessedAt}`,
       r: 0.80, g: 0.12, b: 0.12,
       bannerOpacity: 0.14, footerOpacity: 0.65,
@@ -4915,7 +4947,7 @@ app.get("/api/contracts/:id/view-pdf", requireAuth, async (req: AuthedRequest, r
   // file yang BARU SAJA dia unggah sendiri walau belum diajukan approval —
   // yang tetap diblokir cuma status "belum jelas sama sekali" (mis. hasil
   // impor data lama tanpa status valid), bukan Draft yang wajar.
-  if (!["Draft", "ApprovedInternal", "ReviewEksternal", "FinalReview", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
+  if (!["Draft", "ApprovedInternal", "ReviewEksternal", "FinalReview", "FullyApproved", "Arsip", "Distribusi", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
     return res.status(403).json({ error: "Dokumen belum bisa diunduh — selesaikan approval matriks terlebih dahulu." });
   }
 
@@ -4961,7 +4993,7 @@ app.get("/api/contracts/:id/view-pdf", requireAuth, async (req: AuthedRequest, r
     pushAudit(db, req, {
       contractId: contract.id, contractNumber: contract.contractNumber,
       action: "View PDF (Watermarked)",
-      details: `${userName} membuka PDF kontrak "${contract.title}" [status: ${contract.status}] dengan watermark ${contract.status === "Aktif" ? "CONTROLLED" : "UNCONTROLLED"}.`,
+      details: `${userName} membuka PDF kontrak "${contract.title}" [status: ${contract.status}] dengan watermark ${isInForce(contract.status) ? "CONTROLLED" : "UNCONTROLLED"}.`,
     });
     saveDB(db);
 
@@ -4991,7 +5023,7 @@ app.get("/api/public/release/:token", async (req, res) => {
   const db = loadDB();
   const contract = token ? (db.contracts as Contract[]).find((c) => c.releaseShareToken === token) : undefined;
   if (!contract) return releaseLinkErrorPage(res, 404, "Link tidak valid", "Link dokumen ini tidak ditemukan atau sudah tidak berlaku.");
-  if (contract.status !== "Aktif") {
+  if (!isInForce(contract.status)) {
     return releaseLinkErrorPage(res, 410, "Dokumen tidak lagi berlaku", "Kontrak ini sudah tidak berstatus aktif, sehingga link publiknya dinonaktifkan.");
   }
   try {
@@ -5032,7 +5064,7 @@ app.post("/api/contracts/:id/export-share", requireAuth, upload.single("file"), 
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
   // Sebelum approval matrix selesai, dokumen tidak boleh diunduh/dibagikan sama sekali.
-  if (!["FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
+  if (!["FullyApproved", "Arsip", "Distribusi", "Aktif", "TidakAktif", "Archived", "Terminated"].includes(contract.status)) {
     return res.status(400).json({ error: "Dokumen belum bisa diunduh — selesaikan approval matriks terlebih dahulu." });
   }
 
@@ -5250,8 +5282,8 @@ app.get("/api/contracts/:id/versions", requireAuth, (req: AuthedRequest, res) =>
 // menyajikan berkas asli/versi apa adanya (layout 100% asli), dan menyimpan
 // hasil edit workspace sebagai VERSI BARU — original (versi 0) tidak pernah
 // ditimpa. Kontrak "template" tidak memakai endpoint ini sama sekali.
-const DOC_VIEW_STATUSES = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FinalReview", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
-const DOC_DOWNLOAD_STATUSES = ["FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
+const DOC_VIEW_STATUSES = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FinalReview", "FullyApproved", "Arsip", "Distribusi", "Aktif", "TidakAktif", "Archived", "Terminated"];
+const DOC_DOWNLOAD_STATUSES = ["FullyApproved", "Arsip", "Distribusi", "Aktif", "TidakAktif", "Archived", "Terminated"];
 
 function uploadedDocumentVersions(db: any, contract: Contract): ContractVersion[] {
   const list = documentVersionsOf(db.versions as ContractVersion[], contract.id);
@@ -5758,7 +5790,7 @@ app.post("/api/contracts/:id/renew", requireAuth, requireRole(...R.contractEdito
     // benar berlaku (lolos matriks approval) — bukan Draft/OnReview/
     // FullyApproved-belum-aktif. Cermin server-side dari gate tombol di UI
     // (isContractRenewable) — pertahanan berlapis, bukan cuma sembunyikan tombol.
-    if (!["Aktif", "TidakAktif", "Archived", "Terminated"].includes(sourceContract.status)) {
+    if (!wasEverInForce(sourceContract.status)) {
       return res.status(400).json({ error: "Perpanjangan hanya bisa dibuat untuk kontrak yang sudah pernah aktif (lolos matriks approval)." });
     }
     // Guard against duplicate renewal drafts: if a non-terminal renewal
@@ -5885,22 +5917,74 @@ app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
   // dipakai eskalasi SLA supaya teguran keterlambatan tidak jadi pengumuman
   // sekantor.
   const ok = contractVisibilityFilter(db, req);
+  const uid = req.user!.id;
   const mine = scoped(db.notifications as SystemNotification[], tenantOf(req))
-    .filter((n) => !n.targetUserIds?.length || n.targetUserIds.includes(req.user!.id))
-    .filter((n) => ok(n.contractId));
+    .filter((n) => !n.targetUserIds?.length || n.targetUserIds.includes(uid))
+    .filter((n) => ok(n.contractId))
+    // Status baca PER ORANG (readBy). Notifikasi lama tanpa readBy memakai
+    // `read` global seperti dulu.
+    .map((n) => ({ ...n, read: n.readBy ? !!n.readBy[uid] : !!n.read, readBy: undefined }));
   res.json(mine);
 });
 
 app.post("/api/notifications/read-all", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
+  const uid = req.user!.id;
+  const now = new Date().toISOString();
   (db.notifications as SystemNotification[]).forEach((n) => {
-    // Hanya notifikasi yang memang terlihat oleh user ini — notifikasi yang
-    // ditargetkan ke orang lain (mis. rilis kontrak) tidak ikut ter-"read".
-    if (n.tenantId === tid && (!n.targetUserIds?.length || n.targetUserIds.includes(req.user!.id))) n.read = true;
+    // Hanya notifikasi yang memang terlihat oleh user ini, dan hanya untuk
+    // DIA (readBy) — bukan menandai terbaca untuk seluruh perusahaan.
+    // Catatan: ini TIDAK dihitung "membuka" pengumuman rilis — untuk itu
+    // penerima harus mengklik notifikasinya (lihat /:id/open).
+    if (n.tenantId === tid && (!n.targetUserIds?.length || n.targetUserIds.includes(uid))) {
+      n.readBy = { ...(n.readBy || {}), [uid]: n.readBy?.[uid] || now };
+    }
   });
   saveDB(db);
   res.json({ success: true });
+});
+
+// Penerima MEMBUKA (mengklik) satu notifikasi: tandai terbaca untuk dia. Bila
+// notifikasinya pengumuman rilis internal, catat di pengumuman (openedBy) dan
+// — kalau SEMUA penerima sudah membuka — naikkan kontrak Distribusi → Aktif.
+app.post("/api/notifications/:id/open", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const uid = req.user!.id;
+  const n = (db.notifications as SystemNotification[]).find((x) => x.id === req.params.id && x.tenantId === tid);
+  if (!n || (n.targetUserIds?.length && !n.targetUserIds.includes(uid))) return res.status(404).json({ error: "Notifikasi tidak ditemukan" });
+  const now = new Date().toISOString();
+  n.readBy = { ...(n.readBy || {}), [uid]: n.readBy?.[uid] || now };
+  let contractActivated = false;
+  if (n.releaseAnnouncementId && n.contractId) {
+    const c = (db.contracts as Contract[]).find((x) => x.id === n.contractId && x.tenantId === tid);
+    const ann = c?.releaseAnnouncements?.find((a) => a.id === n.releaseAnnouncementId);
+    if (c && ann && ann.userIds.includes(uid) && !ann.openedBy?.[uid]) {
+      ann.openedBy = { ...(ann.openedBy || {}), [uid]: now };
+      c.updatedAt = now;
+      if (c.status === "Distribusi" && releaseAllOpened(c)) {
+        c.status = "Aktif";
+        contractActivated = true;
+        const actor = { ...req, user: { ...req.user!, name: "Sistem" } } as AuthedRequest;
+        pushAudit(db, req, {
+          contractId: c.id, contractNumber: c.contractNumber,
+          action: "Contract Active",
+          details: `Semua penerima pengumuman rilis sudah membuka notifikasinya — kontrak "${c.title}" kini Aktif.`,
+        });
+        pushLinkedJobTimeline(db, c, actor, "Status → Aktif", "Semua penerima pengumuman rilis sudah membuka notifikasinya");
+        const announcers = Array.from(new Set((c.releaseAnnouncements || []).map((a) => a.byId)));
+        pushNotif(db, tid, {
+          title: "Kontrak Aktif",
+          message: `Semua penerima pengumuman rilis kontrak "${c.title}" (${c.contractNumber}) sudah membuka notifikasinya — status kini Aktif.`,
+          type: "success", contractId: c.id, targetUserIds: announcers,
+          legalJobId: ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === c.id && j.tenantId === tid)?.id,
+        });
+      }
+    }
+  }
+  saveDB(db);
+  res.json({ success: true, contractActivated });
 });
 
 // Manual trigger for the proactive expiry-reminder sweep (normally runs on
@@ -6202,7 +6286,7 @@ function migrateLegacyContracts() {
     Signed: "Aktif", Approved: "Aktif", Signature: "Aktif",
     Completed: "Archived",
   };
-  const validStatuses = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FinalReview", "FullyApproved", "Aktif", "TidakAktif", "Archived", "Terminated"];
+  const validStatuses = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FinalReview", "FullyApproved", "Arsip", "Distribusi", "Aktif", "TidakAktif", "Archived", "Terminated"];
   const staleProps = ["signToken", "externalSignFor", "externalSignEmail", "useEMeterai", "signatures", "approvalWorkflow", "currentApprovalStep"];
   let migrated = 0;
   for (const contract of db.contracts as any[]) {
@@ -6929,7 +7013,7 @@ app.get("/api/analytics", requireAuth, (req: AuthedRequest, res) => {
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     const label = d.toLocaleDateString("id-ID", { month: "short", year: "2-digit" });
     const inMonth = allContracts.filter((c) => c.createdAt?.startsWith(key));
-    const activatedInMonth = allContracts.filter((c) => c.status === "Aktif" && (c.updatedAt || c.createdAt)?.startsWith(key));
+    const activatedInMonth = allContracts.filter((c) => isInForce(c.status) && (c.updatedAt || c.createdAt)?.startsWith(key));
     monthlyTrend.push({
       month: key, label,
       created: inMonth.length,
@@ -6982,7 +7066,7 @@ app.get("/api/analytics", requireAuth, (req: AuthedRequest, res) => {
 
   // Summary totals
   const totalValue = allContracts.reduce((s, c) => s + (c.contractValue || 0), 0);
-  const activeValue = allContracts.filter((c) => c.status === "Aktif").reduce((s, c) => s + (c.contractValue || 0), 0);
+  const activeValue = allContracts.filter((c) => isInForce(c.status)).reduce((s, c) => s + (c.contractValue || 0), 0);
   const expiringSoon = allContracts.filter((c) => {
     if (!c.endDate || c.status === "Terminated" || c.status === "Archived") return false;
     const diff = (new Date(c.endDate).getTime() - Date.now()) / 86400000;
@@ -6992,7 +7076,7 @@ app.get("/api/analytics", requireAuth, (req: AuthedRequest, res) => {
   res.json({
     summary: {
       total: allContracts.length,
-      aktif: allContracts.filter((c) => c.status === "Aktif").length,
+      aktif: allContracts.filter((c) => isInForce(c.status)).length,
       draft: allContracts.filter((c) => c.status === "Draft").length,
       expiringSoon,
       totalValue,
@@ -7258,7 +7342,7 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, requireRole(.
     });
   }
   contract.updatedAt = new Date().toISOString();
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: openingNewRound ? "Kirim ke Review Eksternal" : "Enable External Review", details: `${openingNewRound ? `Membuka Review Eksternal ronde ${contract.externalRoundCount}` : "Membuat link review eksternal"}${contract.externalReviewExpiresAt ? ` (kadaluarsa ${new Date(contract.externalReviewExpiresAt).toLocaleDateString("id-ID")})` : ""}.` });
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: openingNewRound ? "Kirim ke Review Pihak Kedua" : "Enable External Review", details: `${openingNewRound ? `Membuka Review Pihak Kedua ronde ${contract.externalRoundCount}` : "Membuat link review pihak kedua"}${contract.externalReviewExpiresAt ? ` (kadaluarsa ${new Date(contract.externalReviewExpiresAt).toLocaleDateString("id-ID")})` : ""}.` });
   saveDB(db);
   res.json({ success: true, token: contract.externalReviewToken, expiresAt: contract.externalReviewExpiresAt, url: `${shareBaseUrl(req)}/?reviewToken=${contract.externalReviewToken}`, contract });
 });
@@ -7292,12 +7376,12 @@ app.post("/api/contracts/:id/external-review/request-revision", requireAuth, req
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   if (contract.status !== "ReviewEksternal") {
-    return res.status(409).json({ error: "Revisi eksternal hanya bisa dimulai saat kontrak sedang dalam Review Eksternal." });
+    return res.status(409).json({ error: "Revisi eksternal hanya bisa dimulai saat kontrak sedang dalam Review Pihak Kedua." });
   }
   const note = String(req.body?.note || "").trim().slice(0, 1000);
   const by = String(req.body?.requestedBy || "").trim().slice(0, 80) || contract.party2Name || "Pihak Eksternal";
   startExternalRevision(db, contract, note, by);
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Revisi Eksternal", details: `${req.user!.name} mencatat permintaan revisi dari ${by}${note ? `: ${note}` : ""}. Akses review eksternal dijeda sampai revisi disetujui internal.` });
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Revisi Eksternal", details: `${req.user!.name} mencatat permintaan revisi dari ${by}${note ? `: ${note}` : ""}. Akses review pihak kedua dijeda sampai revisi disetujui internal.` });
   saveDB(db);
   res.json({ success: true, contract });
 });
@@ -7310,7 +7394,7 @@ app.post("/api/contracts/:id/external-review/mark-approved", requireAuth, requir
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   if (contract.status !== "ReviewEksternal") {
-    return res.status(409).json({ error: "Hanya kontrak yang sedang Review Eksternal yang bisa ditandai disetujui eksternal." });
+    return res.status(409).json({ error: "Hanya kontrak yang sedang Review Pihak Kedua yang bisa ditandai disetujui eksternal." });
   }
   const name = String(req.body?.name || "").trim().slice(0, 80) || contract.party2Name || "Pihak Eksternal";
   if (!contract.externalApprovals) contract.externalApprovals = [];
@@ -7334,10 +7418,10 @@ app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole(...
     return res.status(409).json({ error: "Review eksternal hanya bisa dilewati saat kontrak berstatus Disetujui Internal." });
   }
   const reason = String(req.body?.reason || "").trim();
-  if (!reason) return res.status(400).json({ error: "Alasan wajib diisi untuk melewati review eksternal." });
+  if (!reason) return res.status(400).json({ error: "Alasan wajib diisi untuk melewati review pihak kedua." });
   contract.status = "FullyApproved";
   contract.updatedAt = new Date().toISOString();
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Lewati Review Eksternal", details: `${req.user!.name} melewati review eksternal: ${reason.slice(0, 500)}` });
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Lewati Review Pihak Kedua", details: `${req.user!.name} melewati review pihak kedua: ${reason.slice(0, 500)}` });
   saveDB(db);
   res.json({ success: true, contract });
 });
@@ -7363,7 +7447,7 @@ app.post("/api/contracts/:id/external-review/unlock", requireAuth, requireRole(.
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
-  if (!contract.externalReviewToken) return res.status(409).json({ error: "Belum ada link review eksternal aktif untuk kontrak ini." });
+  if (!contract.externalReviewToken) return res.status(409).json({ error: "Belum ada link review pihak kedua aktif untuk kontrak ini." });
   contract.externalReviewLocked = false;
   contract.updatedAt = new Date().toISOString();
   pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Unlock External Review", details: "Membuka kembali akses komentar/persetujuan eksternal (link tidak diganti)." });
@@ -7876,7 +7960,7 @@ app.post("/api/external-review/:token/comments", apiLimiter, (req, res) => {
   if (!db.clauseComments) db.clauseComments = [];
   db.clauseComments.unshift(comment);
   pushNotif(db, contract.tenantId, {
-    title: "Komentar Review Eksternal",
+    title: "Komentar Review Pihak Kedua",
     message: `${comment.userName} (pihak eksternal) mengomentari klausul "${comment.clauseTitle}" di kontrak "${contract.title}".`,
     type: "warning", contractId: contract.id,
   });
@@ -7912,7 +7996,7 @@ app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => 
     res.setHeader("Content-Disposition", contentDisposition("inline", info.ref.fileName));
     res.send(buf);
   } catch (err: any) {
-    logger.error({ err, contractId: contract.id }, "Gagal menyajikan berkas untuk review eksternal");
+    logger.error({ err, contractId: contract.id }, "Gagal menyajikan berkas untuk review pihak kedua");
     res.status(err?.status || 500).json({ error: err?.message || "Gagal membuka berkas dokumen." });
   }
 });
@@ -7943,8 +8027,8 @@ app.post("/api/external-review/:token/approve", apiLimiter, (req, res) => {
   pushNotif(db, contract.tenantId, {
     title: "Pihak Eksternal Menyetujui",
     message: finalStage
-      ? `${name} menyetujui kontrak "${contract.title}" via review eksternal — menunggu Review Final Internal.`
-      : `${name} menyetujui (OK) isi klausul kontrak "${contract.title}" via review eksternal.`,
+      ? `${name} menyetujui kontrak "${contract.title}" via review pihak kedua — menunggu Review Final Internal.`
+      : `${name} menyetujui (OK) isi klausul kontrak "${contract.title}" via review pihak kedua.`,
     type: "success", contractId: contract.id,
   });
   if (finalStage) startFinalInternalReview(db, live);
@@ -7960,7 +8044,7 @@ app.post("/api/external-review/:token/request-revision", apiLimiter, (req, res) 
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
   if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
   if (contract.status !== "ReviewEksternal") {
-    return res.status(409).json({ error: "Pengajuan revisi hanya tersedia selama dokumen dalam tahap review eksternal." });
+    return res.status(409).json({ error: "Pengajuan revisi hanya tersedia selama dokumen dalam tahap review pihak kedua." });
   }
   if (contract.externalReviewLocked) {
     return res.status(403).json({ error: "Review ini sudah terkunci. Hubungi pemilik dokumen untuk membuka akses kembali." });
@@ -8178,9 +8262,12 @@ app.post("/api/legal-jobs", requireAuth, requireRole(...R.legalOnly, ...R.reques
     !isDivisionRequest && !["Tinggi", "Sedang", "Rendah"].includes(priority) && "Prioritas",
   ].filter(Boolean);
   if (missing.length) return res.status(400).json({ error: `Field wajib belum diisi: ${missing.join(", ")}.` });
+  const docLink = parseLegalDocLink(b.documentLink);
+  if (docLink.error) return res.status(400).json({ error: docLink.error });
 
   const now = new Date().toISOString();
   const documents: LegalJobDocument[] = [];
+  if (docLink.link) documents.push(legalDocFromLink(docLink.link, req.user!.name, now));
   if (req.file) {
     try {
       const key = uploadFileKey(req.file.originalname);
@@ -8213,7 +8300,7 @@ app.post("/api/legal-jobs", requireAuth, requireRole(...R.legalOnly, ...R.reques
     pushNotif(db, tid, {
       title: "Permintaan Kontrak Baru",
       message: `${req.user!.name} (${picName}) meminta: "${title}" — ${partnerName}, deadline ${deadline}.`,
-      type: "info",
+      type: "info", legalJobId: job.id,
       targetUserIds: ((db.users as User[]) || []).filter((u) => u.tenantId === tid && u.active && (u.role === "legal" || u.role === "admin")).map((u) => u.id),
     });
     pushAudit(db, req, { action: "Permintaan Kontrak", details: `${picName} meminta "${title}" (${partnerName}).` });
@@ -8221,15 +8308,20 @@ app.post("/api/legal-jobs", requireAuth, requireRole(...R.legalOnly, ...R.reques
     return res.json(withLinkedContract(db, job));
   }
   const requester = String(b.submitterName || "").trim();
+  // Badan hukum wajib untuk input Staff Legal — supaya sejak awal jelas
+  // dokumen diproses atas nama perusahaan (PT) yang mana.
+  const company = resolveNumberCompany(db, b.companyId);
+  if (!company) return res.status(400).json({ error: "Badan Hukum / Entitas Perusahaan wajib dipilih." });
   const job: LegalJob = {
     id: "lj-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
     tenantId: tid, title, partnerName, docType, picName: picName!, deadline,
+    companyId: company.id, companyName: company.name, companyCode: company.code,
     description: String(b.description || "").trim() || undefined, documents,
     status: "draft", priority, source: "internal",
     submitterName: requester || undefined,
     approvedByName: req.user!.name, approvedAt: now,
     notes: [], timeline: [
-      { id: "ljt-0", label: "Diinput langsung oleh Staff Legal", actor: req.user!.name, at: now, detail: requester ? `Atas permintaan ${requester} (${picName}).` : `PIC pemberi pekerjaan: ${picName}.` },
+      { id: "ljt-0", label: "Diinput langsung oleh Staff Legal", actor: req.user!.name, at: now, detail: `${company.name}${company.code ? ` (PT ${company.code})` : ""} · ${requester ? `Atas permintaan ${requester} (${picName}).` : `PIC pemberi pekerjaan: ${picName}.`}` },
       { id: "ljt-1", label: `Masuk alur kerja utama — Prioritas ${priority}`, actor: req.user!.name, at: now, detail: "Tahap persetujuan dilewati karena diinput Staff Legal." },
     ],
     createdAt: now, updatedAt: now,
@@ -8260,7 +8352,7 @@ app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole(...R.legalOnly
     pushNotif(db, tenantOf(req), {
       title: "Permintaan Kontrak Disetujui Legal",
       message: `"${job.title}" disetujui ${req.user!.name} (prioritas ${priority}) dan sedang disiapkan Legal.`,
-      type: "success", targetUserIds: [job.requesterId],
+      type: "success", targetUserIds: [job.requesterId], legalJobId: job.id,
     });
   }
   saveDB(db);
@@ -8286,7 +8378,7 @@ app.patch("/api/legal-jobs/:id/reject", requireAuth, requireRole(...R.legalOnly)
     pushNotif(db, tenantOf(req), {
       title: "Permintaan Kontrak Ditolak Legal",
       message: `"${job.title}" tidak disetujui ${req.user!.name}. Alasan: ${reason}`,
-      type: "warning", targetUserIds: [job.requesterId],
+      type: "warning", targetUserIds: [job.requesterId], legalJobId: job.id,
     });
   }
   saveDB(db);
@@ -8335,6 +8427,17 @@ app.post("/api/legal-jobs/:id/documents", requireAuth, uploadLegalDoc.single("fi
   const db = loadDB();
   const job = findVisibleLegalJob(db, req, req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
+  // Tambah LINK dokumen (tanpa berkas).
+  if (!req.file && req.body?.documentLink !== undefined) {
+    const docLink = parseLegalDocLink(req.body.documentLink);
+    if (docLink.error || !docLink.link) return res.status(400).json({ error: docLink.error || "Link dokumen wajib diisi." });
+    const doc = legalDocFromLink(docLink.link, req.user!.name, new Date().toISOString());
+    job.documents.push(doc);
+    job.updatedAt = doc.uploadedAt;
+    pushLegalTimeline(job, { label: "Link dokumen ditambahkan", actor: req.user!.name, detail: docLink.link }, doc.uploadedAt);
+    saveDB(db);
+    return res.json(job);
+  }
   if (!req.file) return res.status(400).json({ error: "Berkas wajib diunggah." });
   try {
     const key = uploadFileKey(req.file.originalname);
@@ -8365,6 +8468,7 @@ app.get("/api/legal-jobs/:id/documents/:docId/file", requireAuth, async (req: Au
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
   const doc = (job.documents || []).find((d) => d.id === req.params.docId);
   if (!doc) return res.status(404).json({ error: "Dokumen tidak ditemukan." });
+  if (doc.linkUrl) return res.redirect(doc.linkUrl);
   try {
     const buf = await readStoredDocument({ key: doc.key, url: doc.url } as StoredDocumentRef, uploadDir);
     res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
@@ -8441,6 +8545,10 @@ app.get("/api/legal-form/:token", apiLimiter, (req, res) => {
     tenantName: tenant?.name || "Perusahaan",
     partnerSuggestions: uniq(jobs.map((j) => j.partnerName)),
     picOptions: LEGAL_PIC_OPTIONS,
+    // Pilihan Badan Hukum / Entitas Perusahaan (perusahaan aktif) — hanya
+    // id, nama & kode (tidak ada data sensitif) untuk dropdown formulir publik.
+    companies: ((db.tenants || []) as any[]).filter((t) => t.active !== false)
+      .map((t) => ({ id: t.id, name: t.name, code: companyCodeOf(t) })),
   });
 });
 
@@ -8462,9 +8570,14 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
     !picName && "PIC Pemberi Pekerjaan", !deadline && "Deadline",
   ].filter(Boolean);
   if (missing.length) return res.status(400).json({ error: `Field wajib belum diisi: ${missing.join(", ")}.` });
+  const company = resolveNumberCompany(db, req.body?.companyId);
+  if (!company) return res.status(400).json({ error: "Badan Hukum / Entitas Perusahaan wajib dipilih." });
+  const docLink = parseLegalDocLink(req.body?.documentLink);
+  if (docLink.error) return res.status(400).json({ error: docLink.error });
 
   const now = new Date().toISOString();
   const documents: LegalJobDocument[] = [];
+  if (docLink.link) documents.push(legalDocFromLink(docLink.link, "Eksternal (form)", now));
   if (req.file) {
     try {
       const key = uploadFileKey(req.file.originalname);
@@ -8483,6 +8596,7 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
   const job: LegalJob = {
     id: "lj-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
     tenantId: link.tenantId, title, partnerName, docType, picName, deadline,
+    companyId: company.id, companyName: company.name, companyCode: company.code,
     description: description || undefined, documents, status: "menunggu_persetujuan",
     source: "eksternal", submitterName: submitterName || undefined, submitterEmail: submitterEmail || undefined,
     notes: [], timeline: [{ id: "ljt-0", label: "Request Masuk (via Formulir Eksternal)", actor: submitterName || "Eksternal", at: now }],
@@ -8493,7 +8607,7 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
   pushNotif(db, link.tenantId, {
     title: "Pekerjaan Legal Baru Menunggu Persetujuan",
     message: `"${title}" dari ${partnerName} (via formulir eksternal) menunggu persetujuan Staff Legal.`,
-    type: "info",
+    type: "info", legalJobId: job.id,
   });
   saveDB(db);
   res.json({ success: true, message: "Terima kasih, permintaan Anda sudah kami terima dan akan diproses oleh tim Legal." });
@@ -8508,16 +8622,22 @@ app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
   const contracts = visibleContracts(db, req);
   const now = Date.now();
 
+  // Hitungan per TAHAP alur (src/workflow.ts) — pekerjaan yang sudah punya
+  // kontrak mengikuti status kontraknya (dulu memakai job.status mentah yang
+  // berhenti di "draft" begitu kontrak dibuat, sehingga angkanya basi).
+  const contractById = new Map((db.contracts as Contract[]).filter((c) => c.tenantId === tid).map((c) => [c.id, c]));
+  const stageOf = (j: LegalJob) => jobStage(j, j.linkedContractId ? contractById.get(j.linkedContractId) : null);
   const statusCounts: Record<string, number> = {};
-  for (const j of jobs) statusCounts[j.status] = (statusCounts[j.status] || 0) + 1;
+  for (const j of jobs) { const st = stageOf(j); statusCounts[st] = (statusCounts[st] || 0) + 1; }
 
   const dayDiff = (dateStr?: string) => (dateStr ? (new Date(dateStr).getTime() - now) / 86400000 : Infinity);
   const monitoringKontrak = {
-    aktif: contracts.filter((c) => c.status === "Aktif").length,
-    akanBerakhir30: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) >= 0 && dayDiff(c.endDate) <= 30).length,
-    akanBerakhir60: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) > 30 && dayDiff(c.endDate) <= 60).length,
-    akanBerakhir90: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) > 60 && dayDiff(c.endDate) <= 90).length,
-    expired: contracts.filter((c) => c.status === "Aktif" && dayDiff(c.endDate) < 0).length,
+    // Masa berlaku dipantau sejak Arsip (TTD basah diunggah) — isInForce.
+    aktif: contracts.filter((c) => isInForce(c.status)).length,
+    akanBerakhir30: contracts.filter((c) => isInForce(c.status) && dayDiff(c.endDate) >= 0 && dayDiff(c.endDate) <= 30).length,
+    akanBerakhir60: contracts.filter((c) => isInForce(c.status) && dayDiff(c.endDate) > 30 && dayDiff(c.endDate) <= 60).length,
+    akanBerakhir90: contracts.filter((c) => isInForce(c.status) && dayDiff(c.endDate) > 60 && dayDiff(c.endDate) <= 90).length,
+    expired: contracts.filter((c) => isInForce(c.status) && dayDiff(c.endDate) < 0).length,
   };
 
   // Modul Surat-Menyurat belum dibangun di iterasi ini (di luar cakupan 2
@@ -8525,17 +8645,18 @@ app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
   // BUKAN angka nol yang dipalsukan seolah-olah datanya nyata.
   const suratMenyurat = { available: false };
 
-  const activeJobs = jobs.filter((j) => !["selesai", "ditolak", "arsip"].includes(j.status));
+  // Pekerjaan yang masih berjalan = belum sampai Aktif & bukan status akhir.
+  const activeJobs = jobs.filter((j) => !["Aktif", "Ditolak", "TidakAktif", "Archived", "Terminated"].includes(stageOf(j)));
   const needsFollowUp = activeJobs
     .slice()
     .sort((a, b) => dayDiff(a.deadline) - dayDiff(b.deadline))
     .slice(0, 8)
-    .map((j) => ({ id: j.id, title: j.title, status: j.status, priority: j.priority, deadline: j.deadline, partnerName: j.partnerName }));
+    .map((j) => ({ id: j.id, title: j.title, status: stageOf(j), priority: j.priority, deadline: j.deadline, partnerName: j.partnerName }));
 
   const deadlineThisWeek = activeJobs
     .filter((j) => dayDiff(j.deadline) >= 0 && dayDiff(j.deadline) <= 7)
     .sort((a, b) => dayDiff(a.deadline) - dayDiff(b.deadline))
-    .map((j) => ({ id: j.id, title: j.title, docType: j.docType, status: j.status, deadline: j.deadline }));
+    .map((j) => ({ id: j.id, title: j.title, docType: j.docType, status: stageOf(j), deadline: j.deadline }));
 
   const recentActivity = jobs
     .flatMap((j) => j.timeline.map((t) => ({ ...t, jobId: j.id, jobTitle: j.title })))
@@ -8550,7 +8671,7 @@ app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
     needsFollowUp,
     deadlineThisWeek,
     recentActivity,
-    chartByStatus: LEGAL_JOB_WORKFLOW_STATUSES.map((s) => ({ status: s, count: statusCounts[s] || 0 })),
+    chartByStatus: LEGAL_STAGES.map((s) => ({ status: s, count: statusCounts[s] || 0 })),
   });
 });
 

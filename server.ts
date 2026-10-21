@@ -12,7 +12,7 @@ import {
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
   SignatureFormat, SIGNATURE_FORMATS,
 } from "./src/types";
-import { R, canViewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
+import { R, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
@@ -2066,17 +2066,17 @@ app.put("/api/settings", requireAuth, requireRole(...R.settings, "hr_ga"), (req:
   const db = loadDB();
   const tid = tenantOf(req);
   let { tenantId, ...patch } = req.body; // tenantId handled by tenantOf, not stored in settings
-  // HR/GA hanya boleh mengubah Kategori Kontrak Karyawan (employmentTypes);
+  // HR/GA hanya boleh mengubah Kategori Dokumen Karyawan (employmentTypes);
   // bagian lain dari kiriman diabaikan.
   if (req.user!.role === "hr_ga") {
     const types = patch?.masterData?.employmentTypes;
-    if (!Array.isArray(types)) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Kontrak Karyawan." });
+    if (!Array.isArray(types)) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Dokumen Karyawan." });
     const cur = rawSettingsFor(db, tid) || {};
     const curFull = withSettingsDefaults(cur);
     const same = (x: unknown, y: unknown) => JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
     const otherTop = Object.keys(patch).filter((k) => k !== "masterData" && !same(patch[k], (curFull as any)[k]));
     const otherMd = Object.keys(patch.masterData || {}).filter((k) => k !== "employmentTypes" && !same(patch.masterData[k], (curFull as any).masterData?.[k]));
-    if (otherTop.length || otherMd.length) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Kontrak Karyawan. Pengaturan lain diubah oleh Admin." });
+    if (otherTop.length || otherMd.length) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Dokumen Karyawan. Pengaturan lain diubah oleh Admin." });
     patch = { masterData: { ...(cur.masterData || {}), employmentTypes: types.map((x: unknown) => String(x).trim()).filter(Boolean) } };
   }
   // Validasi format nomor kontrak sebelum disimpan — mask tak valid baru
@@ -3982,7 +3982,7 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requireRole(...R.contr
 
   pushAudit(db, req, {
     contractId: contract.id, contractNumber: contract.contractNumber,
-    action: closingRevision ? "Ajukan Ulang Persetujuan (Hasil Revisi)" : "Ajukan Persetujuan Kontrak",
+    action: closingRevision ? "Ajukan Ulang Persetujuan (Hasil Revisi)" : "Ajukan Review Internal",
     details: `${closingRevision ? `Mengajukan ulang hasil revisi ${closingRevision} untuk` : "Mengajukan"} kontrak "${contract.title}" untuk review internal ${steps.map((s) => s.approverName).join(" → ")}`,
   });
   pushNotif(db, tid, {
@@ -7129,6 +7129,11 @@ app.post("/api/contracts/:id/comments", requireAuth, async (req: AuthedRequest, 
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
+  // Komentar / coret / ganti hanya untuk Legal, Admin & Super Admin, atau orang
+  // yang ditunjuk Legal sebagai reviewer pada dokumen ini.
+  if (!canReviewContract(viewerOf(db, req), contract)) {
+    return res.status(403).json({ error: "Anda tidak punya akses untuk meninjau dokumen ini. Mode Tinjau hanya untuk Legal/Super Admin atau reviewer yang ditunjuk Legal." });
+  }
 
   const { clauseId, clauseTitle, text, parentId, mentions, anchor } = req.body;
   if (!clauseId || !text?.trim()) return res.status(400).json({ error: "clauseId dan text wajib diisi" });
@@ -7293,7 +7298,7 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
 // field kontrak sensitif lain yang dibocorkan.
 
 // Aktifkan/putar token review eksternal (authed). Hanya sebelum FullyApproved.
-app.post("/api/contracts/:id/external-review/enable", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/enable", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -7370,42 +7375,11 @@ function startExternalRevision(db: any, contract: Contract, note: string, by: st
   });
 }
 
-app.post("/api/contracts/:id/external-review/request-revision", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const tid = tenantOf(req);
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
-  if (contract.status !== "ReviewEksternal") {
-    return res.status(409).json({ error: "Revisi eksternal hanya bisa dimulai saat kontrak sedang dalam Review Pihak Kedua." });
-  }
-  const note = String(req.body?.note || "").trim().slice(0, 1000);
-  const by = String(req.body?.requestedBy || "").trim().slice(0, 80) || contract.party2Name || "Pihak Eksternal";
-  startExternalRevision(db, contract, note, by);
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Revisi Eksternal", details: `${req.user!.name} mencatat permintaan revisi dari ${by}${note ? `: ${note}` : ""}. Akses review pihak kedua dijeda sampai revisi disetujui internal.` });
-  saveDB(db);
-  res.json({ success: true, contract });
-});
-
-// Pihak eksternal setuju di luar sistem (email/rapat) — staf internal
-// mencatat persetujuannya sendiri. Sama efeknya dgn tamu klik "Setuju/OK".
-app.post("/api/contracts/:id/external-review/mark-approved", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const tid = tenantOf(req);
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
-  if (contract.status !== "ReviewEksternal") {
-    return res.status(409).json({ error: "Hanya kontrak yang sedang Review Pihak Kedua yang bisa ditandai disetujui eksternal." });
-  }
-  const name = String(req.body?.name || "").trim().slice(0, 80) || contract.party2Name || "Pihak Eksternal";
-  if (!contract.externalApprovals) contract.externalApprovals = [];
-  contract.externalApprovals.push({ name, approvedAt: new Date().toISOString(), note: `Dicatat oleh ${req.user!.name}${req.body?.note ? ` — ${String(req.body.note).slice(0, 250)}` : ""}` });
-  contract.externalReviewLocked = true;
-  // Alur: setuju eksternal → Review Final Internal (bukan langsung TTD).
-  startFinalInternalReview(db, contract);
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Disetujui Eksternal (Dicatat Manual)", details: `${req.user!.name} mencatat persetujuan pihak eksternal (${name}) — kontrak masuk Review Final Internal.` });
-  saveDB(db);
-  res.json({ success: true, contract });
-});
+// CATATAN: persetujuan & permintaan revisi pihak eksternal HANYA dilakukan
+// pihak eksternal sendiri lewat link review publik (endpoint /api/external-review/
+// :token/approve dan /request-revision di bawah). Staf internal tidak boleh
+// "mewakili" — dulu ada endpoint pencatatan manual (Ada Revisi Eksternal /
+// Disetujui Eksternal) yang sengaja dihapus.
 
 // Lewati Review Eksternal (mis. dokumen tidak perlu ditinjau pihak kedua).
 // Dibatasi admin/legal/manager & wajib alasan — tercatat jelas di audit.

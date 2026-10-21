@@ -104,6 +104,29 @@ export function canViewContract(
   return false;
 }
 
+// Siapa boleh MENGAKSES Mode Tinjau & memberi komentar / coret / ganti pada
+// sebuah dokumen. Pemegang dokumen (Legal, Admin, Super Admin) selalu boleh.
+// Peran lain TIDAK punya akses bebas — hanya bila ada tindakan/suruhan dari
+// Legal, yaitu: ditunjuk sebagai approver pada tahap review yang sedang
+// berjalan (Review Internal / Review Final Internal, termasuk yang menerima
+// delegasi), atau pembuat/pengaju dokumen itu sendiri (mis. HR/GA untuk
+// dokumen karyawan yang ia susun). Dipakai server (penolakan 403) DAN frontend
+// (tombol disembunyikan) supaya keduanya selalu sepakat.
+export function canReviewContract(
+  user: { id: string; role: string; actingForIds?: string[] },
+  c: {
+    status?: string; createdById?: string; approvalSubmittedById?: string;
+    approvalSteps?: { approverId?: string; decidedByDelegateId?: string }[];
+  },
+): boolean {
+  if (user.role === "super_admin" || user.role === "admin" || user.role === "legal") return true;
+  if (c.createdById === user.id || c.approvalSubmittedById === user.id) return true;
+  const inReviewStage = c.status === "OnReview" || c.status === "FinalReview";
+  if (!inReviewStage) return false;
+  const me = [user.id, ...(user.actingForIds || [])];
+  return (c.approvalSteps || []).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id);
+}
+
 // Default menu sidebar per peran (dipakai bila admin belum mengatur matriks
 // Hak Akses untuk peran tsb). id harus sama dengan MENU_ITEMS di App.tsx.
 export const DEFAULT_MENUS_BY_ROLE: Record<string, string[]> = {

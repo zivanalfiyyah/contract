@@ -10,7 +10,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
-import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, R as ROLE_GROUPS } from "./roles";
+import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, canReviewContract, R as ROLE_GROUPS } from "./roles";
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
@@ -671,12 +671,56 @@ type MarginItem = {
   clauseId: string;
   kind?: string;
   resolved?: boolean;
-  anchor?: { quote?: string } | null;
+  anchor?: { quote?: string; start?: number; end?: number } | null;
   replacement?: string;  // usulan teks pengganti (kind "replace")
   status?: string;       // "pending" | "accepted" | "rejected" untuk usulan coret/ganti
 };
 type MarginClause = { id: string; title: string; heading?: string; content: string };
-type MarginDraftSeed = { clauseId: string; clauseTitle: string; quote: string; kind: "comment" | "strike" | "replace" };
+// `start` = posisi karakter awal sorotan pada teks pasal yang TAMPIL (bukan
+// kemunculan pertama kutipan). Tanpa ini kata pendek seperti "di" selalu
+// menempel di kemunculan pertamanya, dan "Terima" salah menerapkan usulan.
+type MarginDraftSeed = { clauseId: string; clauseTitle: string; quote: string; kind: "comment" | "strike" | "replace"; start?: number };
+
+// Posisi awal kutipan pada teks pasal. Pakai offset hasil sorotan bila cocok
+// dengan teksnya; kalau tidak (data lama / teks berubah) jatuh ke kemunculan pertama.
+function resolveQuoteStart(text: string, quote: string, hint?: number): number {
+  if (typeof hint === "number" && hint >= 0 && text.slice(hint, hint + quote.length) === quote) return hint;
+  return text.indexOf(quote);
+}
+
+function countOccurrences(text: string, quote: string): number {
+  if (!quote) return 0;
+  let c = 0;
+  for (let i = text.indexOf(quote); i >= 0; i = text.indexOf(quote, i + 1)) c++;
+  return c;
+}
+
+// Bagian teks dari HTML (tanpa tag), dipisah penanda agar kutipan tidak
+// dianggap melintasi dua node teks.
+function htmlTextOnly(html: string): string {
+  return html.split(/(<[^>]+>)/).filter((seg) => seg && !seg.startsWith("<")).join("\u0000");
+}
+
+// Ganti kemunculan ke-`nth` kutipan HANYA di dalam teks HTML (bukan di nama tag/atribut).
+function replaceNthInHtmlText(html: string, quote: string, nth: number, insert: string): string | null {
+  const parts = html.split(/(<[^>]+>)/);
+  let seen = 0;
+  for (let p = 0; p < parts.length; p++) {
+    const seg = parts[p];
+    if (!seg || seg.startsWith("<")) continue;
+    for (let at = seg.indexOf(quote); at >= 0; at = seg.indexOf(quote, at + 1)) {
+      if (seen === nth) {
+        const before = seg.slice(0, at);
+        let after = seg.slice(at + quote.length);
+        if (!insert && before.endsWith(" ") && after.startsWith(" ")) after = after.slice(1);
+        parts[p] = before + insert + after;
+        return parts.join("");
+      }
+      seen++;
+    }
+  }
+  return null;
+}
 
 const MARGIN_CARD_GAP = 10;   // jarak minimum antar kartu saat bertumpuk
 const MARGIN_CARD_FALLBACK_H = 84;
@@ -690,7 +734,7 @@ function buildMarkGroups(text: string, items: MarginItem[]) {
     .filter((c) => c.anchor?.quote && c.status !== "accepted" && c.status !== "rejected" && text.includes(c.anchor.quote as string))
     .map((c) => {
       const q = c.anchor!.quote as string;
-      const start = text.indexOf(q);
+      const start = resolveQuoteStart(text, q, c.anchor!.start);
       return { id: c.id, kind: c.kind, resolved: !!c.resolved, replacement: c.replacement, start, end: start + q.length };
     })
     .filter((r) => r.start >= 0);
@@ -730,13 +774,13 @@ function renderMarkedClause(text: string, items: MarginItem[], activeId: string 
           <span
             data-cmt-id={ids}
             title={g.replacement ? "Usulan ganti — klik untuk membuka komentarnya" : "Usulan coret — klik untuk membuka komentarnya"}
-            className={`cursor-pointer rounded px-0.5 line-through decoration-rose-500 decoration-2 transition ${g.resolved ? "opacity-40" : ""} ${isActive ? "bg-rose-500/30 ring-2 ring-rose-400" : "bg-rose-500/10"}`}
+            className={`cursor-pointer rounded px-0.5 line-through decoration-indigo-400 decoration-2 transition ${g.resolved ? "opacity-40" : ""} ${isActive ? "bg-indigo-500/25 ring-2 ring-indigo-400" : "bg-indigo-500/10"}`}
           >{seg}</span>
           {g.replacement && (
             <ins
               data-cmt-id={ids}
               title="Teks pengganti yang diusulkan"
-              className={`ml-0.5 cursor-pointer rounded px-0.5 no-underline border-b-2 border-emerald-500 bg-emerald-500/20 text-emerald-500 transition ${g.resolved ? "opacity-40" : ""}`}
+              className={`ml-0.5 cursor-pointer rounded px-0.5 no-underline border-b-2 border-indigo-500 bg-indigo-500/20 text-indigo-500 transition ${g.resolved ? "opacity-40" : ""}`}
             >{g.replacement}</ins>
           )}
         </React.Fragment>
@@ -745,7 +789,7 @@ function renderMarkedClause(text: string, items: MarginItem[], activeId: string 
           key={"mk" + i}
           data-cmt-id={ids}
           title="Ada komentar — klik untuk membukanya"
-          className={`cursor-pointer rounded px-0.5 text-inherit transition ${g.resolved ? "opacity-40" : ""} ${isActive ? "bg-amber-300/75 ring-2 ring-amber-400" : "bg-amber-300/40"}`}
+          className={`cursor-pointer rounded px-0.5 text-inherit transition ${g.resolved ? "opacity-40" : ""} ${isActive ? "bg-indigo-300/75 ring-2 ring-indigo-400" : "bg-indigo-300/40"}`}
         >{seg}</mark>
       ),
     );
@@ -780,7 +824,7 @@ function WordMarginReview({
   const [tops, setTops] = useState<Record<string, number>>({});
   const [lines, setLines] = useState<{ id: string; d: string; active: boolean }[]>([]);
   const [gutterH, setGutterH] = useState(0);
-  const [toolbar, setToolbar] = useState<{ x: number; y: number; clauseId: string; clauseTitle: string; quote: string } | null>(null);
+  const [toolbar, setToolbar] = useState<{ x: number; y: number; clauseId: string; clauseTitle: string; quote: string; start?: number } | null>(null);
 
   // Tanda tangan isi — effect pengukuran hanya dijalankan ulang saat isi benar-benar berubah.
   const sig = useMemo(
@@ -905,14 +949,43 @@ function WordMarginReview({
     const startEl: HTMLElement | null = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
     const host = startEl && startEl.closest ? (startEl.closest("[data-clause-anchor]") as HTMLElement | null) : null;
     if (!host || !docRef.current.contains(host)) { setToolbar(null); return; }
-    const r = sel.getRangeAt(0).getBoundingClientRect();
+    const range = sel.getRangeAt(0);
+    const r = range.getBoundingClientRect();
     const wb = wrapRef.current.getBoundingClientRect();
+
+    // Offset awal sorotan pada teks pasal yang tampil — dihitung dari DOM
+    // (bukan indexOf) supaya kata yang muncul berkali-kali ("di", "yang", …)
+    // tetap menunjuk kemunculan yang benar-benar diblok. Teks pengganti <ins>
+    // bukan bagian dari teks asli, jadi tidak ikut dihitung.
+    let start: number | undefined;
+    const body = host.querySelector("[data-clause-body]") as HTMLElement | null;
+    if (body && body.contains(range.startContainer)) {
+      const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      let count = 0;
+      let found = false;
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const inIns = !!(n.parentElement && n.parentElement.closest("ins"));
+        if (n === range.startContainer) {
+          if (!inIns) { start = count + range.startOffset; found = true; }
+          break;
+        }
+        if (!inIns) count += (n.nodeValue || "").length;
+      }
+      if (!found) start = undefined;
+      // `quote` sudah di-trim: geser awalnya melewati spasi/baris kosong di depan.
+      if (start !== undefined) {
+        const raw = sel.toString();
+        start += raw.length - raw.trimStart().length;
+      }
+    }
+
     setToolbar({
       x: r.left - wb.left + r.width / 2,
       y: r.top - wb.top - 6,
       clauseId: host.getAttribute("data-clause-anchor") || "",
       clauseTitle: host.getAttribute("data-clause-title") || "",
       quote,
+      start,
     });
   };
 
@@ -928,7 +1001,7 @@ function WordMarginReview({
 
   const fireDraft = (kind: "comment" | "strike" | "replace") => {
     if (!toolbar) return;
-    onStartDraft({ clauseId: toolbar.clauseId, clauseTitle: toolbar.clauseTitle, quote: toolbar.quote, kind });
+    onStartDraft({ clauseId: toolbar.clauseId, clauseTitle: toolbar.clauseTitle, quote: toolbar.quote, kind, start: toolbar.start });
     setToolbar(null);
     const sel = window.getSelection();
     if (sel) sel.removeAllRanges();
@@ -965,7 +1038,7 @@ function WordMarginReview({
               <h3 className="font-sans font-bold text-slate-100 text-[11px] uppercase tracking-wide mb-1.5">
                 {cl.heading || cl.title}
               </h3>
-              <p className="whitespace-pre-wrap">{renderMarkedClause(cl.content, items, activeId)}</p>
+              <p data-clause-body className="whitespace-pre-wrap">{renderMarkedClause(cl.content, items, activeId)}</p>
             </section>
           ))}
         </div>
@@ -993,17 +1066,17 @@ function WordMarginReview({
             <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => fireDraft("comment")}
-              className="px-2 py-1 text-[10px] font-semibold rounded bg-amber-500/15 text-amber-300 hover:bg-amber-500/30 cursor-pointer"
+              className="px-2 py-1 text-[10px] font-semibold rounded bg-slate-950 text-slate-300 hover:bg-indigo-500/15 hover:text-indigo-400 cursor-pointer"
             >✎ Komentar</button>
             <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => fireDraft("strike")}
-              className="px-2 py-1 text-[10px] font-semibold rounded bg-rose-500/15 text-rose-300 hover:bg-rose-500/30 cursor-pointer"
+              className="px-2 py-1 text-[10px] font-semibold rounded bg-slate-950 text-slate-300 hover:bg-indigo-500/15 hover:text-indigo-400 cursor-pointer"
             >✂ Coret</button>
             <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={() => fireDraft("replace")}
-              className="px-2 py-1 text-[10px] font-semibold rounded bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/30 cursor-pointer"
+              className="px-2 py-1 text-[10px] font-semibold rounded bg-slate-950 text-slate-300 hover:bg-indigo-500/15 hover:text-indigo-400 cursor-pointer"
             >⇄ Ganti</button>
           </div>
         </div>
@@ -1289,8 +1362,8 @@ function InternalTaxonomyFields({ companies, employmentTypes, docTypes, division
         <FolderOpen className="w-3.5 h-3.5 text-amber-500 shrink-0" />
         Masuk Arsip Internal:
         {path.length > 0
-          ? <span className="font-semibold text-slate-300">Kontrak Karyawan › {path.join(" › ")} › Draft/Aktif</span>
-          : <span className="italic">Kontrak Karyawan › PT › Jenis Dokumen › Draft/Aktif</span>}
+          ? <span className="font-semibold text-slate-300">Dokumen Karyawan › {path.join(" › ")} › Draft/Aktif</span>
+          : <span className="italic">Dokumen Karyawan › PT › Jenis Dokumen › Draft/Aktif</span>}
       </p>
     </div>
   );
@@ -1553,12 +1626,12 @@ function ExternalChangesPanel({ previous, currentClauses, currentDoc }: {
   const isUpload = previous.clauses.length === 0 && currentClauses.length === 0;
   const docChanged = isUpload && currentDoc && currentDoc.version !== previous.documentVersion;
   return (
-    <details open className="bg-slate-950/60 border border-violet-500/30 rounded-2xl p-5 group">
+    <details open className="bg-slate-950/60 border border-indigo-500/30 rounded-2xl p-5 group">
       <summary className="cursor-pointer list-none flex items-center justify-between gap-3">
         <span className="text-sm font-bold text-slate-100">
           Perubahan sejak review Anda sebelumnya <span className="font-normal text-slate-400">(ronde {previous.round}, {new Date(previous.sentAt).toLocaleDateString("id-ID")})</span>
         </span>
-        <span className="text-[11px] font-semibold text-violet-600 whitespace-nowrap">
+        <span className="text-[11px] font-semibold text-indigo-600 whitespace-nowrap">
           {isUpload ? (docChanged ? "Berkas diperbarui" : "Tidak ada perubahan") : `${changes.length} bagian berubah`}
         </span>
       </summary>
@@ -1574,23 +1647,23 @@ function ExternalChangesPanel({ previous, currentClauses, currentDoc }: {
         ) : (
           <>
             <p className="text-[11px] text-slate-500 flex items-center gap-3 flex-wrap">
-              <span><span className="line-through decoration-rose-500 text-rose-600 bg-rose-500/10 px-1 rounded">teks dihapus</span></span>
-              <span><span className="underline decoration-emerald-500 text-emerald-700 bg-emerald-500/15 px-1 rounded">teks ditambahkan</span></span>
+              <span><span className="line-through decoration-indigo-400 text-rose-600 bg-rose-500/10 px-1 rounded">teks dihapus</span></span>
+              <span><span className="underline decoration-indigo-500 text-indigo-700 bg-indigo-500/15 px-1 rounded">teks ditambahkan</span></span>
             </p>
             {changes.map((ch) => (
-              <div key={ch.kind + ch.id} className="border-l-2 border-violet-400 pl-3 space-y-1">
+              <div key={ch.kind + ch.id} className="border-l-2 border-indigo-400 pl-3 space-y-1">
                 <p className="text-[11px] font-bold text-slate-200 uppercase tracking-wide flex items-center gap-2">
                   {ch.title}
-                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${ch.kind === "added" ? "bg-emerald-500/15 text-emerald-700" : ch.kind === "removed" ? "bg-rose-500/15 text-rose-600" : "bg-violet-500/15 text-violet-600"}`}>
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${ch.kind === "added" ? "bg-indigo-500/15 text-indigo-700" : ch.kind === "removed" ? "bg-rose-500/15 text-rose-600" : "bg-indigo-500/15 text-indigo-600"}`}>
                     {ch.kind === "added" ? "Bagian baru" : ch.kind === "removed" ? "Bagian dihapus" : "Diubah"}
                   </span>
                 </p>
                 {ch.titleFrom && <p className="text-[11px] text-slate-500">Judul semula: <span className="line-through">{ch.titleFrom}</span></p>}
                 <p className="font-serif text-[13px] leading-7 text-slate-300 whitespace-pre-wrap">
                   {ch.parts.map((pt, i) => pt.added
-                    ? <span key={i} className="underline decoration-emerald-500 text-emerald-700 bg-emerald-500/15 rounded-sm">{pt.value}</span>
+                    ? <span key={i} className="underline decoration-indigo-500 text-indigo-700 bg-indigo-500/15 rounded-sm">{pt.value}</span>
                     : pt.removed
-                      ? <span key={i} className="line-through decoration-rose-500 text-rose-600 bg-rose-500/10 rounded-sm">{pt.value}</span>
+                      ? <span key={i} className="line-through decoration-indigo-400 text-rose-600 bg-rose-500/10 rounded-sm">{pt.value}</span>
                       : <span key={i}>{pt.value}</span>)}
                 </p>
               </div>
@@ -1643,8 +1716,14 @@ function ExternalReviewPage({ token }: { token: string }) {
   // Dipicu toolbar mini yang muncul saat pihak eksternal menyorot kalimat.
   const startAnchor = (seed: MarginDraftSeed) => {
     if (data?.locked) { notify("Review ini sudah terkunci sejak Anda menyetujui (Setuju/OK). Hubungi pemilik dokumen untuk membuka akses kembali."); return; }
-    const clause = (data?.contract?.clauses as any[] | undefined)?.find((x) => x.id === seed.clauseId);
-    const start = clause ? String(clause.content).indexOf(seed.quote) : -1;
+    // Teks yang tampil di halaman ini adalah isi pasal yang sudah di-plain-kan
+    // (stripHtmlOnly) — offset harus dihitung dari teks itu, bukan HTML mentah.
+    const allClauses = (data?.contract?.clauses as any[] | undefined) || [];
+    const clause = seed.clauseId === "__preamble__"
+      ? allClauses.find((x) => x.id === "__preamble__")
+      : allClauses.filter((x) => x.id !== "__preamble__").find((x, i) => String(x.id || i) === seed.clauseId);
+    const shown = clause ? stripHtmlOnly(String(clause.content || "")) : "";
+    const start = clause ? resolveQuoteStart(shown, seed.quote, seed.start) : -1;
     setDraft({
       clauseId: seed.clauseId, clauseTitle: seed.clauseTitle, kind: seed.kind, quote: seed.quote,
       start: start >= 0 ? start : 0, end: start >= 0 ? start + seed.quote.length : 0,
@@ -1802,18 +1881,18 @@ function ExternalReviewPage({ token }: { token: string }) {
     if (item.id === "__draft__") {
       if (!draft) return null;
       return (
-        <div className={`rounded-xl border-l-4 shadow-xl bg-slate-900 border border-dashed p-3 space-y-2 ${draft.kind === "comment" ? "border-l-amber-400 border-amber-700/60" : draft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
+        <div className={`rounded-xl border-l-4 shadow-xl bg-slate-900 border border-dashed p-3 space-y-2 ${draft.kind === "comment" ? "border-l-indigo-400 border-indigo-700/60" : draft.kind === "strike" ? "border-l-indigo-400 border-indigo-700/40" : "border-l-indigo-500 border-indigo-700/60"}`}>
           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
             {draft.kind === "comment" ? "✎ Komentar Baru" : draft.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
           </p>
-          <p className={`text-[11px] italic ${draft.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{draft.quote}"</p>
+          <p className={`text-[11px] italic ${draft.kind === "comment" ? "text-indigo-200" : "text-slate-400 line-through"}`}>"{draft.quote}"</p>
           {draft.kind === "replace" && (
             <input
               autoFocus
               value={draftReplacement}
               onChange={(e) => setDraftReplacement(e.target.value)}
               placeholder="Teks pengganti…"
-              className="w-full px-2 py-1.5 bg-slate-950 border border-emerald-700/50 rounded-lg text-xs text-emerald-200 focus:outline-none focus:border-emerald-500"
+              className="w-full px-2 py-1.5 bg-slate-950 border border-indigo-700/50 rounded-lg text-xs text-indigo-200 focus:outline-none focus:border-indigo-500"
             />
           )}
           <textarea
@@ -1835,24 +1914,24 @@ function ExternalReviewPage({ token }: { token: string }) {
     if (!cm) return null;
     const replies = allComments.filter((x) => x.parentId === cm.id);
     return (
-      <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${cm.kind === "strike" || cm.kind === "replace" ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 shadow-xl ring-1 ring-indigo-500/40" : "border-slate-800 shadow-md hover:border-slate-700"}`}>
+      <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${cm.kind === "strike" || cm.kind === "replace" ? "border-l-indigo-400" : "border-l-indigo-400"} ${isActive ? "border-indigo-500 shadow-xl ring-1 ring-indigo-500/40" : "border-slate-800 shadow-md hover:border-slate-700"}`}>
         <div className="flex items-center gap-1.5">
-          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${cm.external ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-300"}`}>
+          <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${cm.external ? "bg-indigo-500/20 text-indigo-300" : "bg-indigo-500/20 text-indigo-300"}`}>
             {String(cm.userName || "?").charAt(0).toUpperCase()}
           </span>
           <span className="text-[11px] font-bold text-slate-200 truncate">{cm.userName}</span>
           {cm.external
-            ? <span className="text-[8px] font-bold px-1 py-px rounded bg-amber-500/20 text-amber-600 uppercase shrink-0">Anda / Pihak Kedua</span>
+            ? <span className="text-[8px] font-bold px-1 py-px rounded bg-indigo-500/20 text-indigo-600 uppercase shrink-0">Anda / Pihak Kedua</span>
             : <span className="text-[8px] font-bold px-1 py-px rounded bg-indigo-500/15 text-indigo-600 uppercase shrink-0">Pihak Pertama</span>}
         </div>
         {cm.anchor?.quote && (
-          <p className={`text-[10px] italic ${cm.kind === "strike" || cm.kind === "replace" ? "text-rose-300/80 line-through" : "text-amber-200/80"}`}>"{cm.anchor.quote}"</p>
+          <p className={`text-[10px] italic ${cm.kind === "strike" || cm.kind === "replace" ? "text-slate-400 line-through" : "text-indigo-200/80"}`}>"{cm.anchor.quote}"</p>
         )}
         {cm.kind === "replace" && cm.replacement && (
-          <p className="text-[10px] text-emerald-300 border-l-2 border-emerald-500 pl-2 underline decoration-emerald-500/60">→ "{cm.replacement}"</p>
+          <p className="text-[10px] text-indigo-300 border-l-2 border-indigo-500 pl-2 underline decoration-indigo-500/60">→ "{cm.replacement}"</p>
         )}
         {cm.status && cm.status !== "pending" && (
-          <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cm.status === "accepted" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+          <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cm.status === "accepted" ? "bg-indigo-500/20 text-indigo-300" : "bg-slate-700 text-slate-300"}`}>
             {cm.status === "accepted" ? "✓ Diterima" : "✕ Ditolak"}
           </span>
         )}
@@ -1863,7 +1942,7 @@ function ExternalReviewPage({ token }: { token: string }) {
             <p className="text-[10px] text-slate-400 whitespace-pre-wrap">{rp.text}</p>
           </div>
         ))}
-        {cm.resolved && <p className="text-[9px] font-bold text-emerald-400 uppercase">✓ Sudah ditindaklanjuti</p>}
+        {cm.resolved && <p className="text-[9px] font-bold text-indigo-400 uppercase">✓ Sudah ditindaklanjuti</p>}
       </div>
     );
   };
@@ -1907,19 +1986,19 @@ function ExternalReviewPage({ token }: { token: string }) {
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama Anda (wajib untuk komentar/persetujuan)" disabled={data.locked}
               className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
             <button onClick={approve} disabled={busy || okDone || data.locked}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
               {okDone || data.locked ? "✓ Sudah Disetujui" : "Setuju / OK"}
             </button>
             {data.canRequestRevision && !okDone && (
               <button onClick={() => { if (!name.trim()) { notify("Isi nama Anda dulu."); return; } setRevisionOpen(true); }} disabled={busy}
                 title="Kembalikan dokumen ke tim kami untuk direvisi sesuai komentar Anda."
-                className="px-4 py-2 bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 disabled:opacity-50 text-rose-600 text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
+                className="px-4 py-2 bg-slate-950 hover:bg-indigo-500/10 border border-slate-800 hover:border-indigo-500/40 disabled:opacity-50 text-slate-300 hover:text-indigo-400 text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
                 Ajukan Revisi
               </button>
             )}
           </div>
           {data.locked ? (
-            <p className="text-[11px] text-amber-400 mt-2 flex items-center gap-1.5">
+            <p className="text-[11px] text-indigo-400 mt-2 flex items-center gap-1.5">
               🔒 <b>Review ini sudah terkunci</b> sejak disetujui — komentar/persetujuan baru butuh akses dibuka kembali oleh pemilik dokumen.
             </p>
           ) : (
@@ -1985,14 +2064,14 @@ function ExternalReviewPage({ token }: { token: string }) {
               <div className="space-y-3 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto">
               <h3 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({allComments.filter((x) => !x.parentId).length})</h3>
               {mkSeed && (
-                <div className={`rounded-xl bg-slate-900 border border-dashed p-3 space-y-2 border-l-4 ${mkSeed.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : mkSeed.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
+                <div className={`rounded-xl bg-slate-900 border border-dashed p-3 space-y-2 border-l-4 ${mkSeed.kind === "comment" ? "border-l-indigo-400 border-indigo-600/60" : mkSeed.kind === "strike" ? "border-l-indigo-400 border-indigo-700/40" : "border-l-indigo-500 border-indigo-700/60"}`}>
                   <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
                     {mkSeed.kind === "comment" ? "✎ Komentar Baru" : mkSeed.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
                   </p>
-                  <p className={`text-[12px] italic ${mkSeed.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{mkSeed.quote}"</p>
+                  <p className={`text-[12px] italic ${mkSeed.kind === "comment" ? "text-indigo-200" : "text-slate-400 line-through"}`}>"{mkSeed.quote}"</p>
                   {mkSeed.kind === "replace" && (
                     <input autoFocus value={mkReplacement} onChange={(e) => setMkReplacement(e.target.value)} placeholder="Teks pengganti…"
-                      className="w-full px-3 py-2 bg-slate-950 border border-emerald-700/50 rounded-lg text-sm text-emerald-200 focus:outline-none focus:border-emerald-500" />
+                      className="w-full px-3 py-2 bg-slate-950 border border-indigo-700/50 rounded-lg text-sm text-indigo-200 focus:outline-none focus:border-indigo-500" />
                   )}
                   <textarea autoFocus={mkSeed.kind !== "replace"} value={mkText} onChange={(e) => setMkText(e.target.value)} rows={3}
                     placeholder={mkSeed.kind === "comment" ? "Tulis komentar…" : "Alasan (opsional)…"}
@@ -2009,19 +2088,19 @@ function ExternalReviewPage({ token }: { token: string }) {
                 )}
                 {allComments.filter((x) => !x.parentId).map((cm) => (
                   <div key={cm.id} onClick={() => setActiveId(cm.id)}
-                    className={`rounded-xl bg-slate-900 border border-l-4 p-3 space-y-1 cursor-pointer ${cm.kind === "strike" || cm.kind === "replace" ? "border-l-rose-500" : "border-l-amber-400"} ${activeId === cm.id ? "border-indigo-500" : "border-slate-800"}`}>
+                    className={`rounded-xl bg-slate-900 border border-l-4 p-3 space-y-1 cursor-pointer ${cm.kind === "strike" || cm.kind === "replace" ? "border-l-indigo-400" : "border-l-indigo-400"} ${activeId === cm.id ? "border-indigo-500" : "border-slate-800"}`}>
                     <p className="text-[11px] font-bold text-slate-200">
                       {cm.externalName || cm.userName}
                       <span className="ml-2 font-normal text-slate-500">{new Date(cm.createdAt).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</span>
                     </p>
                     {cm.anchor?.quote && (
-                      <p className={`text-[11px] italic ${cm.kind === "strike" || cm.kind === "replace" ? "text-rose-300 line-through" : "text-amber-200"}`}>"{cm.anchor.quote}"</p>
+                      <p className={`text-[11px] italic ${cm.kind === "strike" || cm.kind === "replace" ? "text-slate-400 line-through" : "text-indigo-200"}`}>"{cm.anchor.quote}"</p>
                     )}
                     {cm.kind === "replace" && cm.replacement && (
-                      <p className="text-[11px] text-emerald-300 border-l-2 border-emerald-500 pl-2 underline decoration-emerald-500/60">→ "{cm.replacement}"</p>
+                      <p className="text-[11px] text-indigo-300 border-l-2 border-indigo-500 pl-2 underline decoration-indigo-500/60">→ "{cm.replacement}"</p>
                     )}
                     {cm.status && cm.status !== "pending" && (
-                      <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cm.status === "accepted" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+                      <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cm.status === "accepted" ? "bg-indigo-500/20 text-indigo-300" : "bg-slate-700 text-slate-300"}`}>
                         {cm.status === "accepted" ? "✓ Diterima" : "✕ Ditolak"}
                       </span>
                     )}
@@ -4287,7 +4366,7 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
               lagi tombol "lanjut ke tahap" manual. Kalau sudah tertaut ke
               Kontrak, status ikut Contract.status otomatis (lihat
               withLinkedContract di server.ts); kalau belum, statusnya cuma
-              menunggu ditautkan lewat form Buat Kontrak Eksternal. */}
+              menunggu ditautkan lewat form Buat Dokumen Baru. */}
           {job.linkedContract ? (
             <div className="p-4 bg-mist rounded-[22px] space-y-3">
               <p className="text-[11.5px] text-slate-400 leading-relaxed">Status pekerjaan ini <b className="text-slate-100">otomatis mengikuti</b> status Kontrak yang terhubung — tidak bisa diubah manual dari sini.</p>
@@ -4566,7 +4645,7 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
 
       {/* Monitoring Kontrak — lebar penuh (kartu Surat-Menyurat dihapus) */}
       <div>
-        <LegalPanel Icon={FileCheck} title="Kontrak Eksternal" subtitle="Masa berlaku kontrak berjalan (sejak Arsip: Arsip, Distribusi/Implementasi, Aktif)">
+        <LegalPanel Icon={FileCheck} title="Dokumen Eksternal" subtitle="Masa berlaku kontrak berjalan (sejak Arsip: Arsip, Distribusi/Implementasi, Aktif)">
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-center">
             {[
               { v: data.monitoringKontrak.aktif, l: "Berlaku", c: "bg-mist text-indigo-400" },
@@ -5050,7 +5129,7 @@ function ReleaseAnnouncementsCard({
             <h3 className="text-[17px] font-semibold text-slate-100 leading-tight">Pengumuman Rilis Kontrak</h3>
             <p className="text-xs text-slate-500 mt-0.5">
               {contract.status === "Arsip"
-                ? "TTD basah sudah diunggah (Arsip). Umumkan rilis ke tim internal (per nama) untuk masuk tahap Distribusi/Implementasi — kontrak otomatis Aktif setelah semua penerima membuka notifikasinya."
+                ? "TTD basah sudah diunggah (Arsip). Umumkan rilis ke tim internal (per nama) untuk masuk tahap Distribusi/Implementasi — kontrak otomatis Aktif setelah semua penerima membuka notifikasinya. (Pengumuman Eksternal hanya membuat link PDF — tidak mengubah status.)"
                 : contract.status === "Distribusi"
                   ? "Distribusi/Implementasi — menunggu semua penerima membuka notifikasi pengumuman. Kontrak otomatis Aktif setelah semuanya membuka."
                   : "Kontrak sudah Aktif. Beri tahu tim internal (per nama) atau bagikan link PDF resmi ke pihak eksternal."}
@@ -5400,8 +5479,8 @@ export default function App() {
     { id: "dashboard", label: "Dashboard" },
     { id: "dashboard-legal", label: "Dashboard Legal" },
     { id: "pekerjaan-legal", label: "Pekerjaan Legal" },
-    { id: "monitoring", label: "Kontrak Eksternal" },
-    { id: "kontrak-karyawan", label: "Kontrak Karyawan" },
+    { id: "monitoring", label: "Dokumen Eksternal" },
+    { id: "kontrak-karyawan", label: "Dokumen Karyawan" },
     { id: "clauses", label: "Library Klausul & Template" },
     { id: "internal-docs", label: "Dokumen DCS" },
     { id: "arsip", label: "Arsip Folder (Eksternal & Internal)" },
@@ -6475,6 +6554,13 @@ export default function App() {
   };
   const unifiedContractStatusOf = (c: Contract): string =>
     (c as any).unifiedStatus || computeUnifiedContractStatusClient(c);
+  // Mode Tinjau + komentar/coret/ganti: hanya Legal/Admin/Super Admin, atau
+  // reviewer yang ditunjuk Legal di dokumen ini (aturan sama dgn server).
+  // Pemegang dokumen — satu-satunya yang boleh mengirim ke Review Pihak Kedua,
+  // melewatinya, atau mengambil link review eksternal.
+  const canHoldDocument = !!currentUser && ["super_admin", "admin", "legal"].includes(currentUser.role);
+  const canReviewDoc = !!selectedContract && !!currentUser
+    && canReviewContract({ id: currentUser.id, role: currentUser.role, actingForIds: (currentUser as any).actingForIds }, selectedContract);
 
   // Untuk Arsip per Folder: kontrak dianggap "sudah ditandatangani" (bucket
   // Approve) kalau sudah pernah lolos aktivasi (upload bukti TTD basah) —
@@ -7379,6 +7465,42 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveReviewActive, selectedContract?.id]);
 
+  // Sinkron status Proses TTD ↔ Dokumen Kembali (dan Arsip → Distribusi →
+  // Aktif, yang digerakkan orang lain saat membuka notifikasi). Pengiriman & penerimaan
+  // dokumen fisik dicatat Legal di Detail Pekerjaan Legal; halaman detail
+  // kontrak yang sudah terbuka (mis. di tab lain) tidak ikut tahu dan tetap
+  // "Proses TTD". Selama kontrak masih di tahap TTD, ambil ulang field status
+  // & pencatatan TTD secara berkala + saat jendela kembali difokuskan.
+  // Hanya field itu yang digabung — isi dokumen/editan tidak disentuh.
+  const signingSyncId = selectedContract && ["FullyApproved", "Arsip", "Distribusi"].includes(selectedContract.status) ? selectedContract.id : null;
+  useEffect(() => {
+    if (!signingSyncId) return;
+    let stopped = false;
+    const sync = async () => {
+      try {
+        const res = await fetch(`/api/contracts/${signingSyncId}`);
+        if (!res.ok || stopped) return;
+        const fresh: any = await res.json();
+        setSelectedContract((prev) => {
+          if (!prev || prev.id !== signingSyncId) return prev;
+          const changed = prev.status !== fresh.status
+            || JSON.stringify(prev.signingDispatch || null) !== JSON.stringify(fresh.signingDispatch || null)
+            || JSON.stringify(prev.signingReceipt || null) !== JSON.stringify(fresh.signingReceipt || null)
+            || JSON.stringify(prev.releaseAnnouncements || null) !== JSON.stringify(fresh.releaseAnnouncements || null);
+          if (!changed) return prev;
+          return { ...prev, status: fresh.status, signingDispatch: fresh.signingDispatch, signingReceipt: fresh.signingReceipt, releaseAnnouncements: fresh.releaseAnnouncements, unifiedStatus: fresh.unifiedStatus, updatedAt: fresh.updatedAt } as Contract;
+        });
+        setContracts((prev) => prev.map((c) => (c.id === signingSyncId ? { ...c, status: fresh.status, signingDispatch: fresh.signingDispatch, signingReceipt: fresh.signingReceipt, releaseAnnouncements: fresh.releaseAnnouncements, unifiedStatus: fresh.unifiedStatus } as Contract : c)));
+      } catch { /* jaringan sesaat — coba lagi tick berikutnya */ }
+    };
+    const iv = setInterval(sync, 10000);
+    const onVisible = () => { if (document.visibilityState === "visible") sync(); };
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { stopped = true; clearInterval(iv); window.removeEventListener("focus", sync); document.removeEventListener("visibilitychange", onVisible); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signingSyncId]);
+
   const toggleMention = (userId: string, userName: string) => {
     setSelectedMentionIds((prev) => {
       if (prev.includes(userId)) return prev.filter((id) => id !== userId);
@@ -7474,21 +7596,8 @@ export default function App() {
       fetchInitialData();
     } catch { showToast("Gagal memproses aksi", "warning"); }
   };
-  // Pihak eksternal minta revisi (dicatat staf) → Revisi Eksternal; akses tamu dijeda.
-  const handleStartExternalRevision = () => askText({
-    title: "Catat Revisi dari Pihak Eksternal",
-    label: "Ringkasan revisi yang diminta (komentar detail tetap ada di Mode Tinjau)",
-    placeholder: "mis. Pasal 5 nilai denda minta diturunkan, termin pembayaran jadi 3x",
-    onConfirm: (note) => postContractFlowAction("external-review/request-revision", { note },
-      "Kontrak masuk Revisi Eksternal — edit dokumennya, lalu ajukan ulang ke review internal."),
-  });
-  const handleMarkExternalApproved = () => askText({
-    title: "Catat Persetujuan Pihak Eksternal",
-    label: "Nama yang menyetujui (pihak eksternal)",
-    initial: selectedContract?.party2Name || "",
-    onConfirm: (name) => postContractFlowAction("external-review/mark-approved", { name },
-      "Disetujui eksternal — kontrak masuk Review Final Internal."),
-  });
+  // Persetujuan & permintaan revisi pihak eksternal HANYA dilakukan pihak
+  // eksternal sendiri lewat link review — staf tidak bisa mewakili.
   const handleSkipExternalReview = () => askText({
     title: "Lewati Review Pihak Kedua",
     label: "Alasan (wajib, tercatat di audit)",
@@ -7558,7 +7667,9 @@ export default function App() {
     if (!selectedContract) return;
     const cl = selectedContract.clauses.find((x, i) => (x.id || String(i)) === seed.clauseId);
     const display = cl ? stripHtmlOnly(substituteVars(cl.content, selectedContract.variables)) : "";
-    const start = display.indexOf(seed.quote);
+    // Narasi pembuka (__preamble__) bukan bagian dari selectedContract.clauses —
+    // pakai offset hasil sorotan langsung.
+    const start = cl ? resolveQuoteStart(display, seed.quote, seed.start) : (typeof seed.start === "number" ? seed.start : -1);
     const anchorPayload = { start: start >= 0 ? start : 0, end: start >= 0 ? start + seed.quote.length : seed.quote.length };
 
     // Mode "Ubah sorotan": sorotan baru ini MENGGANTI anchor komentar yang
@@ -7775,7 +7886,7 @@ export default function App() {
     if (cmt.clauseId === "__preamble__") {
       const { template, tokens } = getPreambleTemplateAndTokens();
       const display = buildPreambleText(template, tokens);
-      const n = nthIn(display);
+      const n = Math.min(nthIn(display), Math.max(countOccurrences(display, quote) - 1, 0));
       // Template dengan token sudah terisi, format **tebal** tetap ada.
       const resolved = template.replace(/\{\{([^}]+)\}\}/g, (_m, k) => tokens[k] ?? `{{${k}}}`);
       // Utamakan template asli (token {{...}} tetap hidup, jadi data pihak
@@ -7799,12 +7910,22 @@ export default function App() {
       const raw = String(selectedContract.clauses[idx].content || "");
       const isRich = /<\/?[a-z][^>]*>/i.test(raw);
       const display = stripHtmlOnly(substituteVars(raw, selectedContract.variables));
-      const n = nthIn(display);
+      const total = countOccurrences(display, quote);
+      // Jaga-jaga offset sorotan tidak cocok persis dengan teks sekarang:
+      // jangan sampai urutan kemunculan melewati jumlah yang ada (itu yang
+      // dulu memunculkan peringatan "kutipan sudah tidak ada" padahal masih ada).
+      const n = Math.min(nthIn(display), Math.max(total - 1, 0));
       const ins = isRich ? escapeHtml(replacement) : replacement;
-      let content = replaceNthOccurrence(raw, quote, n, ins);
+      // Pada HTML kaya, hanya teks (di luar tag) yang dihitung/diganti — kutipan
+      // pendek seperti "di" tidak boleh mengenai nama tag seperti <div>.
+      const replaceIn = (src: string) => isRich ? replaceNthInHtmlText(src, quote, n, ins) : replaceNthOccurrence(src, quote, n, ins);
+      const countIn = (src: string) => isRich ? countOccurrences(htmlTextOnly(src), quote) : countOccurrences(src, quote);
+      // Teks mentah (variabel {{...}} tetap hidup) hanya dipakai bila urutan
+      // kemunculannya sama dengan teks tampil; kalau tidak (mis. isi variabel
+      // memuat kutipan) bekukan variabel di pasal ini.
+      let content = countIn(raw) === total ? replaceIn(raw) : null;
       if (content === null) {
-        // Kutipan berasal dari isi {{variabel}} → bekukan variabel di pasal ini.
-        content = replaceNthOccurrence(substituteVars(raw, selectedContract.variables), quote, n, ins);
+        content = replaceIn(substituteVars(raw, selectedContract.variables));
       }
       if (content === null) {
         const ok = await askConfirm("Kalimat yang diusulkan terpotong format tebal/miring di pasal ini. Usulan tetap bisa diterapkan, tapi format di pasal ini akan jadi teks biasa. Lanjutkan?", { title: "Terapkan usulan", confirmLabel: "Terapkan" });
@@ -8599,12 +8720,12 @@ export default function App() {
       // Upload Dokumen saja (lihat Tahap 1) — isi kontrak sudah ada di
       // berkasnya, jadi Pihak Kedua/Tanggal TIDAK ditanya lagi di sini.
       if (!newContractForm.title.trim()) {
-        showToast("Judul Kontrak wajib diisi", "warning");
+        showToast("Judul Dokumen wajib diisi", "warning");
         return;
       }
     } else {
-      if (!newContractForm.title || !newContractForm.party2Name || !newContractForm.startDate || !newContractForm.endDate) {
-        showToast("Harap isi semua field utama kontrak", "warning");
+      if (!newContractForm.title || !newContractForm.party2Name) {
+        showToast("Harap isi judul dokumen dan nama pihak kedua", "warning");
         return;
       }
       if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) {
@@ -9737,11 +9858,21 @@ export default function App() {
           : `Gagal mengirim pengumuman rilis (HTTP ${res.status}).`), "warning");
         return;
       }
-      const next = { ...selectedContract, releaseAnnouncements: data.contract?.releaseAnnouncements || selectedContract.releaseAnnouncements };
+      // Server memindahkan status Arsip → Distribusi/Implementasi saat pengumuman
+      // dikirim. Status baru WAJIB ikut dipakai di sini — dulu hanya daftar
+      // pengumumannya yang diperbarui, jadi layar tetap menampilkan "Arsip"
+      // sampai halaman dimuat ulang (dan saat itu sudah loncat ke "Aktif").
+      const releasePatch = {
+        releaseAnnouncements: data.contract?.releaseAnnouncements || selectedContract.releaseAnnouncements,
+        status: data.contract?.status || selectedContract.status,
+        unifiedStatus: data.contract?.status ? contractStage(data.contract) : (selectedContract as any).unifiedStatus,
+        updatedAt: data.contract?.updatedAt || selectedContract.updatedAt,
+      };
+      const next = { ...selectedContract, ...releasePatch } as Contract;
       // Jangan sampai ini membuat "Simpan Draft" mengira ada perubahan isi yang belum tersimpan.
       if (JSON.stringify(selectedContract) === draftSavedSnapshot) setDraftSavedSnapshot(JSON.stringify(next));
       setSelectedContract(next);
-      setContracts((prev) => prev.map((c) => (c.id === next.id ? { ...c, releaseAnnouncements: next.releaseAnnouncements } : c)));
+      setContracts((prev) => prev.map((c) => (c.id === next.id ? { ...c, ...releasePatch } as Contract : c)));
       setReleaseModalOpen(false);
       showToast(`Pengumuman rilis terkirim ke ${ids.length} orang.`, "success");
     } catch {
@@ -10213,8 +10344,8 @@ export default function App() {
       showToast("Harap pilih berkas dokumen (PDF/scan) terlebih dahulu", "warning");
       return;
     }
-    if (!docRegForm.title || !docRegForm.party2Name || !docRegForm.startDate || !docRegForm.endDate) {
-      showToast("Harap lengkapi nama dokumen, pihak, dan tanggal berlaku", "warning");
+    if (!docRegForm.title || !docRegForm.party2Name) {
+      showToast("Harap lengkapi nama dokumen dan pihak", "warning");
       return;
     }
     if (!isEndDateAfterStart(docRegForm.startDate, docRegForm.endDate)) {
@@ -11827,7 +11958,7 @@ export default function App() {
   const configSearchIndex: { label: string; hint: string; keywords: string; tab: string; main?: string; role?: string[] }[] = [
     { label: "Identitas Perusahaan", hint: "Nama, logo, alamat, kop surat", keywords: "perusahaan identitas logo alamat kop surat nama company letterhead", tab: "app" },
     { label: "e-Meterai & Tanda Tangan", hint: "Metode meterai & tanda tangan", keywords: "meterai emeterai e-meterai tanda tangan ttd signature materai", tab: "app" },
-    { label: "Jenis Dokumen (Semua Modul) & Format Nomornya", hint: "DCS, Kontrak Eksternal & Karyawan — kode, format nomor, judul bagian", keywords: "jenis dokumen tipe doctype semua modul dcs sop ik kebijakan memo kontrak eksternal karyawan bagian section judul heading template rename tambah kode format nomor penomoran mask", tab: "dcsdoctypes" },
+    { label: "Jenis Dokumen (Semua Modul) & Format Nomornya", hint: "DCS, Dokumen Eksternal & Karyawan — kode, format nomor, judul bagian", keywords: "jenis dokumen tipe doctype semua modul dcs sop ik kebijakan memo kontrak eksternal karyawan bagian section judul heading template rename tambah kode format nomor penomoran mask", tab: "dcsdoctypes" },
     { label: "Format Nomor Default & Dropdown", hint: "Format nomor & margin bawaan (DCS + Kontrak), prefix, tipe pihak, mata uang", keywords: "nomor penomoran format masker mask prefix urut sequence numbering default dropdown tipe pihak mata uang currency status departemen margin halaman kertas dcs kontrak", tab: "masterdata" },
     { label: "Klausul Kontrak & Template", hint: "Pustaka pasal + template kontrak", keywords: "klausul pasal kontrak template library pustaka clause", tab: "clauses", main: "clauses" },
     { label: "Narasi Pembuka & Para Pihak", hint: "Kalimat pembuka + identifikasi pihak (per kategori)", keywords: "narasi pembuka para pihak pihak pertama kedua kalimat preamble opening alamat jabatan", tab: "clauses", main: "clauses" },
@@ -13816,7 +13947,7 @@ export default function App() {
               )}
 
               <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua (vendor/mitra) — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
-                Dokumen Eksternal
+                Eksternal
               </p>
               {canSee("dashboard-legal") && (
               <button
@@ -13859,7 +13990,7 @@ export default function App() {
               >
                 <div className="flex items-center gap-3">
                   <Bell className="w-4 h-4" />
-                  <span>Kontrak Eksternal</span>
+                  <span>Dokumen Eksternal</span>
                 </div>
                 {(() => {
                   const now = new Date();
@@ -13916,8 +14047,8 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Kontrak karyawan dan dokumen terkontrol DCS (SOP, Instruksi Kerja, Memo, Kebijakan).">
-                Dokumen Internal
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Dokumen karyawan dan dokumen terkontrol DCS (SOP, Instruksi Kerja, Memo, Kebijakan).">
+                Internal
               </p>
               {canSee("kontrak-karyawan") && (
               <button
@@ -13933,7 +14064,7 @@ export default function App() {
               >
                 <div className="flex items-center gap-3">
                   <Users className="w-4 h-4" />
-                  <span>Kontrak Karyawan</span>
+                  <span>Dokumen Karyawan</span>
                 </div>
                 {(() => {
                   const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
@@ -14050,7 +14181,7 @@ export default function App() {
                     ? "bg-soft-blue text-white"
                     : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
                 }`}
-                title="Audit Trail yang sama, disaring khusus Kontrak Eksternal, Kontrak Karyawan, dan Dokumen DCS."
+                title="Audit Trail yang sama, disaring khusus Dokumen Eksternal, Dokumen Karyawan, dan Dokumen DCS."
               >
                 <Layers className="w-4 h-4" />
                 Audit Kontrak &amp; DCS
@@ -15569,7 +15700,7 @@ export default function App() {
                 </p>
               </div>
               <div className="px-4 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-[11px] text-sky-900/90 leading-relaxed">
-                <b className="text-sky-800">Menghasilkan naskah, bukan kontrak resmi.</b> Draft di sini <b>belum bernomor</b> dan belum masuk register. Untuk kontrak yang benar-benar terdaftar (bernomor & bisa diajukan approval), pakai "Buat Kontrak Eksternal" lalu pilih mode penyusunan cerdas.
+                <b className="text-sky-800">Menghasilkan naskah, bukan kontrak resmi.</b> Draft di sini <b>belum bernomor</b> dan belum masuk register. Untuk kontrak yang benar-benar terdaftar (bernomor & bisa diajukan approval), pakai "Buat Dokumen Baru" lalu pilih mode penyusunan cerdas.
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -16791,10 +16922,10 @@ export default function App() {
               <div className="cfg-content min-w-0 space-y-5 rounded-[28px] bg-slate-900/50 border border-white/70 p-5">
               {configTab !== "beranda" && (() => {
                 const META: Record<string, [string, string]> = {
-                  dcsdoctypes: ["Jenis Dokumen (Semua Modul)", "Satu tempat untuk jenis dokumen DCS, Kontrak Eksternal, dan Kontrak Karyawan."],
+                  dcsdoctypes: ["Jenis Dokumen (Semua Modul)", "Satu tempat untuk jenis dokumen DCS, Dokumen Eksternal, dan Dokumen Karyawan."],
                   masterdata: ["Format Nomor Default & Dropdown", "Daftar pilihan di form kontrak, format nomor dokumen, dan margin halaman."],
                   dcsclauses: ["Klausul DCS", "Blok isi yang bisa dipakai ulang saat menyusun SOP, IK, Memo, atau Kebijakan."],
-                  folder: ["Kategori Kontrak", "Kategori Kontrak Eksternal dan Kategori Kontrak Karyawan — dua daftar terpisah, muncul otomatis di form masing-masing."],
+                  folder: ["Kategori Kontrak", "Kategori Dokumen Eksternal dan Kategori Dokumen Karyawan — dua daftar terpisah, muncul otomatis di form masing-masing."],
                   vendor: ["Data Vendor", "Data pihak kedua: PIC, email, NPWP, dan alamat."],
                   karyawan: ["Data Karyawan", "Jabatan, departemen, gaji, dan tanggal mulai kerja."],
                   app: ["Perusahaan & e-Meterai", "Identitas perusahaan (kop dokumen), watermark PDF, dan e-Meterai."],
@@ -16918,8 +17049,8 @@ export default function App() {
                 {/* ===== KATEGORI KONTRAK EKSTERNAL ===== */}
                 <div className="space-y-4">
                   <div>
-                    <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2"><Briefcase className="w-4 h-4 text-amber-500" /> Kategori Kontrak Eksternal</h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">Dipakai form Kontrak Eksternal (PT → Platform → <b>Kategori</b> → Jenis) dan Library Klausul &amp; Template.</p>
+                    <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2"><Briefcase className="w-4 h-4 text-amber-500" /> Kategori Dokumen Eksternal</h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Dipakai form Dokumen Eksternal (PT → Platform → <b>Kategori</b> → Jenis) dan Library Klausul &amp; Template.</p>
                   </div>
                   <div className="flex gap-2">
                     <input
@@ -16998,8 +17129,8 @@ export default function App() {
                 {/* ===== KATEGORI KONTRAK KARYAWAN (internal) ===== */}
                 <div className="space-y-4 pt-6 border-t border-slate-800">
                   <div>
-                    <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2"><Users className="w-4 h-4 text-indigo-400" /> Kategori Kontrak Karyawan</h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">Status hubungan kerja untuk form Kontrak Karyawan (PT → <b>Kategori</b> → Jenis → Divisi). Terpisah dari kategori eksternal. Jenis dokumen karyawan diatur di tab Jenis Dokumen (Semua Modul) › Kontrak Karyawan.</p>
+                    <h3 className="text-sm font-bold text-slate-100 flex items-center gap-2"><Users className="w-4 h-4 text-indigo-400" /> Kategori Dokumen Karyawan</h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">Status hubungan kerja untuk form Dokumen Karyawan (PT → <b>Kategori</b> → Jenis → Divisi). Terpisah dari kategori eksternal. Jenis dokumen karyawan diatur di tab Jenis Dokumen (Semua Modul) › Dokumen Karyawan.</p>
                   </div>
                   <div className="flex gap-2">
                     <input
@@ -17100,7 +17231,7 @@ export default function App() {
                         <ClipboardList className="w-4 h-4 text-indigo-400" /> Jenis Kontrak / Dokumen
                       </h4>
                       <p className="text-[11px] text-slate-500">
-                        Pengelolaan jenis dokumen dari <b>ketiga modul</b> (Kontrak Eksternal, Kontrak Karyawan, dan DCS) kini disatukan di tab <b>Jenis Dokumen</b> — di sana Anda memilih modul tujuan saat menambah jenis baru.
+                        Pengelolaan jenis dokumen dari <b>ketiga modul</b> (Dokumen Eksternal, Dokumen Karyawan, dan DCS) kini disatukan di tab <b>Jenis Dokumen</b> — di sana Anda memilih modul tujuan saat menambah jenis baru.
                       </p>
                       <button
                         onClick={() => { setConfigTab("dcsdoctypes"); fetchDcsDocTypes(); fetchDcsNumberingRule(); }}
@@ -17433,7 +17564,7 @@ export default function App() {
                       <p className="text-[10px] text-slate-500">
                         {marginModule === "dcs"
                           ? "Berlaku untuk semua PDF dokumen DCS yang disusun di sistem. Margin kiri biasanya lebih besar untuk ruang penjilidan."
-                          : "Berlaku untuk PDF Kontrak Eksternal & Kontrak Karyawan (hasil \"Export to PDF\" dari preview kontrak) — mesin render beda dari DCS (screenshot html2canvas, bukan digambar pdf-lib). Tidak ada standar hukum wajib untuk kontrak bisnis (beda dengan naskah dinas pemerintah) — default 30/30/30/30 (3cm rata) mengikuti konvensi profesional umum. Isi 40 di Kiri kalau dokumen akan dijilid."}
+                          : "Berlaku untuk PDF Dokumen Eksternal & Dokumen Karyawan (hasil \"Export to PDF\" dari preview kontrak) — mesin render beda dari DCS (screenshot html2canvas, bukan digambar pdf-lib). Tidak ada standar hukum wajib untuk kontrak bisnis (beda dengan naskah dinas pemerintah) — default 30/30/30/30 (3cm rata) mengikuti konvensi profesional umum. Isi 40 di Kiri kalau dokumen akan dijilid."}
                       </p>
                       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                         {([["top", "Atas"], ["right", "Kanan"], ["bottom", "Bawah"], ["left", "Kiri"]] as const).map(([side, label]) => {
@@ -17590,7 +17721,7 @@ export default function App() {
                   data — kontrak dan dokumen terkontrol — dari satu tempat. */}
               {configTab === "dcsdoctypes" && (
                 <div className="space-y-4">
-                  <p className="text-xs text-slate-500">Satu tempat untuk semua jenis dokumen di ketiga modul. Saat menambah jenis, pilih modul tujuannya: <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan — template bagian & kolom TTD sendiri), <b className="text-indigo-300">Kontrak Eksternal</b>, atau <b className="text-emerald-300">Kontrak Karyawan</b>. Jenis yang dibuat otomatis muncul di form create modul terkait.</p>
+                  <p className="text-xs text-slate-500">Satu tempat untuk semua jenis dokumen di ketiga modul. Saat menambah jenis, pilih modul tujuannya: <b className="text-violet-300">DCS</b> (SOP/IK/Memo/Kebijakan — template bagian & kolom TTD sendiri), <b className="text-indigo-300">Dokumen Eksternal</b>, atau <b className="text-emerald-300">Dokumen Karyawan</b>. Jenis yang dibuat otomatis muncul di form create modul terkait.</p>
 
                   {/* Format Nomor Dokumen DCS & Margin Halaman Dokumen DCS pindah ke
                       tab "Format Nomor Default & Dropdown" (configTab === "masterdata")
@@ -17652,7 +17783,7 @@ export default function App() {
                                 <button key={val} onClick={() => patchDt({ appliesTo: val })} className={`flex-1 px-2 py-2 rounded-lg text-[11px] font-semibold cursor-pointer ${(dt.appliesTo || "both") === val ? "bg-indigo-600 text-white" : "bg-slate-900 text-slate-400 border border-slate-800"}`}>{label}</button>
                               ))}
                             </div>
-                            <p className="text-[10px] text-slate-500">Menentukan jenis ini muncul di form <b>Kontrak Eksternal</b>, <b>Kontrak Karyawan</b>, atau keduanya.</p>
+                            <p className="text-[10px] text-slate-500">Menentukan jenis ini muncul di form <b>Dokumen Eksternal</b>, <b>Dokumen Karyawan</b>, atau keduanya.</p>
                           </div>
                           <div className="space-y-1.5">
                             <label className="block text-xs font-semibold text-slate-300">Kategori (opsional)</label>
@@ -17803,7 +17934,7 @@ export default function App() {
                           {/* Bagian 2: Kontrak Eksternal */}
                           <div className="space-y-2">
                             <div className="flex items-center justify-between">
-                              <h4 className="text-xs font-bold text-indigo-300 flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> Kontrak Eksternal <span className="text-slate-600 font-normal">· {externalTypes.length}</span></h4>
+                              <h4 className="text-xs font-bold text-indigo-300 flex items-center gap-1.5"><Briefcase className="w-3.5 h-3.5" /> Dokumen Eksternal <span className="text-slate-600 font-normal">· {externalTypes.length}</span></h4>
                               <button onClick={() => addContractType("external")} className="text-[11px] px-2.5 py-1.5 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 rounded-lg font-semibold cursor-pointer flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Tambah Jenis Eksternal</button>
                             </div>
                             <div className="rounded-xl border border-slate-800/80 divide-y divide-slate-800/70 overflow-hidden">
@@ -17815,7 +17946,7 @@ export default function App() {
                           {/* Bagian 3: Kontrak Karyawan */}
                           <div className="space-y-2">
                             <div className="flex items-center justify-between">
-                              <h4 className="text-xs font-bold text-emerald-300 flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Kontrak Karyawan <span className="text-slate-600 font-normal">· {employeeTypes.length}</span></h4>
+                              <h4 className="text-xs font-bold text-emerald-300 flex items-center gap-1.5"><Users className="w-3.5 h-3.5" /> Dokumen Karyawan <span className="text-slate-600 font-normal">· {employeeTypes.length}</span></h4>
                               <button onClick={() => addContractType("employee")} className="text-[11px] px-2.5 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 rounded-lg font-semibold cursor-pointer flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Tambah Jenis Karyawan</button>
                             </div>
                             <div className="rounded-xl border border-slate-800/80 divide-y divide-slate-800/70 overflow-hidden">
@@ -18861,7 +18992,7 @@ export default function App() {
                   </span>
                   <div>
                     <h2 className="text-xl font-bold text-slate-100">
-                      {activeTab === "kontrak-karyawan" ? "Kontrak Karyawan" : "Kontrak Eksternal"}
+                      {activeTab === "kontrak-karyawan" ? "Dokumen Karyawan" : "Dokumen Eksternal"}
                     </h2>
                     <p className="text-sm text-slate-400 mt-0.5">
                       {activeTab === "kontrak-karyawan"
@@ -18899,7 +19030,7 @@ export default function App() {
                   className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-semibold transition cursor-pointer shrink-0"
                 >
                   <Plus className="w-4 h-4" />
-                  {activeTab === "kontrak-karyawan" ? "Buat Kontrak Karyawan" : "Buat Kontrak Eksternal"}
+                  {activeTab === "kontrak-karyawan" ? "Buat Dokumen Baru" : "Buat Dokumen Baru"}
                 </button>
                 )}
               </div>
@@ -19194,7 +19325,7 @@ export default function App() {
                     <div className="table-card">
                       <div className="flex items-center justify-between gap-3 flex-wrap px-2 pt-2 pb-3">
                         <p className="text-sm font-bold text-slate-100">
-                          Daftar Kontrak <span className="text-xs font-medium text-slate-500 ml-1">{filtered.length} dari {scoped.length} dokumen</span>
+                          Daftar Dokumen <span className="text-xs font-medium text-slate-500 ml-1">{filtered.length} dari {scoped.length} dokumen</span>
                         </p>
                       </div>
                       <div className="overflow-x-auto">
@@ -20545,7 +20676,7 @@ export default function App() {
                   )}
                 </div>
                 <div className="flex gap-1 border-b border-slate-800">
-                  {([["karyawan", "Kontrak Karyawan"], ["dcs", "Dokumen DCS"]] as const).map(([k, label]) => (
+                  {([["karyawan", "Dokumen Karyawan"], ["dcs", "Dokumen DCS"]] as const).map(([k, label]) => (
                     <button key={k} onClick={() => setArsipInternalTab(k)}
                       className={`px-4 py-2 text-xs font-bold rounded-t-lg border border-b-0 cursor-pointer ${arsipInternalTab === k ? "bg-slate-900 text-slate-100 border-slate-800" : "text-slate-500 border-transparent hover:text-slate-300"}`}>
                       {label}
@@ -20860,6 +20991,7 @@ export default function App() {
                       dokumen — tombol "Komentar" terpisah dulu redundan (data &
                       fungsi sama) sehingga dihapus. Badge jumlah komentar terbuka
                       dipindah ke sini agar tetap terlihat sekilas. */}
+                  {canReviewDoc && (
                   <button
                     onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
                     title="Buka dokumen dalam Mode Tinjau: kartu komentar melayang di margin kanan sejajar kalimatnya, persis fitur Comment di Microsoft Word. Di sini juga tempat membuat/menyalin Link Review Pihak Kedua."
@@ -20873,6 +21005,7 @@ export default function App() {
                       </span>
                     )}
                   </button>
+                  )}
                   {signatureMenuOpen && !isUploadedDocument(selectedContract) && (
                     <section className="basis-full mt-1 p-3 bg-slate-900 border border-slate-800 rounded-2xl" aria-label="Pilih format tanda tangan">
                       <div className="flex items-center justify-between mb-2 px-1">
@@ -22251,7 +22384,7 @@ export default function App() {
               )}
 
               {/* TABEL ADDENDUM — daftar addendum milik kontrak ini, mirip
-                  tabel utama Kontrak Eksternal: tiap baris punya tombol
+                  tabel utama Dokumen Eksternal: tiap baris punya tombol
                   "Tinjau" yang membuka halaman tinjau yang SAMA (workspace)
                   untuk addendum tsb. Saat yang dibuka adalah addendum, kartu
                   ini menampilkan kontrak induknya + addendum saudaranya. */}
@@ -22509,12 +22642,14 @@ export default function App() {
                                     ? <>Pihak eksternal sudah setuju. Periksa versi ini di <b>Mode Tinjau</b>; kalau belum sesuai, sorot bagiannya (komentar / coret / ganti) lalu <b>Minta Revisi</b> — kontrak kembali ke awal.</>
                                     : <>Tinjau dokumen di <b>Mode Tinjau</b>: sorot kalimat lalu pilih komentar / coret / ganti. Setelah selesai, <b>Setujui</b> atau <b>Minta Revisi</b> (komentar & usulan Anda jadi daftar revisinya).</>}
                                 </p>
+                                {canReviewDoc && (
                                 <button
                                   onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
                                   className="w-full py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-600 text-[11px] font-bold rounded-full border border-amber-500/30 cursor-pointer flex items-center justify-center gap-1.5"
                                 >
                                   <MessageSquare className="w-3.5 h-3.5" /> Buka Mode Tinjau &amp; Komentar
                                 </button>
+                                )}
                                 <div className="grid grid-cols-2 gap-2">
                                   <button
                                     onClick={() => setRevisionRequestOpen(true)}
@@ -22585,15 +22720,17 @@ export default function App() {
                                 )}
                                 {linked.length > 0 && (
                                   <div className="flex items-center justify-between gap-2 flex-wrap pt-1">
-                                    <span className={stillOpen > 0 ? "font-semibold text-rose-500" : "font-semibold text-emerald-600"}>
+                                    <span className={stillOpen > 0 ? "font-semibold text-rose-500" : "font-semibold text-indigo-600"}>
                                       {stillOpen > 0 ? `${stillOpen} dari ${linked.length} komentar/usulan belum ditindaklanjuti` : `Semua ${linked.length} komentar/usulan sudah ditindaklanjuti ✓`}
                                     </span>
+                                    {canReviewDoc && (
                                     <button
                                       onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
-                                      className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-bold text-amber-600 hover:border-amber-500/50 cursor-pointer flex items-center gap-1"
+                                      className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-[11px] font-bold text-indigo-600 hover:border-indigo-500/50 cursor-pointer flex items-center gap-1"
                                     >
                                       <MessageSquare className="w-3 h-3" /> Buka Mode Tinjau
                                     </button>
+                                    )}
                                   </div>
                                 )}
                                 <p className="text-slate-400">
@@ -22615,10 +22752,10 @@ export default function App() {
                           )}
                           {!canEditContracts ? (
                             <div className="w-full py-2 px-3 rounded-xl border border-slate-700 bg-slate-800/40 text-[11px] text-slate-400 leading-relaxed">
-                              Draft ini disusun & diajukan oleh Legal. Anda bisa memantau dan memberi komentar lewat Mode Tinjau.
+                              Draft ini disusun & diajukan oleh Legal. Anda bisa memantau statusnya; Mode Tinjau &amp; komentar dibuka bila Legal menunjuk Anda sebagai reviewer.
                             </div>
                           ) : selectedContract.revisionStage && !isDocumentOwnerSide(selectedContract) ? (
-                            <div className="w-full py-2 px-3 rounded-xl border border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-700 leading-relaxed">
+                            <div className="w-full py-2 px-3 rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-[11px] text-indigo-700 leading-relaxed">
                               Menunggu revisi oleh <b>{selectedContract.approvalSubmittedByName || selectedContract.createdByName || "pembuat dokumen"}</b>. Usulan Anda akan diterima/ditolak oleh pembuat dokumen, lalu diajukan ulang ke Review Internal.
                             </div>
                           ) : (
@@ -22645,7 +22782,7 @@ export default function App() {
                             }}
                             className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                           >
-                            <Send className="w-4 h-4" /> {selectedContract.revisionStage ? "Ajukan Ulang ke Review Internal" : "Ajukan untuk Persetujuan"}
+                            <Send className="w-4 h-4" /> {selectedContract.revisionStage ? "Ajukan Ulang ke Review Internal" : "Ajukan Review Internal"}
                           </button>
                           )}
                         </div>
@@ -22662,7 +22799,7 @@ export default function App() {
                         const hasPending = (selectedContract.approvalSteps || []).some((st) => st.decision === "pending");
                         return (
                           <div className="space-y-2">
-                            <div className="p-2.5 bg-amber-500/10 border border-amber-500/25 rounded-lg text-[11px] text-amber-700 space-y-1">
+                            <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/25 rounded-lg text-[11px] text-indigo-700 space-y-1">
                               <p><b>Review Final Internal</b> — pihak eksternal sudah setuju{lastExt ? <> (<b>{lastExt.name}</b>, {new Date(lastExt.approvedAt).toLocaleDateString("id-ID")})</> : null}. Tim internal mengonfirmasi versi ini dulu sebelum Proses TTD, supaya benar-benar disetujui dua pihak.</p>
                               <p className="text-slate-400">Setuju → Proses TTD. Minta Revisi → kembali ke awal (Revisi Internal → Review Internal → … → Review Pihak Kedua lagi).</p>
                             </div>
@@ -22680,23 +22817,27 @@ export default function App() {
 
                       {selectedContract.status === "ApprovedInternal" && (
                         <div className="space-y-2">
-                          <div className="p-2.5 bg-teal-500/10 border border-teal-500/20 rounded-lg text-[11px] text-teal-600">
-                            Disetujui internal. Langkah berikutnya: buka dokumen ke <b>pihak eksternal</b> untuk direview{(selectedContract.externalRoundCount || 0) > 0 ? ` — link yang sama dengan ronde sebelumnya akan aktif lagi (ronde ${(selectedContract.externalRoundCount || 0) + 1})` : ""}.
+                          <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-[11px] text-indigo-600">
+                            {canHoldDocument
+                              ? <>Disetujui internal. Langkah berikutnya: buka dokumen ke <b>pihak eksternal</b> untuk direview{(selectedContract.externalRoundCount || 0) > 0 ? ` — link yang sama dengan ronde sebelumnya akan aktif lagi (ronde ${(selectedContract.externalRoundCount || 0) + 1})` : ""}.</>
+                              : <>Review internal sudah disetujui. Langkah berikutnya (kirim ke pihak kedua atau lanjut Proses TTD) dilakukan oleh <b>Legal</b> yang memegang dokumen ini.</>}
                           </div>
-                          <button
-                            onClick={handleShareExternalReview}
-                            className="w-full py-2 bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
-                          >
-                            <ExternalLink className="w-4 h-4" /> Kirim ke Review Pihak Kedua
-                          </button>
-                          {(currentUser?.role === "admin" || currentUser?.role === "super_admin" || currentUser?.role === "legal" || currentUser?.role === "manajemen") && (
-                            <button
-                              onClick={handleSkipExternalReview}
-                              title="Untuk dokumen yang tidak perlu ditinjau pihak kedua. Wajib alasan, tercatat di audit."
-                              className="w-full py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer"
-                            >
-                              Lewati Review Pihak Kedua → Proses TTD
-                            </button>
+                          {canHoldDocument && (
+                            <>
+                              <button
+                                onClick={handleShareExternalReview}
+                                className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+                              >
+                                <ExternalLink className="w-4 h-4" /> Kirim ke Review Pihak Kedua
+                              </button>
+                              <button
+                                onClick={handleSkipExternalReview}
+                                title="Untuk dokumen yang tidak perlu ditinjau pihak kedua. Wajib alasan, tercatat di audit."
+                                className="w-full py-1.5 text-[11px] font-semibold text-slate-400 hover:text-slate-200 bg-slate-950 border border-slate-800 rounded-xl cursor-pointer"
+                              >
+                                Lewati Review Pihak Kedua → Proses TTD
+                              </button>
+                            </>
                           )}
                         </div>
                       )}
@@ -22705,45 +22846,33 @@ export default function App() {
                         const extOpen = clauseComments.filter((cm) => cm.contractId === selectedContract.id && cm.external && !cm.parentId && !cm.resolved).length;
                         return (
                           <div className="space-y-2">
-                            <div className="p-2.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-[11px] text-violet-600 space-y-1">
+                            <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-[11px] text-indigo-600 space-y-1">
                               <p>Review Pihak Kedua{(selectedContract.externalRoundCount || 1) > 1 ? ` (ronde ${selectedContract.externalRoundCount})` : ""} — menunggu pihak eksternal. Mereka bisa <b>Setuju/OK</b> (→ Review Final Internal) atau <b>Ajukan Revisi</b> (→ Revisi Eksternal).</p>
                               {(() => {
                                 const cur = (selectedContract.externalRounds || []).find((r) => r.round === selectedContract.externalRoundCount);
                                 return cur?.note ? <p className="text-slate-400">Catatan pengantar terkirim: <i>"{cur.note}"</i></p> : null;
                               })()}
                               {extOpen > 0 && (
-                                <p className="font-semibold text-amber-600">⚠ {extOpen} komentar eksternal belum ditindaklanjuti — kemungkinan ada revisi.</p>
+                                <p className="font-semibold text-indigo-600">⚠ {extOpen} komentar eksternal belum ditindaklanjuti — kemungkinan ada revisi.</p>
                               )}
                             </div>
-                            <div className="grid grid-cols-2 gap-2">
+                            <div className={`grid gap-2 ${canHoldDocument && canReviewDoc ? "grid-cols-2" : "grid-cols-1"}`}>
+                              {canHoldDocument && (
                               <button
                                 onClick={handleShareExternalReview}
-                                className="py-2 bg-slate-950 border border-slate-800 hover:border-violet-500/50 text-violet-600 text-[11px] font-bold rounded-xl cursor-pointer flex items-center justify-center gap-1"
+                                className="py-2 bg-slate-950 border border-slate-800 hover:border-indigo-500/50 text-indigo-600 text-[11px] font-bold rounded-xl cursor-pointer flex items-center justify-center gap-1"
                               >
                                 <ExternalLink className="w-3.5 h-3.5" /> Salin Link
                               </button>
+                              )}
+                              {canReviewDoc && (
                               <button
                                 onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
-                                className="py-2 bg-slate-950 border border-slate-800 hover:border-amber-500/50 text-amber-600 text-[11px] font-bold rounded-xl cursor-pointer flex items-center justify-center gap-1"
+                                className="py-2 bg-slate-950 border border-slate-800 hover:border-indigo-500/50 text-indigo-600 text-[11px] font-bold rounded-xl cursor-pointer flex items-center justify-center gap-1"
                               >
                                 <MessageSquare className="w-3.5 h-3.5" /> Lihat Komentar
                               </button>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <button
-                                onClick={handleStartExternalRevision}
-                                title="Pihak eksternal minta perubahan (lewat komentar, email, atau rapat). Dokumen kembali bisa diedit; akses eksternal dijeda sampai revisi lolos review internal."
-                                className="py-2 bg-rose-500/10 border border-rose-500/25 hover:bg-rose-500/20 text-rose-600 text-[11px] font-bold rounded-xl cursor-pointer"
-                              >
-                                Ada Revisi Eksternal
-                              </button>
-                              <button
-                                onClick={handleMarkExternalApproved}
-                                title="Pihak eksternal sudah setuju di luar sistem (email/rapat)."
-                                className="py-2 bg-emerald-600/20 border border-emerald-600/30 hover:bg-emerald-600/30 text-emerald-600 text-[11px] font-bold rounded-xl cursor-pointer"
-                              >
-                                Disetujui Eksternal
-                              </button>
+                              )}
                             </div>
                           </div>
                         );
@@ -22756,13 +22885,13 @@ export default function App() {
                             {selectedContract.revisionHistory!.slice().reverse().map((r) => (
                               <div key={r.id} className="p-2 bg-slate-900 border border-slate-850 rounded-lg">
                                 <div className="flex items-center justify-between gap-2">
-                                  <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${r.stage === "eksternal" ? "bg-violet-500/15 text-violet-600" : "bg-rose-500/15 text-rose-600"}`}>
+                                  <span className={`px-1.5 py-0.5 rounded font-bold uppercase ${r.stage === "eksternal" ? "bg-indigo-500/15 text-indigo-600" : "bg-rose-500/15 text-rose-600"}`}>
                                     Revisi {r.stage === "eksternal" ? "Eksternal" : "Internal"}
                                   </span>
                                   <span>{new Date(r.requestedAt).toLocaleString("id-ID", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
                                 </div>
                                 <p className="mt-1">Diminta: <b className="text-slate-300">{r.requestedBy}</b>{r.note ? ` — "${r.note}"` : ""}</p>
-                                <p className={r.resubmittedAt ? "text-emerald-400" : "text-amber-400"}>
+                                <p className={r.resubmittedAt ? "text-indigo-400" : "text-indigo-400"}>
                                   {r.resubmittedAt ? `✓ Diajukan ulang ${r.resubmittedBy ? `oleh ${r.resubmittedBy} ` : ""}${new Date(r.resubmittedAt).toLocaleDateString("id-ID")}` : "● Sedang direvisi"}
                                 </p>
                               </div>
@@ -22771,19 +22900,30 @@ export default function App() {
                         </details>
                       )}
 
-                      {selectedContract.status === "FullyApproved" && (
+                      {selectedContract.status === "FullyApproved" && (() => {
+                        const sent = selectedContract.signingDispatch;
+                        const back = selectedContract.signingReceipt;
+                        return (
                         <div className="space-y-2">
-                          <div className="p-2.5 bg-teal-500/10 border border-teal-500/20 rounded-lg text-[11px] text-teal-300">
-                            Proses TTD — dokumen siap diunduh/dikirim untuk dicetak &amp; TTD basah. Setelah ditandatangani, klik tombol di bawah untuk mengunggah hasil scan — status kontrak menjadi <b>Arsip</b>, lalu umumkan rilis internal (Distribusi/Implementasi); kontrak <b>Aktif</b> setelah semua penerima membuka notifikasinya.
+                          <div className="p-2.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-[11px] text-indigo-300 space-y-1">
+                            {back ? (
+                              <p><b>Dokumen Kembali</b> — {back.copies} rangkap diterima Legal pada {new Date(back.receivedDate).toLocaleDateString("id-ID")}. Tahap Proses TTD sudah selesai. Langkah berikutnya: unggah hasil scan TTD basah — status kontrak menjadi <b>Arsip</b>, lalu umumkan rilis internal (Distribusi/Implementasi); kontrak <b>Aktif</b> setelah semua penerima membuka notifikasinya.</p>
+                            ) : (
+                              <>
+                                <p><b>Proses TTD</b> — dokumen siap diunduh/dikirim untuk dicetak &amp; TTD basah.{sent ? ` Dikirim ${sent.copies} rangkap pada ${new Date(sent.sentDate).toLocaleDateString("id-ID")} via ${sent.medium}.` : ""}</p>
+                                <p className="text-slate-400">Tahap ini berakhir saat Legal mencatat rangkap yang sudah kembali (di Detail Pekerjaan Legal) — status berubah jadi <b>Dokumen Kembali</b>.</p>
+                              </>
+                            )}
                           </div>
                           <button
                             onClick={() => handleOpenActivateModal(selectedContract.id)}
-                            className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+                            className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                           >
                             <Upload className="w-4 h-4" /> {selectedContract.amendsContractId ? "Unggah TTD Basah Addendum → Arsip" : "Unggah TTD Basah → Arsip"}
                           </button>
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {isInForce(selectedContract.status) && (
                         <div className="space-y-2">
@@ -24714,7 +24854,7 @@ export default function App() {
                 </h2>
                 <p className="text-xs text-slate-400">
                   Log forensik yang sama dengan halaman "Audit Trail" utama, disaring
-                  khusus tiga kategori: Kontrak Eksternal, Kontrak Karyawan (internal),
+                  khusus tiga kategori: Dokumen Eksternal, Dokumen Karyawan (internal),
                   dan Dokumen Internal (DCS) — tanpa aktivitas modul lain (pengguna,
                   pengaturan, master data, dst).
                 </p>
@@ -24740,8 +24880,8 @@ export default function App() {
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {([
                       ["semua", `Semua (${scoped.length})`],
-                      ["eksternal", `Kontrak Eksternal (${countEksternal})`],
-                      ["karyawan", `Kontrak Karyawan (${countKaryawan})`],
+                      ["eksternal", `Dokumen Eksternal (${countEksternal})`],
+                      ["karyawan", `Dokumen Karyawan (${countKaryawan})`],
                       ["dcs", `DCS (${countDcs})`],
                     ] as const).map(([key, label]) => (
                       <button
@@ -24852,14 +24992,14 @@ export default function App() {
                   <div className="space-y-2.5">
                     <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
                       <div>
-                        <p className="font-bold text-slate-200">Kontrak Eksternal</p>
+                        <p className="font-bold text-slate-200">Dokumen Eksternal</p>
                         <p className="text-[10px] text-slate-500">Vendor / Customer / Mitra</p>
                       </div>
                       <span className="text-lg font-bold text-indigo-400">{countEksternal}</span>
                     </div>
                     <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
                       <div>
-                        <p className="font-bold text-slate-200">Kontrak Karyawan</p>
+                        <p className="font-bold text-slate-200">Dokumen Karyawan</p>
                         <p className="text-[10px] text-slate-500">Internal (PKWT/PKWTT)</p>
                       </div>
                       <span className="text-lg font-bold text-brand-orange">{countKaryawan}</span>
@@ -24895,7 +25035,7 @@ export default function App() {
               <div className="space-y-1">
                 <h3 className="font-bold text-xl text-slate-100 flex items-center gap-2">
                   <Sparkles className="text-amber-400 w-6 h-6" />
-                  {creationLockedParty === "employee" ? "Wizard Kontrak Karyawan" : creationLockedParty === "external" ? "Wizard Kontrak Eksternal" : "Smart Contract Creation Wizard"}
+                  {creationLockedParty === "employee" ? "Form Dokumen Karyawan" : creationLockedParty === "external" ? "Form Dokumen Eksternal" : "Smart Contract Creation Wizard"}
                 </h3>
                 <p className="text-xs text-slate-400">
                   {newContractForm.creationMode === "upload" ? (
@@ -24945,10 +25085,8 @@ export default function App() {
                   if (creationStep === 2) {
                     // Hanya mode "smart" yang sampai ke Tahap 2 (mode "upload"
                     // sudah submit langsung dari Tahap 1 — lihat blok di atas).
-                    if (!newContractForm.title.trim()) { showToast("Judul Kontrak wajib diisi", "warning"); return; }
+                    if (!newContractForm.title.trim()) { showToast("Judul Dokumen wajib diisi", "warning"); return; }
                     if (!newContractForm.party2Name.trim()) { showToast("Nama Pihak Kedua wajib diisi", "warning"); return; }
-                    if (!newContractForm.startDate) { showToast("Tanggal Mulai Berlaku wajib diisi", "warning"); return; }
-                    if (!newContractForm.endDate) { showToast("Tanggal Selesai Berlaku wajib diisi", "warning"); return; }
                     if (!isEndDateAfterStart(newContractForm.startDate, newContractForm.endDate)) { showToast("Tanggal selesai harus setelah tanggal mulai", "warning"); return; }
                   }
                   if (creationStep < 3) {
@@ -24962,7 +25100,7 @@ export default function App() {
                   <div className="space-y-6">
                     <div className="bg-slate-900 border border-indigo-500/10 p-5 rounded-xl space-y-4">
                       <label className="block text-sm font-semibold text-slate-300">
-                        Metode Pembuatan Kontrak
+                        Metode Pembuatan Dokumen
                       </label>
                       <div className="flex gap-4">
                         <label className="flex items-center gap-2 cursor-pointer">
@@ -25022,7 +25160,7 @@ export default function App() {
                     {newContractForm.creationMode === "upload" && (
                       <div className="space-y-1.5">
                         <label className="block text-sm font-semibold text-slate-300">
-                          Judul Kontrak <span className="text-rose-400">*</span>
+                          Judul Dokumen <span className="text-rose-400">*</span>
                         </label>
                         <input
                           type="text"
@@ -25068,7 +25206,7 @@ export default function App() {
                     {newContractForm.creationMode === "upload" && (
                       <div className="space-y-1.5">
                         <label className="block text-sm font-semibold text-slate-300">
-                          Judul Kontrak <span className="text-rose-400">*</span>
+                          Judul Dokumen <span className="text-rose-400">*</span>
                         </label>
                         <input
                           type="text"
@@ -25088,7 +25226,7 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="block text-sm font-semibold text-slate-300 flex items-center gap-1.5">
-                        Nomor Dokumen{newContractForm.creationMode === "upload" ? " (dari vendor/penerbit)" : ""}
+                        Nomor Dokumen
                         <HelpCircle className="w-3.5 h-3.5 text-slate-500 font-normal" title={newContractForm.creationMode === "upload" ? `Dokumen ini hasil unggah ${fileKindFromName(newContractForm.masterPdfFile?.name) || "berkas (PDF/Word)"} — nomor DIISI BEBAS sesuai dokumen aslinya/vendor. Kosongkan bila ingin nomor otomatis sistem.` : "Nomor final, sudah dialokasikan begitu Kategori & Jenis Dokumen dipilih — terkunci, supaya urut & tak pernah dobel."} />
                       </label>
                       {newContractForm.creationMode === "upload" ? (
@@ -25118,67 +25256,10 @@ export default function App() {
                       )}
                     </div>
 
-                    {newContractForm.creationMode === "smart" && (() => {
-                      const rootFolders = subFolders.filter(
-                        (f) => f.category === newContractForm.category && f.parentId === null,
-                      );
-                      const selectedFolder = subFolders.find((f) => f.id === newContractForm.subFolderId);
-                      // Root folder yang sedang aktif: langsung dari pilihan, atau parent-nya kalau yang
-                      // dipilih adalah level sub-sub.
-                      const activeRootId = selectedFolder
-                        ? (selectedFolder.parentId === null ? selectedFolder.id : selectedFolder.parentId)
-                        : "";
-                      const activeChildId = selectedFolder && selectedFolder.parentId !== null ? selectedFolder.id : "";
-                      const childFolders = activeRootId ? subFolders.filter((f) => f.parentId === activeRootId) : [];
-                      return (
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div className="space-y-1.5">
-                            <label className="block text-sm font-semibold text-slate-300">
-                              Sub Folder <span className="text-slate-500 font-normal">(opsional)</span>
-                            </label>
-                            <select
-                              value={activeRootId}
-                              onChange={(e) =>
-                                setNewContractForm({ ...newContractForm, subFolderId: e.target.value })
-                              }
-                              className="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                            >
-                              <option value="">— Tidak dipilih —</option>
-                              {rootFolders.map((f) => (
-                                <option key={f.id} value={f.id}>{f.name}</option>
-                              ))}
-                            </select>
-                          </div>
-                          {activeRootId && childFolders.length > 0 && (
-                            <div className="space-y-1.5">
-                              <label className="block text-sm font-semibold text-slate-300">
-                                Sub-Sub Folder <span className="text-slate-500 font-normal">(opsional)</span>
-                              </label>
-                              <select
-                                value={activeChildId}
-                                onChange={(e) =>
-                                  setNewContractForm({
-                                    ...newContractForm,
-                                    subFolderId: e.target.value || activeRootId,
-                                  })
-                                }
-                                className="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                              >
-                                <option value="">— Tidak dipilih —</option>
-                                {childFolders.map((f) => (
-                                  <option key={f.id} value={f.id}>{f.name}</option>
-                                ))}
-                              </select>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-
                     {newContractForm.creationMode === "upload" && (
                       <div className="space-y-1.5">
                         <label className="block text-sm font-semibold text-slate-300">
-                          Berkas Dokumen/Template Kontrak (Wajib)
+                          Berkas Dokumen
                         </label>
                         <input
                           type="file"
@@ -25403,7 +25484,7 @@ export default function App() {
                     )}
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Judul Kontrak <span className="text-rose-400">*</span>
+                        Judul Dokumen <span className="text-rose-400">*</span>
                       </label>
                       <input
                         type="text"
@@ -25467,7 +25548,7 @@ export default function App() {
                       </label>
                       {creationLockedParty === "employee" ? (
                         <div className="w-full px-4 py-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-sm text-emerald-300 font-semibold flex items-center gap-2">
-                          <Users className="w-4 h-4" /> Karyawan (terkunci — dibuat dari Kontrak Karyawan)
+                          <Users className="w-4 h-4" /> Karyawan (terkunci — dibuat dari Dokumen Karyawan)
                         </div>
                       ) : (
                         <select
@@ -25538,11 +25619,10 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Tanggal Mulai Berlaku {newContractForm.creationMode !== "upload" && <span className="text-rose-400">*</span>}
+                        Tanggal Mulai Berlaku <span className="text-slate-500 font-normal">(opsional)</span>
                       </label>
                       <input
                         type="date"
-                        required={newContractForm.creationMode !== "upload"}
                         value={newContractForm.startDate}
                         onChange={(e) =>
                           setNewContractForm({
@@ -25556,11 +25636,10 @@ export default function App() {
 
                     <div className="space-y-1.5">
                       <label className="block text-xs font-semibold text-slate-300">
-                        Tanggal Selesai Berlaku {newContractForm.creationMode !== "upload" && <span className="text-rose-400">*</span>}
+                        Tanggal Selesai Berlaku <span className="text-slate-500 font-normal">(opsional)</span>
                       </label>
                       <input
                         type="date"
-                        required={newContractForm.creationMode !== "upload"}
                         min={newContractForm.startDate || undefined}
                         value={newContractForm.endDate}
                         onChange={(e) =>
@@ -25919,7 +25998,7 @@ export default function App() {
                         <div className="p-5 bg-indigo-500/5 border border-indigo-500/20 rounded-xl space-y-3">
                           <div className="flex items-center gap-2">
                             <FileCheck className="w-4 h-4 text-indigo-400" />
-                            <h4 className="text-sm font-bold text-slate-200">Ringkasan Kontrak — periksa sebelum menyimpan</h4>
+                            <h4 className="text-sm font-bold text-slate-200">Ringkasan Dokumen — periksa sebelum menyimpan</h4>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
                             {rows.map((r) => (
@@ -26162,10 +26241,10 @@ export default function App() {
                     className="px-6 py-3 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl transition shadow-lg flex items-center gap-2"
                   >
                     {newContractForm.creationMode === "upload"
-                      ? "Buat Kontrak"
+                      ? "Buat Dokumen"
                       : creationStep < 3
                         ? "Lanjut ke Tahap " + (creationStep + 1)
-                        : "Finalisasi & Buat Kontrak"}
+                        : "Finalisasi & Buat Dokumen"}
                     {newContractForm.creationMode !== "upload" && creationStep < 3 && <Sparkles className="w-4 h-4" />}
                   </button>
                 </div>
@@ -26236,12 +26315,12 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL AJUKAN PERSETUJUAN — pilih 2 penanggung jawab berurutan */}
+      {/* MODAL AJUKAN REVIEW INTERNAL — pilih 2 penanggung jawab berurutan */}
       {showApproverPicker && selectedContract && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
             <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-center">
-              <h3 className="font-bold text-slate-100 text-sm">Ajukan untuk Persetujuan</h3>
+              <h3 className="font-bold text-slate-100 text-sm">Ajukan Review Internal</h3>
               <button onClick={() => { setShowApproverPicker(false); setApproverPickerIds([]); }} className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer">✕</button>
             </div>
             <div className="p-5 space-y-3">
@@ -26527,7 +26606,7 @@ export default function App() {
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fadeIn">
           <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
             <div className="p-5 border-b border-slate-800 bg-slate-900/50">
-              <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2"><FolderOpen className="w-4 h-4 text-amber-500" /> Klasifikasi Arsip Kontrak Karyawan</h3>
+              <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2"><FolderOpen className="w-4 h-4 text-amber-500" /> Klasifikasi Arsip Dokumen Karyawan</h3>
               <p className="text-[11px] text-slate-400 mt-0.5 truncate">{classifyInternal.contract.title} · <span className="font-mono">{classifyInternal.contract.contractNumber}</span></p>
             </div>
             <div className="p-5 overflow-y-auto">
@@ -26984,7 +27063,7 @@ export default function App() {
 
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                    Nomor Dokumen (dari vendor/penerbit)
+                    Nomor Dokumen
                     <HelpCircle className="w-3 h-3 text-slate-500 font-normal" title="Dokumen ini murni hasil unggah PDF, jadi nomornya DIISI BEBAS sesuai nomor yang tertera pada dokumen/dari vendor — bukan nomor otomatis sistem. Kosongkan bila ingin sistem yang memberi nomor otomatis." />
                   </label>
                   <input
@@ -27115,7 +27194,7 @@ export default function App() {
 
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-slate-300">
-                    Tanggal Mulai Berlaku <span className="text-rose-400">*</span>
+                    Tanggal Mulai Berlaku <span className="text-slate-500 font-normal">(opsional)</span>
                   </label>
                   <input
                     type="date"
@@ -27127,7 +27206,7 @@ export default function App() {
 
                 <div className="space-y-1.5">
                   <label className="block text-xs font-semibold text-slate-300">
-                    Tanggal Berakhir <span className="text-rose-400">*</span>
+                    Tanggal Berakhir <span className="text-slate-500 font-normal">(opsional)</span>
                   </label>
                   <input
                     type="date"
@@ -28017,7 +28096,7 @@ export default function App() {
 
       {/* MODE TINJAU GAYA MICROSOFT WORD — dokumen di kiri, kartu komentar
           melayang di margin kanan sejajar kalimatnya, tersambung garis. */}
-      {reviewModeOpen && selectedContract && (() => {
+      {reviewModeOpen && selectedContract && canReviewDoc && (() => {
         // Pseudo-klausul "Narasi Pembuka" — narasi + identifikasi Pihak
         // Pertama/Kedua yang tampil SEBELUM pasal-pasal, kini juga bisa
         // disorot & dikomentari lewat mekanisme highlight/comment yang SAMA
@@ -28079,7 +28158,7 @@ export default function App() {
           : isInternalApprovalStage(selectedContract.status)
             ? "Dokumen sedang direview & terkunci. Usulan diterapkan saat tahap revisi: approver klik \"Minta Revisi\", lalu pembuat dokumen menerima/menolak usulan ini."
             : selectedContract.status === "ReviewEksternal"
-              ? "Dokumen sedang di Review Pihak Kedua & terkunci. Klik \"Ada Revisi Eksternal\" (atau tunggu pihak eksternal mengajukan revisi) supaya usulan bisa diterapkan."
+              ? "Dokumen sedang di Review Pihak Kedua & terkunci. Tunggu pihak eksternal menyetujui atau mengajukan revisi lewat link review, supaya usulan bisa diterapkan."
               : "Usulan hanya bisa diterapkan saat kontrak berstatus Draft / Revisi.";
         const docMarkupItems: MarkupItem[] = visible
           .filter((c) => c.docAnchor && c.anchor)
@@ -28093,12 +28172,12 @@ export default function App() {
           if (item.id === "__draft__") {
             if (!marginDraft) return null;
             return (
-              <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${marginDraft.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : marginDraft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
+              <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${marginDraft.kind === "comment" ? "border-l-indigo-400 border-indigo-600/60" : marginDraft.kind === "strike" ? "border-l-indigo-400 border-indigo-700/40" : "border-l-indigo-500 border-indigo-700/60"}`}>
                 <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
                   {marginDraft.kind === "comment" ? "✎ Komentar Baru" : marginDraft.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
                 </p>
-                <p className={`text-[11px] italic ${marginDraft.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{marginDraft.quote}"</p>
-                <p className={`text-[10px] font-semibold ${newCommentVisibility === "eksternal" ? "text-violet-500" : "text-slate-500"}`}>
+                <p className={`text-[11px] italic ${marginDraft.kind === "comment" ? "text-indigo-200" : "text-slate-400 line-through"}`}>"{marginDraft.quote}"</p>
+                <p className={`text-[10px] font-semibold ${newCommentVisibility === "eksternal" ? "text-indigo-500" : "text-slate-500"}`}>
                   {newCommentVisibility === "eksternal" ? "👁 Akan terlihat pihak eksternal" : "🔒 Internal saja — tidak terlihat pihak eksternal"}
                 </p>
                 {marginDraft.kind === "replace" && (
@@ -28107,7 +28186,7 @@ export default function App() {
                     value={marginDraftReplacement}
                     onChange={(e) => setMarginDraftReplacement(e.target.value)}
                     placeholder="Teks pengganti…"
-                    className="w-full px-2 py-1.5 bg-slate-950 border border-emerald-700/50 rounded-lg text-xs text-emerald-200 focus:outline-none focus:border-emerald-500"
+                    className="w-full px-2 py-1.5 bg-slate-950 border border-indigo-700/50 rounded-lg text-xs text-indigo-200 focus:outline-none focus:border-indigo-500"
                   />
                 )}
                 <textarea
@@ -28134,33 +28213,33 @@ export default function App() {
           const isPendingMarkup = isMarkupProposal && cmt.status === "pending";
           const canDecideMarkup = canEditContracts && isDocumentOwnerSide(selectedContract);
           return (
-            <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${isMarkupProposal ? "border-l-rose-500" : "border-l-amber-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
+            <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${isMarkupProposal ? "border-l-indigo-400" : "border-l-indigo-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
               <div className="flex items-center gap-1.5">
-                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${cmt.external ? "bg-amber-500/20 text-amber-300" : "bg-indigo-500/20 text-indigo-300"}`}>
+                <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${cmt.external ? "bg-indigo-500/20 text-indigo-300" : "bg-indigo-500/20 text-indigo-300"}`}>
                   {String(cmt.userName || "?").charAt(0).toUpperCase()}
                 </span>
                 <span className="text-[11px] font-bold text-slate-200 truncate flex-1">{cmt.userName}</span>
                 {cmt.external ? (
-                  <span className="text-[8px] font-bold px-1 py-px rounded bg-amber-500/20 text-amber-600 uppercase shrink-0">Pihak Eksternal</span>
+                  <span className="text-[8px] font-bold px-1 py-px rounded bg-indigo-500/20 text-indigo-600 uppercase shrink-0">Pihak Eksternal</span>
                 ) : (
                   <>
                     <span className="text-[8px] font-semibold px-1 py-px rounded bg-slate-800 text-slate-400 uppercase shrink-0">{cmt.userRole}</span>
                     <span
                       title={cmt.visibility === "eksternal" ? "Terlihat pihak eksternal di link review" : "Hanya tim internal — tidak terlihat pihak eksternal"}
-                      className={`text-[8px] font-bold px-1 py-px rounded uppercase shrink-0 ${cmt.visibility === "eksternal" ? "bg-violet-500/15 text-violet-600" : "bg-slate-800 text-slate-500"}`}
+                      className={`text-[8px] font-bold px-1 py-px rounded uppercase shrink-0 ${cmt.visibility === "eksternal" ? "bg-indigo-500/15 text-indigo-600" : "bg-slate-800 text-slate-500"}`}
                     >{cmt.visibility === "eksternal" ? "👁 Dibagikan" : "🔒 Internal"}</span>
                   </>
                 )}
               </div>
               <p className="text-[9px] text-slate-500">{new Date(cmt.createdAt).toLocaleString("id-ID", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</p>
               {cmt.anchor?.quote && (
-                <p className={`text-[10px] italic border-l-2 pl-2 ${isMarkupProposal ? "border-rose-500 text-rose-300 line-through" : "border-amber-400 text-amber-200"}`}>"{cmt.anchor.quote}"</p>
+                <p className={`text-[10px] italic border-l-2 pl-2 ${isMarkupProposal ? "border-rose-500 text-slate-400 line-through" : "border-indigo-400 text-indigo-200"}`}>"{cmt.anchor.quote}"</p>
               )}
               {cmt.kind === "replace" && cmt.replacement && (
-                <p className="text-[10px] text-emerald-300 border-l-2 border-emerald-500 pl-2 underline decoration-emerald-500/60">→ "{cmt.replacement}"</p>
+                <p className="text-[10px] text-indigo-300 border-l-2 border-indigo-500 pl-2 underline decoration-indigo-500/60">→ "{cmt.replacement}"</p>
               )}
               {cmt.status && cmt.status !== "pending" && (
-                <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cmt.status === "accepted" ? "bg-emerald-500/20 text-emerald-300" : "bg-slate-700 text-slate-300"}`}>
+                <span className={`inline-block text-[9px] font-bold uppercase px-1.5 py-0.5 rounded ${cmt.status === "accepted" ? "bg-indigo-500/20 text-indigo-300" : "bg-slate-700 text-slate-300"}`}>
                   {cmt.status === "accepted" ? "✓ Diterima — sudah diterapkan" : "✕ Ditolak"}
                 </span>
               )}
@@ -28185,7 +28264,7 @@ export default function App() {
                         if (cmt.docAnchor) handleAcceptMarkup(cmt); else handleAcceptClauseMarkup(cmt);
                       }}
                       title={canApplyMarkup ? (cmt.docAnchor ? "Terapkan usulan ini ke dokumen sebagai versi baru (original tetap utuh)." : "Terapkan usulan ini ke teks pasal; tersimpan sebagai versi baru draf (riwayat versi tetap utuh).") : applyBlockedReason}
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition cursor-pointer disabled:opacity-40 ${canApplyMarkup ? "bg-emerald-500/15 text-emerald-600 border-emerald-500/30 hover:bg-emerald-500/25" : "bg-slate-950 text-slate-500 border-slate-800"}`}
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full border transition cursor-pointer disabled:opacity-40 ${canApplyMarkup ? "bg-indigo-500/15 text-indigo-600 border-indigo-500/30 hover:bg-indigo-500/25" : "bg-slate-950 text-slate-500 border-slate-800"}`}
                     >✓ Terima</button>
                     <button
                       disabled={marginBusy}
@@ -28201,7 +28280,7 @@ export default function App() {
                 )}
                 <button
                   onClick={(e) => { e.stopPropagation(); handleResolveComment(cmt); }}
-                  className={`${isPendingMarkup ? "hidden " : ""}text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition ${cmt.resolved ? "text-slate-500 hover:text-slate-300" : "text-emerald-400 hover:text-emerald-300"}`}
+                  className={`${isPendingMarkup ? "hidden " : ""}text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition ${cmt.resolved ? "text-slate-500 hover:text-slate-300" : "text-indigo-400 hover:text-indigo-300"}`}
                 >
                   <CheckCircle className="w-3 h-3" />
                   {cmt.resolved ? "Buka lagi" : "Selesai"}
@@ -28210,7 +28289,7 @@ export default function App() {
                   <button
                     onClick={(e) => { e.stopPropagation(); handleToggleCommentVisibility(cmt); }}
                     title={cmt.visibility === "eksternal" ? "Sembunyikan dari pihak eksternal (jadi diskusi internal)." : "Tampilkan komentar ini ke pihak eksternal di link review."}
-                    className="text-[10px] text-violet-500 hover:text-violet-400 cursor-pointer transition"
+                    className="text-[10px] text-indigo-500 hover:text-indigo-400 cursor-pointer transition"
                   >{cmt.visibility === "eksternal" ? "Pindah ke Diskusi Internal" : "Pindah ke Diskusi Eksternal"}</button>
                 )}
                 {canManage && cmt.anchor?.quote && !cmt.resolved && !cmt.docAnchor && (
@@ -28245,7 +28324,7 @@ export default function App() {
             <div className="shrink-0 px-5 py-3 border-b border-slate-800 bg-slate-900/70 flex items-center gap-3 flex-wrap">
               <div className="min-w-0 flex-1">
                 <h3 className="font-bold text-slate-100 text-sm truncate flex items-center gap-2">
-                  <MessageSquare className="w-4 h-4 text-amber-400 shrink-0" />
+                  <MessageSquare className="w-4 h-4 text-indigo-400 shrink-0" />
                   Mode Tinjau — {selectedContract.title}
                 </h3>
                 <p className="text-[11px] text-slate-500 font-mono truncate">{selectedContract.contractNumber}</p>
@@ -28263,11 +28342,11 @@ export default function App() {
                   <button
                     onClick={() => handleApprovalDecision("approved")}
                     disabled={isDecidingApproval}
-                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-emerald-600 text-white hover:bg-emerald-500 cursor-pointer whitespace-nowrap disabled:opacity-50"
+                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer whitespace-nowrap disabled:opacity-50"
                   >✓ Setujui</button>
                 </div>
               )}
-              <span className="text-[10px] px-2 py-1 rounded-lg bg-amber-500/15 text-amber-600 border border-amber-500/25 font-semibold whitespace-nowrap">
+              <span className="text-[10px] px-2 py-1 rounded-lg bg-indigo-500/15 text-indigo-600 border border-indigo-500/25 font-semibold whitespace-nowrap">
                 {openCount} komentar terbuka
               </span>
               {reviewVisFilter === "eksternal" && selectedContract.externalReviewToken && (
@@ -28283,7 +28362,7 @@ export default function App() {
                 <input type="checkbox" checked={marginShowResolved} onChange={(e) => setMarginShowResolved(e.target.checked)} className="w-3.5 h-3.5 rounded bg-slate-900 border-slate-700 text-indigo-600" />
                 Tampilkan yang selesai
               </label>
-              {(() => {
+              {canHoldDocument && (() => {
                 // Alur baru: link eksternal baru boleh dibagikan setelah acc
                 // internal (Disetujui Internal / sedang Review Eksternal).
                 const canShareExt = selectedContract.status === "ApprovedInternal" || selectedContract.status === "ReviewEksternal";
@@ -28293,15 +28372,15 @@ export default function App() {
                     title={canShareExt
                       ? (selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Pihak Kedua: buat & salin link untuk PIHAK KEDUA (tanpa akun)." : "Salin link review pihak kedua yang sedang berjalan.")
                       : "Tersedia setelah dokumen disetujui internal (Draft → Review Internal → Acc Internal → Review Pihak Kedua)."}
-                    className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border whitespace-nowrap ${canShareExt ? "bg-violet-600/20 text-violet-600 border-violet-500/30 hover:bg-violet-600/30 cursor-pointer" : "bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed"}`}
+                    className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border whitespace-nowrap ${canShareExt ? "bg-indigo-600/20 text-indigo-600 border-indigo-500/30 hover:bg-indigo-600/30 cursor-pointer" : "bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed"}`}
                   >🔗 {selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Pihak Kedua" : "Link Review Pihak Kedua"}</button>
                 );
               })()}
-              {selectedContract.externalReviewToken && selectedContract.externalReviewLocked && !selectedContract.externalRoundCount && (
+              {canHoldDocument && selectedContract.externalReviewToken && selectedContract.externalReviewLocked && !selectedContract.externalRoundCount && (
                 <button
                   onClick={handleUnlockExternalReview}
                   title="Review eksternal terkunci sejak tamu klik Setuju/OK — buka lagi agar bisa komentar/setuju lewat link yang sama."
-                  className="text-[10px] font-semibold px-2.5 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/30 hover:bg-amber-500/30 cursor-pointer whitespace-nowrap"
+                  className="text-[10px] font-semibold px-2.5 py-1.5 rounded-lg bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 hover:bg-indigo-500/30 cursor-pointer whitespace-nowrap"
                 >🔓 Buka Akses Kembali</button>
               )}
               <button onClick={closeReview} className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer px-2">✕</button>
@@ -28322,11 +28401,11 @@ export default function App() {
                     onClick={() => switchReviewChannel(t.ch)}
                     title={t.hint}
                     className={`px-3.5 py-2 text-[11px] font-bold rounded-t-lg border border-b-0 cursor-pointer flex items-center gap-1.5 ${on
-                      ? (t.ch === "eksternal" ? "bg-violet-600 text-white border-violet-600" : "bg-slate-800 text-slate-100 border-slate-700")
+                      ? (t.ch === "eksternal" ? "bg-indigo-600 text-white border-indigo-600" : "bg-slate-800 text-slate-100 border-slate-700")
                       : "text-slate-500 border-transparent hover:text-slate-300"}`}
                   >
                     {t.label}
-                    {n > 0 && <span className={`text-[9px] px-1.5 rounded-full ${on ? "bg-white/25" : "bg-amber-500/20 text-amber-600"}`}>{n}</span>}
+                    {n > 0 && <span className={`text-[9px] px-1.5 rounded-full ${on ? "bg-white/25" : "bg-indigo-500/20 text-indigo-600"}`}>{n}</span>}
                   </button>
                 );
               })}
@@ -28349,9 +28428,9 @@ export default function App() {
             ) : (
               <div className="shrink-0 px-5 py-2 border-b border-slate-800/60 bg-slate-900/30 text-[10px] text-slate-500 flex items-center gap-4 flex-wrap">
                 <span><b className="text-slate-300">Sorot kalimat</b> → pilih ✎ Komentar / ✂ Coret / ⇄ Ganti</span>
-                <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-amber-300/60" /> komentar</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-indigo-300/60" /> komentar</span>
                 <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-rose-500/30 border-b-2 border-rose-500" /> usulan coret</span>
-                <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500/30 border-b-2 border-emerald-500" /> usulan ganti</span>
+                <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-indigo-500/30 border-b-2 border-indigo-500" /> usulan ganti</span>
                 <span>Klik sorotan ⇄ klik kartu untuk saling memfokuskan</span>
               </div>
             )}
@@ -28390,12 +28469,12 @@ export default function App() {
                     <div className="space-y-3 lg:sticky lg:top-0">
                       <h5 className="text-xs font-bold text-slate-200 uppercase tracking-wide">Komentar ({visible.length})</h5>
                       {docMarkupDraft && (
-                        <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${docMarkupDraft.kind === "comment" ? "border-l-amber-400 border-amber-600/60" : docMarkupDraft.kind === "strike" ? "border-l-rose-500 border-rose-700/60" : "border-l-emerald-500 border-emerald-700/60"}`}>
+                        <div className={`rounded-xl bg-slate-900 border border-dashed shadow-2xl p-3 space-y-2 border-l-4 ${docMarkupDraft.kind === "comment" ? "border-l-indigo-400 border-indigo-600/60" : docMarkupDraft.kind === "strike" ? "border-l-indigo-400 border-indigo-700/40" : "border-l-indigo-500 border-indigo-700/60"}`}>
                           <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">
                             {docMarkupDraft.kind === "comment" ? "✎ Komentar Baru" : docMarkupDraft.kind === "strike" ? "✂ Usulan Coret" : "⇄ Usulan Ganti"}
                           </p>
-                          <p className={`text-[11px] italic ${docMarkupDraft.kind === "comment" ? "text-amber-200" : "text-rose-300 line-through"}`}>"{docMarkupDraft.quote}"</p>
-                          <p className={`text-[10px] font-semibold ${newCommentVisibility === "eksternal" ? "text-violet-500" : "text-slate-500"}`}>
+                          <p className={`text-[11px] italic ${docMarkupDraft.kind === "comment" ? "text-indigo-200" : "text-slate-400 line-through"}`}>"{docMarkupDraft.quote}"</p>
+                          <p className={`text-[10px] font-semibold ${newCommentVisibility === "eksternal" ? "text-indigo-500" : "text-slate-500"}`}>
                             {newCommentVisibility === "eksternal" ? "👁 Akan terlihat pihak eksternal" : "🔒 Internal saja — tidak terlihat pihak eksternal"}
                           </p>
                           {docMarkupDraft.kind === "replace" && (
@@ -28404,7 +28483,7 @@ export default function App() {
                               value={docMarkupReplacement}
                               onChange={(e) => setDocMarkupReplacement(e.target.value)}
                               placeholder="Teks pengganti…"
-                              className="w-full px-2 py-1.5 bg-slate-950 border border-emerald-700/50 rounded-lg text-xs text-emerald-200 focus:outline-none focus:border-emerald-500"
+                              className="w-full px-2 py-1.5 bg-slate-950 border border-indigo-700/50 rounded-lg text-xs text-indigo-200 focus:outline-none focus:border-indigo-500"
                             />
                           )}
                           <textarea
@@ -28480,7 +28559,7 @@ export default function App() {
                 )}
               </div>
               <div className="flex items-center gap-2">
-                {(selectedContract.status === "ApprovedInternal" || selectedContract.status === "ReviewEksternal") && (
+                {canHoldDocument && (selectedContract.status === "ApprovedInternal" || selectedContract.status === "ReviewEksternal") && (
                 <button
                   onClick={handleShareExternalReview}
                   title="Buat & salin link review untuk PIHAK KEDUA (tanpa akun). Mereka bisa melihat klausul, menyorot & mengomentari, atau klik Setuju/OK."

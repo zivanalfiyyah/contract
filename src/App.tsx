@@ -14,6 +14,8 @@ import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApp
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
+import DigitalSignatureEditor from "./DigitalSignatureEditor";
+import { fitWithin } from "./signature-image";
 import {
   FileText,
   Briefcase,
@@ -55,6 +57,7 @@ import {
   Image as ImageIcon,
   User,
   PenTool,
+  Signature as SignatureIcon,
   LineChart,
   PieChart,
   MessageSquare,
@@ -5732,6 +5735,8 @@ export default function App() {
   const [userMgmtTenantId, setUserMgmtTenantId] = useState("");
   const [tenantUsers, setTenantUsers] = useState<any[]>([]);
   const [allTenants, setAllTenants] = useState<any[]>([]);
+  // super_admin: perusahaan yang TTD Digital-nya sedang diatur (jendela editor).
+  const [ttdDigitalTenant, setTtdDigitalTenant] = useState<{ id: string; name: string } | null>(null);
   const [userForm, setUserForm] = useState<any>(null);
   const [tenantForm, setTenantForm] = useState<any>(null);
   // Platform kerja sama milik perusahaan yang sedang login (tenant.platforms,
@@ -9987,6 +9992,49 @@ export default function App() {
     const updated = { ...selectedContract, signatureFormat: format, showMeteraiPlaceholder: format === "dua_rangkap" };
     setSelectedContract(updated);
     await handleUpdateContractDraft(`Ubah format tanda tangan: ${SIGNATURE_FORMAT_OPTIONS.find((o) => o.value === format)?.label}`, updated);
+  };
+
+  // TTD Digital — tombol "TTD Digital: Nyala/Mati" per dokumen (mati secara
+  // bawaan). Nyala = gambar tanda tangan Pihak Pertama (diatur Super Admin di
+  // Konfigurasi > Kelola Perusahaan) otomatis ditaruh rapi di kolom TTD Pihak
+  // Pertama pada preview & PDF, untuk SEMUA format TTD. Mati = kolom TTD kosong
+  // persis seperti semula. Alur TIDAK berubah: tetap export dulu, lalu unggah
+  // bukti TTD. Izin & status mengikuti "Format TTD" (preferensi tampilan, PUT
+  // /api/contracts/:id) — tidak ada izin baru.
+  const [digitalSig, setDigitalSig] = useState<{ contractId: string; dataUrl: string; width: number; height: number } | null>(null);
+  useEffect(() => {
+    const id = selectedContract?.id;
+    if (!id || !selectedContract?.useDigitalSignature || !appSettings.ttdDigital?.configured) {
+      setDigitalSig(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/contracts/${id}/digital-signature`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled) return;
+        setDigitalSig(d?.configured && d.dataUrl && d.width > 0 && d.height > 0
+          ? { contractId: id, dataUrl: d.dataUrl, width: d.width, height: d.height }
+          : null);
+      })
+      .catch(() => { if (!cancelled) setDigitalSig(null); });
+    return () => { cancelled = true; };
+  }, [selectedContract?.id, selectedContract?.useDigitalSignature, appSettings.ttdDigital?.configured, appSettings.ttdDigital?.updatedAt]);
+  // Gambar yang boleh dipakai preview saat ini (nol bila tombol mati / milik kontrak lain).
+  const activeDigitalSig = selectedContract?.useDigitalSignature && digitalSig && digitalSig.contractId === selectedContract.id ? digitalSig : null;
+
+  const handleToggleDigitalSignature = async () => {
+    if (!selectedContract) return;
+    const next = !selectedContract.useDigitalSignature;
+    if (next && !appSettings.ttdDigital?.configured) {
+      showToast("Tanda tangan digital belum diatur. Minta Super Admin mengaturnya di Konfigurasi > Kelola Perusahaan.", "warning");
+      return;
+    }
+    const updated = { ...selectedContract, useDigitalSignature: next };
+    setSelectedContract(updated);
+    const saved = await handleUpdateContractDraft(`${next ? "Nyalakan" : "Matikan"} TTD digital`, updated);
+    // Server menolak (mis. tak punya izin edit) → kembalikan tombol ke keadaan semula.
+    if (!saved) setSelectedContract((prev) => (prev ? { ...prev, useDigitalSignature: !next } : prev));
   };
 
   // Simpan seluruh daftar Lampiran (foto+tabel) sekaligus — dipanggil dari
@@ -19180,6 +19228,18 @@ export default function App() {
                             </div>
                           )}
                         </div>
+                        {/* TTD Digital Pihak Pertama — hanya Super Admin (tab ini memang khusus super_admin). */}
+                        <button
+                          onClick={() => setTtdDigitalTenant({ id: t.id, name: t.name })}
+                          title={t.ttdDigitalConfigured ? "TTD Digital sudah diatur — klik untuk mengganti atau menghapus" : "Atur TTD Digital Pihak Pertama (unggah foto atau gambar langsung)"}
+                          className={`px-2.5 py-1.5 rounded-md text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer shrink-0 border transition ${
+                            t.ttdDigitalConfigured
+                              ? "text-emerald-300 border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15"
+                              : "text-slate-400 border-slate-700 hover:text-indigo-300 hover:bg-slate-800"
+                          }`}
+                        >
+                          <PenTool className="w-3.5 h-3.5" /> {t.ttdDigitalConfigured ? "TTD Digital: Ada" : "TTD Digital"}
+                        </button>
                         <button onClick={() => { setTenantPlatformInput(""); setTenantForm({ id: t.id, name: t.name, branch: t.branch, code: t.code || "", active: t.active, platforms: Array.isArray(t.platforms) ? t.platforms : [] }); }} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer shrink-0 opacity-60 group-hover:opacity-100 transition"><Pencil className="w-3.5 h-3.5" /></button>
                       </div>
                     ))}
@@ -21135,6 +21195,24 @@ export default function App() {
                     Format TTD: {SIGNATURE_FORMAT_OPTIONS.find((o) => o.value === getSignatureFormat(selectedContract))?.label}
                     <ChevronDown className={`w-3.5 h-3.5 transition-transform ${signatureMenuOpen ? "rotate-180" : ""}`} />
                   </button>
+                  {/* TTD Digital — opsional per dokumen, mati secara bawaan.
+                      Nyala: gambar tanda tangan Pihak Pertama otomatis rapi di
+                      kolom TTD (semua Format TTD). Mati: kolom TTD kosong. */}
+                  <button
+                    onClick={handleToggleDigitalSignature}
+                    aria-pressed={!!selectedContract.useDigitalSignature}
+                    title={appSettings.ttdDigital?.configured
+                      ? "Nyala: tanda tangan Pihak Pertama otomatis diletakkan rapi di kolom TTD pada preview & PDF. Mati: kolom TTD dibiarkan kosong seperti biasa. Alurnya tetap sama — export dulu, lalu unggah bukti TTD."
+                      : "Tanda tangan digital belum diatur — minta Super Admin mengaturnya di Konfigurasi > Kelola Perusahaan."}
+                    className={`px-3 py-2 text-xs font-semibold rounded-xl border transition flex items-center gap-1 ${
+                      selectedContract.useDigitalSignature
+                        ? "bg-slate-800 hover:bg-slate-700 text-slate-200 border-slate-700"
+                        : "bg-slate-900/50 hover:bg-slate-800 text-slate-500 border-slate-800"
+                    }`}
+                  >
+                    <SignatureIcon className="w-3.5 h-3.5" />
+                    TTD Digital: {selectedContract.useDigitalSignature ? "Nyala" : "Mati"}
+                  </button>
                   {/* Bahasa dokumen — terjemahan AI dijalankan sekali saat
                       pertama kali butuh teks Inggris, lalu tersimpan. */}
                   <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-0.5" title="Bahasa tampilan dokumen. Terjemahan dibuat otomatis oleh AI saat pertama kali dipilih.">
@@ -21651,6 +21729,28 @@ export default function App() {
                                       {parafWord} {titleCase(parafRoles[i] || `Pihak ${i + 1}`)}
                                     </span>
                                   </div>
+                                  {/* TTD Digital → kotak paraf Pihak Pertama (kolom pertama) di
+                                      SETIAP halaman: gambar yang sama, dikecilkan pas ke ruang
+                                      di bawah judul kolom. Ukuran eksplisit (tanpa object-fit)
+                                      agar export = layar. */}
+                                  {i === 0 && activeDigitalSig && (() => {
+                                    const size = fitWithin(
+                                      activeDigitalSig.width, activeDigitalSig.height,
+                                      Math.max(parafColPt * PT - 8, 16), Math.max((parafTotalPt - 18) * PT - 6, 12),
+                                    );
+                                    if (size.width <= 0) return null;
+                                    return (
+                                      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                        <img
+                                          src={activeDigitalSig.dataUrl}
+                                          alt="Paraf digital Pihak Pertama"
+                                          width={size.width}
+                                          height={size.height}
+                                          style={{ width: size.width, height: size.height, display: "block", flex: "none" }}
+                                        />
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               ))}
                             </div>
@@ -22542,25 +22642,61 @@ export default function App() {
                         // sejajar) — bedanya cuma parameter meteraiPartyIdx: index
                         // pihak yang kolomnya dapat kotak meterai. -1 = tidak ada
                         // yang dapat (meterai mati).
+                        // TTD Digital (tombol per dokumen): gambar tanda tangan
+                        // dipasang HANYA di kolom Pihak Pertama (idx 0), di dalam
+                        // kotak setinggi h-16 yang memang sudah ada — jadi tinggi
+                        // blok TTD & pemenggalan halaman TIDAK berubah. Ukuran
+                        // dihitung eksplisit (tanpa object-fit) supaya hasil
+                        // export html2canvas persis sama dgn layar. Bila kolom itu
+                        // juga memuat kotak meterai (rangkap 1), TTD diletakkan di
+                        // SEBELAH kotak meterai (tidak bertumpuk, area meterai tempel
+                        // dibiarkan bersih). Pada dokumen ≥ 4 pihak kolomnya sempit,
+                        // jadi TTD di rangkap bermeterai itu mengecil menyesuaikan.
+                        const sigColCount = Math.max(parties.length || 2, 1);
+                        const sigContentW = A4_WIDTH_PX - (contractMarginsMm.left + contractMarginsMm.right) * MM_TO_PX;
+                        const sigColW = (sigContentW - 24 * (sigColCount - 1)) / sigColCount; // gap-6 = 24px
+                        const SIG_SLOT_H = 56;      // kotak TTD 64px (h-16) dikurangi napas 4px atas-bawah
+                        const METERAI_BOX_W = 68;   // lebar kotak "Meterai Rp10.000" (terukur di layar)
+                        const SIG_GAP = 8;          // jarak meterai ↔ TTD
+                        const digitalSigLayout = (withMeterai: boolean) => {
+                          if (!activeDigitalSig) return null;
+                          const maxW = withMeterai ? sigColW - METERAI_BOX_W - SIG_GAP : sigColW * 0.85;
+                          const size = fitWithin(activeDigitalSig.width, activeDigitalSig.height, Math.max(maxW, 24), SIG_SLOT_H);
+                          return size.width > 0 ? { ...size, marginLeft: withMeterai ? SIG_GAP : 0 } : null;
+                        };
+
                         const signatureRow = (meteraiPartyIdx: number) => (
                           <div data-signature-anchor="1" className={`grid grid-cols-1 md:grid-cols-${parties.length || 2} gap-6 pt-6 text-xs`}>
-                            {parties.map((party: any, idx: number) => (
+                            {parties.map((party: any, idx: number) => {
+                              const hasMeterai = idx === meteraiPartyIdx;
+                              const sigSize = idx === 0 ? digitalSigLayout(hasMeterai) : null;
+                              return (
                               <div key={idx} className="text-center">
                                 <p className="font-semibold text-slate-400 uppercase">
                                   {party.role}
                                 </p>
                                 <div className="h-16 flex items-center justify-center">
-                                  {idx === meteraiPartyIdx && (
+                                  {hasMeterai && (
                                     <div className="border border-dashed border-slate-500 rounded px-3 py-1.5 text-[9px] leading-tight text-slate-500 uppercase tracking-wide">
                                       Meterai<br />Rp10.000
                                     </div>
+                                  )}
+                                  {sigSize && activeDigitalSig && (
+                                    <img
+                                      src={activeDigitalSig.dataUrl}
+                                      alt="Tanda tangan digital Pihak Pertama"
+                                      width={sigSize.width}
+                                      height={sigSize.height}
+                                      style={{ width: sigSize.width, height: sigSize.height, marginLeft: sigSize.marginLeft, display: "block", flex: "none" }}
+                                    />
                                   )}
                                 </div>
                                 <p className="font-semibold text-slate-200">
                                   ( {party.name} )
                                 </p>
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         );
 
@@ -29134,6 +29270,24 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* TTD DIGITAL PIHAK PERTAMA (super_admin) — unggah foto / gambar langsung */}
+      {ttdDigitalTenant && (
+        <DigitalSignatureEditor
+          tenantId={ttdDigitalTenant.id}
+          tenantName={ttdDigitalTenant.name}
+          onClose={() => setTtdDigitalTenant(null)}
+          notify={showToast}
+          onChanged={() => {
+            fetchAllTenants();
+            // Hanya kunci ttdDigital yang disegarkan — appSettings bisa memuat
+            // perubahan Konfigurasi yang belum disimpan (mis. logo), jangan ditimpa.
+            fetch("/api/settings").then((r) => r.json()).then((s) => {
+              if (s?.ttdDigital) setAppSettings((prev: any) => ({ ...prev, ttdDigital: s.ttdDigital }));
+            }).catch(() => {});
+          }}
+        />
       )}
 
       {/* TENANT EDIT MODAL (super_admin) */}

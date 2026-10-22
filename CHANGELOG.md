@@ -1,5 +1,22 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #25] — TTD Digital Pihak Pertama (opsional per dokumen)
+
+### Ringkasan
+- **Super Admin mengatur tanda tangan perusahaan** di Konfigurasi › Kelola Perusahaan (tombol **TTD Digital** di tiap baris perusahaan). Dua cara: **Unggah Foto** (foto tanda tangan di kertas → latar kertas dihapus otomatis, tepi meja/bayangan dibuang, dipotong rapat) atau **Gambar Langsung** (kotak putih seperti kertas, digores dengan mouse/jari/stylus; tombol **Hapus** untuk mengulang dan **Simpan**). Yang tersimpan satu PNG transparan per perusahaan; menyimpan lagi menggantikan yang lama, ada tombol hapus.
+- **Tombol "TTD Digital: Nyala/Mati"** di toolbar dokumen (sebelah Format TTD), **mati secara bawaan** dan tersembunyi untuk dokumen model Upload. Mati = kolom TTD kosong persis seperti sebelumnya.
+- Nyala = gambar tanda tangan otomatis rapi di kolom **Pihak Pertama** pada preview & PDF untuk SEMUA Format TTD: **1 Rangkap** (di dalam kotak TTD yang sudah ada, tinggi blok tidak berubah), **2 Rangkap + Meterai** (tiap rangkap; di rangkap 1 diletakkan di SEBELAH kotak meterai, tidak bertumpuk), dan **TTD Kolom Paraf** (gambar yang sama dikecilkan pas ke kotak paraf Pihak Pertama di setiap halaman).
+- **Alur tidak berubah**: tetap **export dulu, lalu unggah bukti TTD** (Arsip), dengan atau tanpa TTD Digital. Ini hanya gambar tanda tangan, **bukan tanda tangan elektronik tersertifikasi** — berkas resmi yang mengikat tetap salinan bertanda tangan yang diunggah.
+
+### Izin
+- Tidak ada izin baru dan matriks Hak Akses tidak berubah. Mengubah tombol per dokumen = preferensi tampilan seperti Format TTD (`contract.edit`, boleh di status apa pun). Menyimpan/menghapus tanda tangan perusahaan khusus `super_admin`.
+
+### Data / Endpoint
+- `Contract.useDigitalSignature` (opsional, kosong = false). Tersimpan lewat `PUT /api/contracts/:id` seperti `showLetterhead`.
+- Tanda tangan perusahaan disimpan di `settingsByTenant[tid].ttdDigital` (data URL PNG). `GET /api/settings` hanya mengirim info ringkas (`ttdDigital: { configured, source, updatedAt, updatedByName }`) — gambar TIDAK ikut, dan `PUT /api/settings` mengabaikan kunci ini sehingga tidak bisa menimpanya.
+- Baru: `GET|PUT|DELETE /api/settings/digital-signature` (hanya `super_admin`, `?tenantId=` memilih perusahaan; PUT = multipart `file` PNG ≤ 400 KB, sisi ≤ 2000 px, dicek tanda tangan berkas PNG) dan `GET /api/contracts/:id/digital-signature` (siapa pun yang boleh melihat kontrak itu). `GET /api/tenants` menambah `ttdDigitalConfigured`.
+- Tidak perlu migrasi. Uji pengolah gambar: `npx tsx scripts/signature-image-test.ts`.
+
 ## [Unreleased #24] — Badan Hukum di formulir publik & tabel, label tombol "Dokumen"
 
 ### Ringkasan

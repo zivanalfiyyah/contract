@@ -10,7 +10,7 @@ import {
   ContractPaymentTerm, ContractObligation, StoredDocumentRef, ContractVendorEvaluation, BudgetEntry,
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
-  SignatureFormat, SIGNATURE_FORMATS,
+  SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
 } from "./src/types";
 import { isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
@@ -1191,7 +1191,7 @@ app.get("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedReq
   const db = loadDB();
   // Sertakan platform efektif (termasuk fallback perusahaan bawaan) supaya
   // form Edit Perusahaan menampilkan isi yang sama dengan yang dipakai wizard.
-  res.json((db.tenants as any[]).map((t) => ({ ...t, platforms: platformsForTenant(db, t.id), codeEffective: companyCodeOf(t), registrationCodeEffective: registrationCodeOf(t) })));
+  res.json((db.tenants as any[]).map((t) => ({ ...t, platforms: platformsForTenant(db, t.id), codeEffective: companyCodeOf(t), registrationCodeEffective: registrationCodeOf(t), ttdDigitalConfigured: !!rawSettingsFor(db, t.id).ttdDigital?.dataUrl })));
 });
 
 // Daftar perusahaan (Konfigurasi > Kelola Perusahaan) untuk dropdown
@@ -2065,15 +2065,33 @@ function withSettingsDefaults(settings: any) {
   return merged;
 }
 
+// TTD Digital Pihak Pertama disimpan di settingsByTenant[tid].ttdDigital
+// ({ dataUrl, source, updatedAt, updatedById, updatedByName }). Gambarnya
+// TIDAK ikut keluar lewat /api/settings (yang dibaca semua peran) — di sini
+// hanya info ringkas "sudah diatur atau belum"; gambar diambil lewat endpoint
+// khusus di bawah. Dipanggil di setiap respons yang membawa pengaturan penuh.
+function settingsForClient(settings: any) {
+  const { ttdDigital, ...rest } = settings || {};
+  const info: DigitalSignatureInfo = ttdDigital?.dataUrl
+    ? { configured: true, source: ttdDigital.source, updatedAt: ttdDigital.updatedAt, updatedByName: ttdDigital.updatedByName }
+    : { configured: false };
+  return { ...rest, ttdDigital: info };
+}
+
 app.get("/api/settings", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  res.json(withSettingsDefaults(rawSettingsFor(db, tenantOf(req))));
+  res.json(settingsForClient(withSettingsDefaults(rawSettingsFor(db, tenantOf(req)))));
 });
 
 app.put("/api/settings", requireAuth, requirePerm("settings.manage", "settings.employment_types"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   let { tenantId, ...patch } = req.body; // tenantId handled by tenantOf, not stored in settings
+  // TTD Digital hanya boleh diubah lewat endpoint khusus Super Admin
+  // (/api/settings/digital-signature). Halaman Konfigurasi mengirim balik
+  // seluruh pengaturan tiap kali menyimpan — kunci ini dibuang supaya tidak
+  // pernah menimpa gambar yang tersimpan.
+  delete patch.ttdDigital;
   // HR/GA hanya boleh mengubah Kategori Dokumen Karyawan (employmentTypes);
   // bagian lain dari kiriman diabaikan.
   // Pemanggil yang hanya punya izin "settings.employment_types" (bukan
@@ -2125,7 +2143,88 @@ app.put("/api/settings", requireAuth, requirePerm("settings.manage", "settings.e
   setSettingsFor(db, tid, merged);
   pushAudit(db, req, { action: "Update Settings", details: "Memperbarui konfigurasi (perusahaan / master data)" });
   saveDB(db);
-  res.json({ success: true, settings: merged });
+  res.json({ success: true, settings: settingsForClient(merged) });
+});
+
+// ===== TTD DIGITAL PIHAK PERTAMA (super_admin only) =====
+// Tanda tangan perusahaan (Pihak Pertama) yang otomatis diletakkan di kolom TTD
+// dokumen bila tombol "TTD Digital" dinyalakan pada dokumen itu. Disimpan per
+// perusahaan; Super Admin memilih perusahaannya lewat ?tenantId= (sama seperti
+// endpoint super_admin lain). Klien SELALU mengirim PNG transparan yang sudah
+// dirapikan (foto dibersihkan latarnya / hasil goresan kanvas) — server cuma
+// memastikan benar-benar PNG dan ukurannya wajar.
+const TTD_DIGITAL_MAX_BYTES = 400 * 1024;
+const TTD_DIGITAL_MAX_SIDE = 2000;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+function readPngSize(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 33 || !buf.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
+  if (buf.toString("ascii", 12, 16) !== "IHDR") return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+app.get("/api/settings/digital-signature", requireAuth, requireRole("super_admin"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const sig = rawSettingsFor(db, tenantOf(req)).ttdDigital;
+  if (!sig?.dataUrl) return res.json({ configured: false });
+  res.json({ configured: true, dataUrl: sig.dataUrl, source: sig.source, updatedAt: sig.updatedAt, updatedByName: sig.updatedByName });
+});
+
+app.put("/api/settings/digital-signature", requireAuth, requireRole("super_admin"), upload.single("file"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  if (!(db.tenants as any[]).some((t) => t.id === tid)) return res.status(404).json({ error: "Perusahaan tidak ditemukan" });
+  if (!req.file) return res.status(400).json({ error: "Tidak ada berkas tanda tangan" });
+  if (req.file.mimetype !== "image/png") return res.status(400).json({ error: "Tanda tangan harus berformat PNG" });
+  if (req.file.size > TTD_DIGITAL_MAX_BYTES) {
+    return res.status(400).json({ error: `Gambar tanda tangan terlalu besar (maks ${Math.round(TTD_DIGITAL_MAX_BYTES / 1024)} KB)` });
+  }
+  const size = readPngSize(req.file.buffer);
+  if (!size || size.width < 8 || size.height < 8 || size.width > TTD_DIGITAL_MAX_SIDE || size.height > TTD_DIGITAL_MAX_SIDE) {
+    return res.status(400).json({ error: "Berkas bukan gambar PNG tanda tangan yang valid" });
+  }
+  const source = req.body?.source === "draw" ? "draw" : "upload";
+  const ttdDigital = {
+    dataUrl: `data:image/png;base64,${req.file.buffer.toString("base64")}`,
+    source,
+    width: size.width,
+    height: size.height,
+    updatedAt: new Date().toISOString(),
+    updatedById: req.user!.id,
+    updatedByName: req.user!.name,
+  };
+  setSettingsFor(db, tid, { ...rawSettingsFor(db, tid), ttdDigital });
+  pushAudit(db, req, {
+    action: "Update TTD Digital",
+    details: `Menyimpan tanda tangan digital Pihak Pertama (${source === "draw" ? "digambar langsung" : "dari foto"})`,
+  });
+  saveDB(db);
+  res.json({ success: true, info: settingsForClient({ ttdDigital }).ttdDigital });
+});
+
+app.delete("/api/settings/digital-signature", requireAuth, requireRole("super_admin"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const raw = rawSettingsFor(db, tid);
+  if (raw.ttdDigital) {
+    const { ttdDigital: _removed, ...rest } = raw;
+    setSettingsFor(db, tid, rest);
+    pushAudit(db, req, { action: "Hapus TTD Digital", details: "Menghapus tanda tangan digital Pihak Pertama" });
+    saveDB(db);
+  }
+  res.json({ success: true });
+});
+
+// Gambar TTD Digital untuk dipasang di preview/export sebuah kontrak. Bukan
+// khusus Super Admin: siapa pun yang boleh MELIHAT kontrak ini (aturan sama
+// dengan semua endpoint /api/contracts/:id) melihat pratinjau dokumennya, dan
+// gambar ini bagian dari pratinjau itu bila tombol TTD Digital dinyalakan.
+app.get("/api/contracts/:id/digital-signature", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  const sig = rawSettingsFor(db, contract.tenantId).ttdDigital;
+  if (!sig?.dataUrl) return res.json({ configured: false });
+  res.json({ configured: true, dataUrl: sig.dataUrl, width: sig.width, height: sig.height });
 });
 
 app.post("/api/clauses", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
@@ -3552,6 +3651,10 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
     signatureFormat: req.body.signatureFormat !== undefined
       ? (parseSignatureFormat(req.body.signatureFormat) ?? oldContract.signatureFormat)
       : oldContract.signatureFormat,
+    // useDigitalSignature (tombol "TTD Digital"): preferensi tampilan juga —
+    // hanya menaruh gambar tanda tangan Pihak Pertama di kolom TTD, bukan isi
+    // naskah. Aturan izin & status SAMA dengan Format TTD di atas.
+    useDigitalSignature: req.body.useDigitalSignature !== undefined ? !!req.body.useDigitalSignature : oldContract.useDigitalSignature,
     // Termin pembayaran SELALU boleh diperbarui, terlepas dari status —
     // justru setelah kontrak Aktif-lah tagihan berjalan dan realisasinya
     // dicatat. Mengunci ini di balik canEditContent (Draft saja) akan membuat

@@ -226,6 +226,16 @@ export function getSignatureFormat(c: { signatureFormat?: string; showMeteraiPla
   return c.showMeteraiPlaceholder ? "dua_rangkap" : "satu_rangkap";
 }
 
+// TTD Digital Pihak Pertama (diatur Super Admin per perusahaan). Gambarnya
+// (data URL PNG transparan) sengaja TIDAK ikut di GET /api/settings — hanya
+// info ringkas ini; gambar diambil lewat endpoint khusus.
+export interface DigitalSignatureInfo {
+  configured: boolean;
+  source?: "upload" | "draw";
+  updatedAt?: string;
+  updatedByName?: string;
+}
+
 export interface ContractRevisionEntry {
   id: string;
   stage: ContractRevisionStage;
@@ -603,6 +613,14 @@ export interface Contract {
   // getSignatureFormat). Kosong = diturunkan dari showMeteraiPlaceholder lama
   // supaya kontrak lama tampil persis seperti sebelumnya.
   signatureFormat?: SignatureFormat;
+  // TTD Digital: tanda tangan Pihak Pertama yang diatur Super Admin
+  // (Konfigurasi > Kelola Perusahaan) otomatis diletakkan di kolom TTD Pihak
+  // Pertama pada preview & export PDF, untuk SEMUA format TTD. Kosong/undefined
+  // = false → kolom TTD dibiarkan kosong persis seperti semula. Preferensi
+  // tampilan seperti showLetterhead, jadi boleh diganti di status apa pun.
+  // Ini BUKAN tanda tangan elektronik tersertifikasi — hanya gambar; berkas
+  // resmi yang mengikat tetap salinan bertanda tangan yang diunggah.
+  useDigitalSignature?: boolean;
   // Override narasi pembuka KHUSUS kontrak ini (prioritas TERTINGGI di atas
   // Template.openingParagraph & masterData.categoryOpeningParagraphs) —
   // diisi langsung di wizard/form registrasi. Kosong = ikuti rantai fallback

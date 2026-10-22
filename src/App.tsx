@@ -10,7 +10,7 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
-import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, canReviewContract, R as ROLE_GROUPS } from "./roles";
+import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, canReviewContract, isPermAllowed, PERMISSIONS, PERM_GROUPS, MATRIX_ROLES, R as ROLE_GROUPS } from "./roles";
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
@@ -1161,59 +1161,88 @@ function GuestConfirmDialog({ open, title, body, confirmLabel, busy, onConfirm, 
   );
 }
 
-// ===== Klasifikasi dokumen eksternal: PT → Platform → Kategori → Jenis =====
-// Satu urutan dipakai DI SEMUA form (Buat Kontrak mode template & upload,
-// Daftarkan Dokumen Upload, Klasifikasi Arsip) karena keempatnya sekaligus
+// ===== Klasifikasi dokumen eksternal: PT → Jenis Dokumen → Platform → Mitra/Operator =====
+// Satu urutan dipakai DI SEMUA form (Buat Dokumen mode template & upload,
+// Daftarkan Dokumen Upload, Klasifikasi Arsip) karena semuanya sekaligus
 // menentukan folder Arsip Eksternal & segmen nomor ({Company}/{Platform}/
 // {DocTypeCode}). Pilihan "Lainnya" selalu tersedia dan membuka isian manual —
 // nilai ketikan itu yang disimpan (jadi folder & segmen nomor baru), bukan
 // kata "Lainnya". Item master bernama "Lainnya" tidak pernah jadi folder.
+// Kategori TIDAK lagi dipilih/ditampilkan; nilainya diturunkan otomatis dari
+// Jenis Dokumen (categoryOf) karena template & penomoran masih memakainya.
 type TaxCompany = { id: string; name: string; code: string; platforms?: string[] };
-type TaxValue = { companyId: string; platform: string; platformCustom?: boolean; category: string; docType: string };
+type TaxValue = { companyId: string; platform: string; platformCustom?: boolean; operator?: string; category: string; docType: string };
+type OperatorGroup = { id: string; name: string; companies: string[]; platforms: string[]; operators: string[] };
 const isLainnyaLabel = (s: unknown) => /^lain[\s-]?lain(nya)?$|^lainnya$/i.test(String(s ?? "").trim());
 const sameText = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
 const OTHER_OPTION = "__lainnya__";
 function companyPlatformList(c?: TaxCompany | null): string[] {
   return (c?.platforms || []).filter((p) => !isLainnyaLabel(p));
 }
-function TaxonomyFields({ companies, categories, docTypes, value, onChange, required = true, compact = false }: {
-  companies: TaxCompany[]; categories: string[]; docTypes: string[];
+// Daftar Mitra/Operator untuk (PT, platform). Grup berlaku untuk PT tertentu
+// (companies; kosong = semua PT) dan platform tertentu (platforms; kosong =
+// SEMUA platform PT itu). Bila ada grup yang menyebut platform ini secara
+// eksplisit, hanya grup eksplisit itu yang dipakai (platform Bank punya mitra
+// sendiri, jadi daftar GKM tidak ikut); kalau tidak, grup "semua platform PT".
+function operatorsForPlatform(groups: OperatorGroup[] | undefined, platform?: string, company?: TaxCompany | null): string[] {
+  if (!platform) return [];
+  const forCompany = (g: OperatorGroup) =>
+    !(g.companies || []).length || (g.companies || []).some((x) => !!company && (sameText(x, company.id) || sameText(x, company.code) || sameText(x, company.name)));
+  const scoped = (groups || []).filter(forCompany);
+  const explicit = scoped.filter((g) => (g.platforms || []).some((p) => sameText(p, platform)));
+  const picked = explicit.length > 0 ? explicit : scoped.filter((g) => !(g.platforms || []).length && (g.companies || []).length > 0);
+  const out: string[] = [];
+  picked.forEach((g) => (g.operators || []).forEach((o) => { if (o && !isLainnyaLabel(o) && !out.some((x) => sameText(x, o))) out.push(o); }));
+  return out;
+}
+function TaxonomyFields({ companies, docTypes, operatorGroups, categoryOf, value, onChange, required = true, compact = false }: {
+  companies: TaxCompany[]; docTypes: string[]; operatorGroups?: OperatorGroup[]; categoryOf?: (docType: string) => string;
   value: TaxValue; onChange: (patch: Partial<TaxValue>) => void;
   required?: boolean; compact?: boolean;
 }) {
   const company = companies.find((c) => c.id === value.companyId) || null;
   const platformOpts = companyPlatformList(company);
-  const categoryOpts = categories.filter((c) => !isLainnyaLabel(c));
   const docTypeOpts = docTypes.filter((d) => !isLainnyaLabel(d));
+  const operatorOpts = operatorsForPlatform(operatorGroups, value.platform, company);
   const inList = (list: string[], v: string) => list.some((x) => sameText(x, v));
-  const [other, setOther] = useState({ platform: false, category: false, docType: false });
+  const [other, setOther] = useState({ platform: false, docType: false, operator: false });
   // Nilai yang datang dari luar (OCR, data lama, ganti PT) dan tidak ada di
   // daftar → tampil sebagai "Lainnya" + isian manual berisi nilai tsb.
   useEffect(() => {
     setOther((o) => ({
       platform: value.platform ? !inList(platformOpts, value.platform) : (o.platform && !!company),
-      category: value.category ? !inList(categoryOpts, value.category) : o.category,
       docType: value.docType ? !inList(docTypeOpts, value.docType) : o.docType,
+      operator: value.operator ? !inList(operatorOpts, value.operator) : o.operator,
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value.companyId, value.platform, value.category, value.docType, platformOpts.join("|"), categoryOpts.join("|"), docTypeOpts.join("|")]);
+  }, [value.companyId, value.platform, value.docType, value.operator, platformOpts.join("|"), docTypeOpts.join("|"), operatorOpts.join("|")]);
 
   const lbl = compact ? "block text-xs font-semibold text-slate-300" : "block text-sm font-semibold text-slate-300";
   const sel = `w-full ${compact ? "px-4 py-2.5" : "px-4 py-3"} bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-50`;
   const inp = `w-full px-4 py-2 bg-slate-950 border border-dashed border-indigo-500/50 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500`;
   const star = required ? <span className="text-rose-400">*</span> : <span className="text-slate-500 font-normal">(opsional)</span>;
-  const pick = (field: "platform" | "category" | "docType", v: string) => {
-    if (v === OTHER_OPTION) {
-      setOther((o) => ({ ...o, [field]: true }));
-      onChange(field === "platform" ? { platform: "", platformCustom: true } : { [field]: "" } as any);
-    } else {
-      setOther((o) => ({ ...o, [field]: false }));
-      onChange(field === "platform" ? { platform: v, platformCustom: false } : { [field]: v } as any);
+  const opt = <span className="text-slate-500 font-normal">(opsional)</span>;
+  const withCategory = (docType: string): Partial<TaxValue> => (categoryOf ? { category: categoryOf(docType) } : {});
+  const pickDocType = (v: string) => {
+    if (v === OTHER_OPTION) { setOther((o) => ({ ...o, docType: true })); onChange({ docType: "", ...withCategory("") }); }
+    else { setOther((o) => ({ ...o, docType: false })); onChange({ docType: v, ...withCategory(v) }); }
+  };
+  const pickPlatform = (v: string) => {
+    if (v === OTHER_OPTION) { setOther((o) => ({ ...o, platform: true, operator: false })); onChange({ platform: "", platformCustom: true, operator: "" }); }
+    else {
+      setOther((o) => ({ ...o, platform: false, operator: false }));
+      // Ganti platform = daftar mitra berubah → kosongkan mitra yang tak berlaku lagi.
+      const keepOp = value.operator && inList(operatorsForPlatform(operatorGroups, v, company), value.operator);
+      onChange({ platform: v, platformCustom: false, ...(keepOp ? {} : { operator: "" }) });
     }
   };
-  const selValue = (field: "platform" | "category" | "docType") => (other[field] ? OTHER_OPTION : value[field]);
-  // Folder arsip = PT › Platform › Jenis (Kategori tidak jadi level folder).
-  const path = [company?.code || company?.name, value.platform, value.docType].filter(Boolean);
+  const pickOperator = (v: string) => {
+    if (v === OTHER_OPTION) { setOther((o) => ({ ...o, operator: true })); onChange({ operator: "" }); }
+    else { setOther((o) => ({ ...o, operator: false })); onChange({ operator: v }); }
+  };
+  // Folder arsip = PT › Jenis Dokumen › Platform › Mitra/Operator.
+  const path = [company?.code || company?.name, value.docType, value.platform, value.operator].filter(Boolean);
+  const showOperator = !!value.platform && (operatorOpts.length > 0 || !!value.operator);
 
   return (
     <div className={compact ? "space-y-3" : "space-y-4"}>
@@ -1224,7 +1253,7 @@ function TaxonomyFields({ companies, categories, docTypes, value, onChange, requ
           onChange={(e) => {
             const next = companies.find((c) => c.id === e.target.value) || null;
             const keep = value.platform && (value.platformCustom || inList(companyPlatformList(next), value.platform));
-            onChange({ companyId: e.target.value, ...(keep ? {} : { platform: "", platformCustom: false }) });
+            onChange({ companyId: e.target.value, ...(keep ? {} : { platform: "", platformCustom: false, operator: "" }) });
           }}
           className={sel}
         >
@@ -1233,8 +1262,20 @@ function TaxonomyFields({ companies, categories, docTypes, value, onChange, requ
         </select>
       </div>
       <div className="space-y-1.5">
-        <label className={lbl}>2 · Platform {star}</label>
-        <select value={selValue("platform")} onChange={(e) => pick("platform", e.target.value)} disabled={!company} className={sel}>
+        <label className={lbl}>2 · Jenis Dokumen {star}</label>
+        <select value={other.docType ? OTHER_OPTION : value.docType} onChange={(e) => pickDocType(e.target.value)} className={sel}>
+          <option value="">— Pilih jenis dokumen —</option>
+          {docTypeOpts.map((d) => <option key={d} value={d}>{d}</option>)}
+          <option value={OTHER_OPTION}>Lainnya (isi manual)…</option>
+        </select>
+        {other.docType && (
+          <input value={value.docType} onChange={(e) => onChange({ docType: e.target.value, ...withCategory(e.target.value) })}
+            placeholder="Ketik jenis dokumen — otomatis jadi folder arsip & kode nomor" className={inp} />
+        )}
+      </div>
+      <div className="space-y-1.5">
+        <label className={lbl}>3 · Platform {star}</label>
+        <select value={other.platform ? OTHER_OPTION : value.platform} onChange={(e) => pickPlatform(e.target.value)} disabled={!company} className={sel}>
           <option value="">{company ? "— Pilih platform —" : "— Pilih perusahaan dulu —"}</option>
           {platformOpts.map((p) => <option key={p} value={p}>{p}</option>)}
           <option value={OTHER_OPTION}>Lainnya (isi manual)…</option>
@@ -1247,45 +1288,34 @@ function TaxonomyFields({ companies, categories, docTypes, value, onChange, requ
           <p className="text-[10px] text-amber-600">PT ini belum punya daftar platform (Konfigurasi › Kelola Perusahaan). Pakai "Lainnya" untuk isi manual.</p>
         )}
       </div>
-      <div className="space-y-1.5">
-        <label className={lbl}>3 · Kategori / Tipe Kontrak {star}</label>
-        <select value={selValue("category")} onChange={(e) => pick("category", e.target.value)} className={sel}>
-          <option value="">— Pilih kategori —</option>
-          {categoryOpts.map((c) => <option key={c} value={c}>{c}</option>)}
-          <option value={OTHER_OPTION}>Lainnya (isi manual)…</option>
-        </select>
-        {other.category && (
-          <input value={value.category} onChange={(e) => onChange({ category: e.target.value })}
-            placeholder="Ketik kategori — otomatis jadi folder arsip" className={inp} />
-        )}
-      </div>
-      <div className="space-y-1.5">
-        <label className={lbl}>4 · Jenis Dokumen {star}</label>
-        <select value={selValue("docType")} onChange={(e) => pick("docType", e.target.value)} className={sel}>
-          <option value="">— Pilih jenis dokumen —</option>
-          {docTypeOpts.map((d) => <option key={d} value={d}>{d}</option>)}
-          <option value={OTHER_OPTION}>Lainnya (isi manual)…</option>
-        </select>
-        {other.docType && (
-          <input value={value.docType} onChange={(e) => onChange({ docType: e.target.value })}
-            placeholder="Ketik jenis dokumen — otomatis jadi folder arsip & kode nomor" className={inp} />
-        )}
-      </div>
+      {showOperator && (
+        <div className="space-y-1.5">
+          <label className={lbl}>4 · Mitra / Operator {opt}</label>
+          <select value={other.operator ? OTHER_OPTION : (value.operator || "")} onChange={(e) => pickOperator(e.target.value)} className={sel}>
+            <option value="">— Pilih mitra/operator —</option>
+            {operatorOpts.map((o) => <option key={o} value={o}>{o}</option>)}
+            <option value={OTHER_OPTION}>Lainnya (isi manual)…</option>
+          </select>
+          {other.operator && (
+            <input value={value.operator || ""} onChange={(e) => onChange({ operator: e.target.value })}
+              placeholder="Ketik nama mitra/operator — otomatis jadi folder arsip" className={inp} />
+          )}
+        </div>
+      )}
       <p className="text-[11px] text-slate-500 flex items-center gap-1.5 flex-wrap">
         <FolderOpen className="w-3.5 h-3.5 text-amber-500 shrink-0" />
         Masuk arsip:
         {path.length > 0
           ? <span className="font-semibold text-slate-300">{path.join(" › ")} › Draft/Aktif</span>
-          : <span className="italic">PT › Platform › Jenis Dokumen › Draft/Aktif</span>}
+          : <span className="italic">PT › Jenis Dokumen › Platform › Mitra/Operator › Draft/Aktif</span>}
       </p>
     </div>
   );
 }
 function taxonomyMissing(v: TaxValue): string | null {
   if (!v.companyId) return "Pilih Perusahaan (PT).";
-  if (!String(v.platform || "").trim()) return "Pilih Platform (atau isi manual lewat \"Lainnya\").";
-  if (!String(v.category || "").trim()) return "Pilih Kategori / Tipe Kontrak (atau isi manual lewat \"Lainnya\").";
   if (!String(v.docType || "").trim()) return "Pilih Jenis Dokumen (atau isi manual lewat \"Lainnya\").";
+  if (!String(v.platform || "").trim()) return "Pilih Platform (atau isi manual lewat \"Lainnya\").";
   return null;
 }
 
@@ -1444,26 +1474,24 @@ function DcsArchiveBrowser({ docs, onOpen }: { docs: DcsArchiveDoc[]; onOpen: (d
   );
 }
 
-// ===== ARSIP EKSTERNAL: PT › Platform › Jenis Dokumen › Draft/Aktif =====
-// (Kategori tetap diisi di form & tersimpan di kontrak, tapi bukan level folder.)
-// Folder diturunkan dari master data (PT & platformnya, kategori, jenis
-// dokumen) + nilai "Lainnya" yang pernah diketik di kontrak — jadi isian
-// manual otomatis muncul sebagai folder. Setiap jenis dokumen tampil di
-// setiap kategori (walau kosong). Dokumen lama yang belum lengkap
-// klasifikasinya dikumpulkan di "Belum Diklasifikasi".
-function ExternalArchiveBrowser({ contracts, companies, categories, docTypes, isSigned, onOpen, onClassify, renderStatus, mode = "external" }: {
-  contracts: Contract[]; companies: TaxCompany[]; categories: string[]; docTypes: string[]; mode?: "external" | "internal";
+// ===== ARSIP EKSTERNAL: PT › Jenis Dokumen › Platform › Mitra/Operator › Draft/Aktif =====
+// 5 level folder. Folder diturunkan dari master data (PT & platformnya, jenis
+// dokumen, Mitra/Operator per PT/platform) + nilai "Lainnya" yang pernah
+// diketik di dokumen. Dokumen lama yang belum lengkap klasifikasinya dikumpulkan di
+// "Belum Diklasifikasi". Mode internal (kontrak karyawan): PT › Jenis › Draft/Aktif.
+function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups, isSigned, onOpen, onClassify, renderStatus, mode = "external" }: {
+  contracts: Contract[]; companies: TaxCompany[]; docTypes: string[]; operatorGroups?: OperatorGroup[]; mode?: "external" | "internal";
   isSigned: (c: Contract) => boolean; onOpen: (c: Contract) => void; onClassify: (c: Contract) => void;
   renderStatus: (c: Contract) => any;
 }) {
-  type Path = { companyId?: string; platform?: string; docType?: string; bucket?: "draft" | "aktif"; unclassified?: boolean };
+  // operator === NO_OPERATOR → folder "Tanpa Mitra/Operator".
+  const NO_OPERATOR = "__tanpa__";
+  type Path = { companyId?: string; docType?: string; platform?: string; operator?: string; bucket?: "draft" | "aktif"; unclassified?: boolean };
   const [path, setPath] = useState<Path>({});
-  // Eksternal: PT › Platform › Jenis. Internal (kontrak karyawan): PT › Jenis
-  // (tanpa level platform).
   const internal = mode === "internal";
   const classified = (c: Contract) => internal
     ? !!(c.companyId && c.employmentType && c.docType)
-    : !!(c.companyId && c.platform && c.category && c.docType);
+    : !!(c.companyId && c.platform && c.docType);
   const docs = contracts.filter(classified);
   const unclassified = contracts.filter((c) => !classified(c));
   const uniq = (base: string[], extra: (string | undefined)[]) => {
@@ -1474,10 +1502,18 @@ function ExternalArchiveBrowser({ contracts, companies, categories, docTypes, is
   const companyList: TaxCompany[] = [...companies];
   docs.forEach((c) => { if (!companyList.some((x) => x.id === c.companyId)) companyList.push({ id: c.companyId!, name: c.companyName || c.companyId!, code: c.companyCode || "" }); });
   const inCompany = docs.filter((c) => c.companyId === path.companyId);
-  const inPlatform = internal ? inCompany : inCompany.filter((c) => sameText(c.platform, path.platform));
-  // Tanpa level Kategori: Platform langsung berisi folder Jenis Dokumen.
-  const inDocType = inPlatform.filter((c) => sameText(c.docType, path.docType));
+  const inDocType = inCompany.filter((c) => sameText(c.docType, path.docType));
+  const inPlatform = internal ? inDocType : inDocType.filter((c) => sameText(c.platform, path.platform));
   const company = companyList.find((c) => c.id === path.companyId);
+  // Level ke-4 (eksternal): Mitra/Operator = master untuk (PT, platform) + yang
+  // sudah dipakai dokumen. Level ini SELALU ada di eksternal; dokumen tanpa
+  // mitra masuk "Tanpa Mitra/Operator".
+  const operatorList = internal ? [] : uniq(operatorsForPlatform(operatorGroups, path.platform, company), inPlatform.map((c) => c.operator));
+  const inOperator = internal || !path.operator
+    ? inPlatform
+    : inPlatform.filter((c) => (path.operator === NO_OPERATOR ? !String(c.operator || "").trim() : sameText(c.operator, path.operator)));
+  // Level Draft/Aktif tercapai setelah Jenis (internal) / Mitra-Operator (eksternal).
+  const atBucketLevel = internal ? !!path.docType : (!!path.platform && !!path.operator);
 
   const Folder = ({ title, sub, count, onClick, dim, tone = "amber" }: { key?: any; title: string; sub?: string; count: number; onClick: () => void; dim?: boolean; tone?: "amber" | "emerald" | "rose" }) => (
     <button onClick={onClick}
@@ -1490,8 +1526,9 @@ function ExternalArchiveBrowser({ contracts, companies, categories, docTypes, is
   const crumbs: { label: string; to: Path }[] = [{ label: "Semua PT", to: {} }];
   if (path.unclassified) crumbs.push({ label: "Belum Diklasifikasi", to: { unclassified: true } });
   if (path.companyId) crumbs.push({ label: company?.code || company?.name || "PT", to: { companyId: path.companyId } });
-  if (path.platform) crumbs.push({ label: path.platform, to: { companyId: path.companyId, platform: path.platform } });
-  if (path.docType) crumbs.push({ label: path.docType, to: { companyId: path.companyId, platform: path.platform, docType: path.docType } });
+  if (path.docType) crumbs.push({ label: path.docType, to: { companyId: path.companyId, docType: path.docType } });
+  if (path.platform) crumbs.push({ label: path.platform, to: { companyId: path.companyId, docType: path.docType, platform: path.platform } });
+  if (path.operator) crumbs.push({ label: path.operator === NO_OPERATOR ? "Tanpa Mitra/Operator" : path.operator, to: { companyId: path.companyId, docType: path.docType, platform: path.platform, operator: path.operator } });
   if (path.bucket) crumbs.push({ label: path.bucket === "aktif" ? "Aktif" : "Draft", to: path });
   const grid = "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4";
 
@@ -1509,8 +1546,8 @@ function ExternalArchiveBrowser({ contracts, companies, categories, docTypes, is
           {path.unclassified && (
             <p className="text-[10px] text-amber-600">
               Belum lengkap: {(internal
-                ? [!c.companyId && "PT", !c.employmentType && "Kategori", !c.docType && "Jenis"]
-                : [!c.companyId && "PT", !c.platform && "Platform", !c.category && "Kategori", !c.docType && "Jenis"]).filter(Boolean).join(", ")}
+                ? [!c.companyId && "PT", !c.docType && "Jenis", !c.employmentType && "Kategori"]
+                : [!c.companyId && "PT", !c.docType && "Jenis", !c.platform && "Platform"]).filter(Boolean).join(", ")}
             </p>
           )}
           <div className="flex items-center gap-2 pt-2 border-t border-slate-850">
@@ -1541,36 +1578,47 @@ function ExternalArchiveBrowser({ contracts, companies, categories, docTypes, is
           return <Folder key={c.id} title={c.name} sub={c.code} count={n} dim={n === 0} onClick={() => setPath({ companyId: c.id })} />;
         })}
         {unclassified.length > 0 && (
-          <Folder title="Belum Diklasifikasi" sub={internal ? "PT/Kategori/Jenis belum lengkap" : "PT/Platform/Kategori/Jenis belum lengkap"} count={unclassified.length} tone="rose" onClick={() => setPath({ unclassified: true })} />
+          <Folder title="Belum Diklasifikasi" sub={internal ? "PT/Kategori/Jenis belum lengkap" : "PT/Jenis/Platform belum lengkap"} count={unclassified.length} tone="rose" onClick={() => setPath({ unclassified: true })} />
         )}
         {companyList.length === 0 && <p className="text-sm text-slate-500 col-span-full">Belum ada perusahaan. Tambahkan di Konfigurasi › Kelola Perusahaan.</p>}
       </div>
     );
-  } else if (!internal && !path.platform) {
-    const list = uniq(companyPlatformList(company), inCompany.map((c) => c.platform));
-    body = (
-      <div className={grid}>
-        {list.map((p) => {
-          const n = inCompany.filter((c) => sameText(c.platform, p)).length;
-          return <Folder key={p} title={p} count={n} dim={n === 0} onClick={() => setPath({ ...path, platform: p })} />;
-        })}
-        {list.length === 0 && <p className="text-sm text-slate-500 col-span-full">PT ini belum punya platform. Atur di Konfigurasi › Kelola Perusahaan.</p>}
-      </div>
-    );
   } else if (!path.docType) {
-    const list = uniq(docTypes, inPlatform.map((c) => c.docType));
+    const list = uniq(docTypes, inCompany.map((c) => c.docType));
     body = (
       <div className={grid}>
         {list.map((d) => {
-          const here = inPlatform.filter((c) => sameText(c.docType, d));
+          const here = inCompany.filter((c) => sameText(c.docType, d));
           const aktif = here.filter(isSigned).length;
           return <Folder key={d} title={d} sub={`${here.length - aktif} draft · ${aktif} aktif`} count={here.length} dim={here.length === 0} onClick={() => setPath({ ...path, docType: d })} />;
         })}
       </div>
     );
-  } else if (!path.bucket) {
-    const aktif = inDocType.filter(isSigned);
-    const draft = inDocType.filter((c) => !isSigned(c));
+  } else if (!internal && !path.platform) {
+    const list = uniq(companyPlatformList(company), inDocType.map((c) => c.platform));
+    body = (
+      <div className={grid}>
+        {list.map((p) => {
+          const n = inDocType.filter((c) => sameText(c.platform, p)).length;
+          return <Folder key={p} title={p} count={n} dim={n === 0} onClick={() => setPath({ ...path, platform: p })} />;
+        })}
+        {list.length === 0 && <p className="text-sm text-slate-500 col-span-full">PT ini belum punya platform. Atur di Konfigurasi › Kelola Perusahaan.</p>}
+      </div>
+    );
+  } else if (!internal && !path.operator) {
+    const noOp = inPlatform.filter((c) => !String(c.operator || "").trim());
+    body = (
+      <div className={grid}>
+        {operatorList.map((o) => {
+          const n = inPlatform.filter((c) => sameText(c.operator, o)).length;
+          return <Folder key={o} title={o} count={n} dim={n === 0} onClick={() => setPath({ ...path, operator: o })} />;
+        })}
+        <Folder title="Tanpa Mitra/Operator" count={noOp.length} dim={noOp.length === 0} onClick={() => setPath({ ...path, operator: NO_OPERATOR })} />
+      </div>
+    );
+  } else if (atBucketLevel && !path.bucket) {
+    const aktif = inOperator.filter(isSigned);
+    const draft = inOperator.filter((c) => !isSigned(c));
     body = (
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
         <Folder title="Draft" sub="belum TTD basah" count={draft.length} onClick={() => setPath({ ...path, bucket: "draft" })} />
@@ -1578,7 +1626,7 @@ function ExternalArchiveBrowser({ contracts, companies, categories, docTypes, is
       </div>
     );
   } else {
-    body = <DocList list={inDocType.filter((c) => isSigned(c) === (path.bucket === "aktif"))} />;
+    body = <DocList list={inOperator.filter((c) => isSigned(c) === (path.bucket === "aktif"))} />;
   }
 
   return (
@@ -2265,7 +2313,7 @@ function LegalExternalFormPage({ token }: { token: string }) {
       <GuestNotice notice={notice} onDismiss={dismissNotice} />
       <div className="max-w-2xl mx-auto p-4 sm:p-8 space-y-5">
         <header className="bg-slate-950/60 border border-slate-800 rounded-2xl p-6 text-center space-y-1.5">
-          <p className="text-[11px] uppercase tracking-wide text-indigo-400 font-bold">Formulir Eksternal</p>
+          <p className="text-[11px] uppercase tracking-wide text-indigo-400 font-bold">Form Dokumen Eksternal</p>
           <h1 className="text-xl font-bold">Tambah Pekerjaan Legal</h1>
           <p className="text-xs text-slate-400">{meta?.tenantName} · Diisi oleh partner/pihak eksternal</p>
         </header>
@@ -3710,7 +3758,7 @@ async function openLegalJobDocument(
 // Bagikan Link Formulir (bukan form internal lagi); pekerjaan yang masuk
 // dari form eksternal direview lewat tabel "Pekerjaan Masuk" sebelum masuk
 // ke tabel utama. Lihat Spek-Dashboard-Pekerjaan-Legal.docx bagian 4.
-function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContract, focusJobId, onFocusHandled }: { currentUser: any; onOpenContract: (contractId: string) => void; onCreateExternalContract?: (job: { id: string; title: string; companyId?: string }) => void; focusJobId?: string | null; onFocusHandled?: () => void }) {
+function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, onCreateExternalContract, focusJobId, onFocusHandled }: { currentUser: any; actionPermissions?: Record<string, string[]>; onOpenContract: (contractId: string) => void; onCreateExternalContract?: (job: { id: string; title: string; companyId?: string }) => void; focusJobId?: string | null; onFocusHandled?: () => void }) {
   const [jobs, setJobs] = useState<LegalJobWithLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ text: string; kind: "error" | "success" } | null>(null);
@@ -3729,7 +3777,8 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
   // Divisi bisnis = PEMINTA (ajukan Permintaan Kontrak, pantau progresnya);
   // Legal/Admin = PEMROSES (setujui/tolak, buat kontrak). Manajemen hanya lihat.
   const isRequester = isDivisionRole(currentUser?.role);
-  const isLegalSide = ["admin", "legal", "super_admin"].includes(currentUser?.role);
+  // Pemroses pekerjaan legal ditentukan matriks Hak Akses (izin legaljob.process).
+  const isLegalSide = isPermAllowed(currentUser?.role, "legaljob.process", actionPermissions);
   const [requestOpen, setRequestOpen] = useState(false);
 
   const fetchJobs = async () => {
@@ -4009,6 +4058,7 @@ function PekerjaanLegalPage({ currentUser, onOpenContract, onCreateExternalContr
         <LegalJobDetailDrawer
           job={jobs.find((j) => j.id === detailJob.id) || detailJob}
           currentUser={currentUser}
+          canManageSigning={isPermAllowed(currentUser?.role, "signing.manage", actionPermissions)}
           onClose={() => setDetailJob(null)}
           onChanged={fetchJobs}
           notify={notify}
@@ -4281,8 +4331,8 @@ function RejectReasonModal({ job, onClose, onConfirm }: { job: LegalJob; onClose
 // Detail per pekerjaan — Info umum, tombol lanjut tahap workflow, dan tab
 // Dokumen/Timeline/Catatan (lihat sketsa: tidak double dgn Dokumen/Timeline
 // milik kontrak lain, ini khusus pekerjaan ybs).
-function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, onOpenContract, onCreateExternalContract }: {
-  job: LegalJobWithLink; currentUser: any; onClose: () => void; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void;
+function LegalJobDetailDrawer({ job, currentUser, canManageSigning = true, onClose, onChanged, notify, onOpenContract, onCreateExternalContract }: {
+  job: LegalJobWithLink; currentUser: any; canManageSigning?: boolean; onClose: () => void; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void;
   onOpenContract: (contractId: string) => void;
   onCreateExternalContract?: (job: { id: string; title: string; companyId?: string }) => void;
 }) {
@@ -4352,7 +4402,7 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
               ? <span className={`text-[11px] px-2.5 py-1 rounded-full font-semibold ${CONTRACT_STATUS_BADGE_CLASS[job.linkedContract.status] || ""}`}>{CONTRACT_STATUS_LABEL_ID[job.linkedContract.status] || job.linkedContract.status}</span>
               : <span className={LEGAL_PILL}>{LEGAL_STATUS_LABEL[legalJobDisplayStatus(job)]}</span>} />
             <InfoField label="Prioritas" value={job.priority ? <span className={`text-[11px] px-2.5 py-1 rounded-full font-semibold ${LEGAL_PRIORITY_STYLE[job.priority]}`}>{job.priority}</span> : "—"} />
-            <InfoField label="Sumber" value={job.source === "eksternal" ? "Formulir Eksternal" : "Input Internal"} />
+            <InfoField label="Sumber" value={job.source === "eksternal" ? "Form Dokumen Eksternal" : "Input Internal"} />
             <InfoField label="Tgl. Request" value={fmtDateID(job.createdAt)} />
           </div>
           {job.description && (
@@ -4399,7 +4449,7 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
           )}
           {/* Proses TTD -> Dokumen Kembali -> Aktif (hanya saat kontrak Disetujui Penuh) */}
           {job.linkedContract && job.linkedContract.rawStatus === "FullyApproved" && (
-            <LegalSigningPanel key={job.linkedContract.id} job={job} onChanged={onChanged} notify={notify} />
+            <LegalSigningPanel key={job.linkedContract.id} job={job} canManage={canManageSigning} onChanged={onChanged} notify={notify} />
           )}
 
           {/* Tabs */}
@@ -4497,7 +4547,7 @@ function LegalJobDetailDrawer({ job, currentUser, onClose, onChanged, notify, on
 // Tiap langkah baru terbuka setelah langkah sebelumnya tersimpan — aturan yang
 // sama dijaga juga di server (signing-dispatch / signing-receipt / activate).
 const SIGNING_MEDIA = ["Kurir", "Antar Langsung", "Pos", "Lainnya"];
-function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJobWithLink; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void }) {
+function LegalSigningPanel({ job, canManage = true, onChanged, notify }: { key?: any; job: LegalJobWithLink; canManage?: boolean; onChanged: () => void; notify: (t: string, k?: "error" | "success") => void }) {
   const lc = job.linkedContract!;
   const today = new Date().toISOString().slice(0, 10);
   const [sendForm, setSendForm] = useState({ copies: String(lc.signingDispatch?.copies ?? 2), sentDate: lc.signingDispatch?.sentDate || today, medium: lc.signingDispatch?.medium || "Kurir" });
@@ -4547,7 +4597,7 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
               {SIGNING_MEDIA.map((m) => <option key={m} value={m}>{m}</option>)}
             </select></div>
         </div>
-        {!received && (
+        {!received && canManage && (
           <div className="flex justify-end">
             <button disabled={busy} onClick={() => post("signing-dispatch", { copies: Number(sendForm.copies), sentDate: sendForm.sentDate, medium: sendForm.medium }, "Pengiriman dokumen dicatat.")}
               className="px-4 py-2 rounded-full bg-mist text-indigo-400 hover:brightness-95 text-[12px] font-semibold cursor-pointer disabled:opacity-50">
@@ -4567,7 +4617,7 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
           <div><label className={labelCls}>Tanggal Terima</label>
             <input type="date" value={recvForm.receivedDate} min={dispatched?.sentDate} disabled={!dispatched || !!received} onChange={(e) => setRecvForm({ ...recvForm, receivedDate: e.target.value })} className={inputCls} /></div>
         </div>
-        {dispatched && !received && (
+        {dispatched && !received && canManage && (
           <div className="flex justify-end">
             <button disabled={busy} onClick={() => post("signing-receipt", { copies: Number(recvForm.copies), receivedDate: recvForm.receivedDate }, "Dokumen kembali dicatat.")}
               className="px-4 py-2 rounded-full bg-mist text-indigo-400 hover:brightness-95 text-[12px] font-semibold cursor-pointer disabled:opacity-50">Simpan Penerimaan</button>
@@ -4580,7 +4630,7 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
         {stepHead(3, "Bukti TTD Basah → Arsip", false)}
         {!received && <p className="text-[11px] text-slate-500">Catat penerimaan dokumen dulu untuk membuka langkah ini.</p>}
         <div className="flex items-center gap-2">
-          <button disabled={!received || busy} onClick={() => proofRef.current?.click()}
+          <button hidden={!canManage} disabled={!received || busy} onClick={() => proofRef.current?.click()}
             className="flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900 text-slate-300 hover:brightness-110 text-[12px] font-semibold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
             <Upload className="w-3.5 h-3.5" /> {proof ? "Ganti Berkas" : "Upload Bukti TTD"}
           </button>
@@ -4588,7 +4638,8 @@ function LegalSigningPanel({ job, onChanged, notify }: { key?: any; job: LegalJo
           <input ref={proofRef} type="file" className="hidden" accept=".pdf,.jpg,.jpeg,.png"
             onChange={(e) => { const f = e.target.files?.[0]; if (f) setProof(f); e.target.value = ""; }} />
         </div>
-        <button disabled={!received || !proof || busy}
+        {!canManage && <p className="text-[11px] text-slate-500 italic">Role Anda tidak punya izin mencatat TTD (diatur di Hak Akses).</p>}
+        <button hidden={!canManage} disabled={!received || !proof || busy}
           onClick={() => { const fd = new FormData(); fd.append("file", proof!); post("activate", fd, "Bukti TTD basah diunggah — status kontrak kini Arsip. Umumkan rilis internal untuk lanjut ke Distribusi/Implementasi."); }}
           className="w-full flex items-center justify-center gap-2 py-2.5 rounded-full bg-emerald-600 hover:bg-emerald-500 text-white text-[12.5px] font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed">
           <CheckCircle className="w-3.5 h-3.5" /> Unggah TTD Basah &amp; Arsipkan
@@ -5670,7 +5721,7 @@ export default function App() {
   });
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [isUploadingParty2Logo, setIsUploadingParty2Logo] = useState(false);
-  const [configTab, setConfigTab] = useState<"beranda" | "folder" | "masterdata" | "dcsdoctypes" | "dcsclauses" | "vendor" | "karyawan" | "app" | "pengguna" | "perusahaan">("beranda");
+  const [configTab, setConfigTab] = useState<"beranda" | "folder" | "masterdata" | "dcsdoctypes" | "dcsclauses" | "vendor" | "karyawan" | "app" | "pengguna" | "perusahaan" | "operator" | "hakakses">("beranda");
   // Pencarian pengaturan di beranda Konfigurasi berpandu — ketik kata kunci,
   // klik hasil untuk lompat ke tab yang relevan (lihat configSearchIndex).
   const [configSearch, setConfigSearch] = useState("");
@@ -5858,10 +5909,11 @@ export default function App() {
   const [isDocSubmitting, setIsDocSubmitting] = useState(false);
   const [docRegForm, setDocRegForm] = useState({
     title: "",
-    // Klasifikasi Arsip Eksternal (PT → Platform → Kategori → Jenis).
+    // Klasifikasi Arsip Eksternal (PT → Jenis Dokumen → Platform; + isian Mitra/Operator).
     companyId: "" as string,
     platform: "" as string,
     platformCustom: false as boolean,
+    operator: "" as string,
     // Klasifikasi Arsip Internal / kontrak karyawan (PT → Kategori → Jenis → Divisi).
     employmentType: "" as string,
     division: "" as string,
@@ -6173,6 +6225,24 @@ export default function App() {
   // Eksternal): kategori & jenis khusus kontrak karyawan (Employment/PKWT)
   // milik jalur internal, jadi tidak ditawarkan di sini.
   const externalCategories = clauseCategories.filter((c) => c !== "Employment");
+  // Kategori tidak lagi dipilih user: diturunkan dari Jenis Dokumen (kunci
+  // template & penomoran). Pakai kategori pertama milik jenis itu (selain
+  // Employment); jenis tanpa kategori / isian manual → "General".
+  const categoryOfDocType = (docType: string): string => {
+    const dt = masterData.docTypes.find((d) => sameText(d.name, docType));
+    const cat = (dt?.categories || []).find((c) => c !== "Employment");
+    return cat || "General";
+  };
+  // Template yang cocok untuk sebuah jenis dokumen: kategori template harus
+  // termasuk kategori jenis itu (jenis tanpa daftar kategori = semua template).
+  const templatesForDocType = (docType: string, fallbackCategory: string): Template[] => {
+    const dt = masterData.docTypes.find((d) => sameText(d.name, docType));
+    const cats = (dt?.categories || []).filter((c) => c !== "Employment");
+    if (dt && cats.length > 0) return templates.filter((t) => cats.includes(t.category));
+    if (dt) return templates.filter((t) => t.category !== "Employment");
+    return templates.filter((t) => t.category === fallbackCategory);
+  };
+  const operatorGroups: OperatorGroup[] = Array.isArray(appSettings?.masterData?.operatorGroups) ? appSettings.masterData.operatorGroups : [];
   const externalDocTypeNames = masterData.docTypes
     .filter((d) => d.appliesTo !== "employee")
     .filter((d) => !(Array.isArray(d.categories) && d.categories.length > 0 && d.categories.every((c) => c === "Employment")))
@@ -6453,7 +6523,10 @@ export default function App() {
   // Kontrak hanya bisa diedit selagi Draft — begitu diaktifkan, terkunci.
   // Boleh membuat/mengubah/mengajukan dokumen kontrak (HR/GA: kontrak
   // karyawan saja — server hanya mengirim kontrak yang boleh ia lihat).
-  const canEditContracts = !!currentUser && (currentUser.role === "super_admin" || (ROLE_GROUPS.contractEditors as readonly string[]).includes(currentUser.role));
+  // Matriks hak akses aksi (Konfigurasi > Hak Akses): satu fungsi untuk semua
+  // tombol — sumber yang sama dgn yang dipakai server (requirePerm).
+  const can = (key: string) => !!currentUser && isPermAllowed(currentUser.role, key, appSettings?.actionPermissions);
+  const canEditContracts = can("contract.edit");
   // Saat revisi, hanya pihak pembuat/pengaju yang mengedit (peninjau cukup
   // berkomentar) — lihat isDocumentOwnerSide.
   const isContractEditable = (c: Contract | null) =>
@@ -6542,7 +6615,7 @@ export default function App() {
     if (!c || !currentUser) return false;
     if (currentUser.role === "admin" || currentUser.role === "super_admin") return true;
     const owner = c.approvalSubmittedById || c.createdById;
-    if (!owner) return (ROLE_GROUPS.contractEditors as readonly string[]).includes(currentUser.role);
+    if (!owner) return can("contract.edit");
     return owner === currentUser.id;
   };
   const approvalTurnOf = (c: Contract | null) => {
@@ -6558,9 +6631,12 @@ export default function App() {
   // reviewer yang ditunjuk Legal di dokumen ini (aturan sama dgn server).
   // Pemegang dokumen — satu-satunya yang boleh mengirim ke Review Pihak Kedua,
   // melewatinya, atau mengambil link review eksternal.
-  const canHoldDocument = !!currentUser && ["super_admin", "admin", "legal"].includes(currentUser.role);
+  // Hapus & pindah dokumen: hanya Legal dan Super Admin.
+  const canDelete = can("contract.delete");
+  const canMove = can("contract.move");
+  const canHoldDocument = can("review.send_external");
   const canReviewDoc = !!selectedContract && !!currentUser
-    && canReviewContract({ id: currentUser.id, role: currentUser.role, actingForIds: (currentUser as any).actingForIds }, selectedContract);
+    && canReviewContract({ id: currentUser.id, role: currentUser.role, actingForIds: (currentUser as any).actingForIds }, selectedContract, appSettings?.actionPermissions);
 
   // Untuk Arsip per Folder: kontrak dianggap "sudah ditandatangani" (bucket
   // Approve) kalau sudah pernah lolos aktivasi (upload bukti TTD basah) —
@@ -6718,6 +6794,7 @@ export default function App() {
     platform: "" as string,
     // true = platform diketik manual lewat pilihan "Lainnya".
     platformCustom: false as boolean,
+    operator: "" as string,
     // Kontrak KARYAWAN: kategori (status hubungan kerja) & divisi.
     employmentType: "" as string,
     division: "" as string,
@@ -7518,8 +7595,25 @@ export default function App() {
   // klik "Setuju/OK" — tidak bisa mengubah isi kontrak.
   // Buka modal bagikan link (menggantikan window.prompt). Batas hari & tampilan
   // link ditangani modal + confirmShareLink di bawah.
-  const handleShareExternalReview = () => {
+  const handleShareExternalReview = async () => {
     if (!selectedContract) return;
+    // Sedang diskusi/review eksternal: JANGAN membuat link baru — cukup salin
+    // link yang sedang berjalan (token & masa berlakunya tidak diubah).
+    // Akses ditutup otomatis saat pihak eksternal mengajukan revisi, dan dibuka
+    // lagi (link yang sama) lewat "Buka Akses Link" saat dokumen siap dikirim
+    // ke review eksternal berikutnya.
+    const tok = selectedContract.externalReviewToken;
+    const expired = !!selectedContract.externalReviewExpiresAt && new Date(selectedContract.externalReviewExpiresAt) < new Date();
+    if (selectedContract.status === "ReviewEksternal" && tok && !expired) {
+      const url = `${window.location.origin}/?reviewToken=${tok}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        showToast("Link review yang sedang berjalan disalin (tidak membuat link baru).", "success");
+      } catch {
+        window.prompt("Salin link review:", url);
+      }
+      return;
+    }
     setShareLinkModal({
       kind: "contract", targetId: selectedContract.id, days: "14", url: "", busy: false,
       newRound: selectedContract.status === "ApprovedInternal",
@@ -8010,7 +8104,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/contracts/${classifyTarget.contract.id}/classify`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...classifyTarget.value, platform: classifyTarget.value.platform.trim(), category: classifyTarget.value.category.trim(), docType: classifyTarget.value.docType.trim(), requestingDivision: classifyTarget.requestingDivision ?? "" }),
+        body: JSON.stringify({ ...classifyTarget.value, platform: classifyTarget.value.platform.trim(), operator: (classifyTarget.value.operator || "").trim(), category: (classifyTarget.value.category || categoryOfDocType(classifyTarget.value.docType)).trim(), docType: classifyTarget.value.docType.trim(), requestingDivision: classifyTarget.requestingDivision ?? "" }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.success) { showToast(data.error || "Gagal menyimpan klasifikasi", "warning"); return; }
@@ -8843,6 +8937,7 @@ export default function App() {
           docType: "",
           platform: "",
           platformCustom: false,
+          operator: "",
           employmentType: "",
           division: "",
           companyId: "",
@@ -10335,7 +10430,7 @@ export default function App() {
   const handleRegisterDocument = async () => {
     // Kontrak karyawan: kategori kontrak tersimpan "Employment" (kunci
     // template/klausul); klasifikasinya di employmentType/docType/division.
-    const finalCategory = docRegExternal ? docRegForm.category.trim() : "Employment";
+    const finalCategory = docRegExternal ? (docRegForm.category.trim() || categoryOfDocType(docRegForm.docType)) : "Employment";
     {
       const err = docRegExternal ? taxonomyMissing(docRegForm) : internalTaxonomyMissing(docRegForm);
       if (err) { showToast(err, "warning"); return; }
@@ -10387,7 +10482,7 @@ export default function App() {
           vendorId: docRegForm.vendorId || undefined,
           docType: docRegForm.docType,
           ...(docRegExternal
-            ? { companyId: docRegForm.companyId, platform: docRegForm.platform.trim(), platformCustom: docRegForm.platformCustom }
+            ? { companyId: docRegForm.companyId, platform: docRegForm.platform.trim(), platformCustom: docRegForm.platformCustom, operator: (docRegForm.operator || "").trim() || undefined }
             : { companyId: docRegForm.companyId, employmentType: docRegForm.employmentType.trim(), division: docRegForm.division.trim() || undefined }),
           notes: docRegForm.notes,
           customOpeningParagraph: docRegForm.customOpeningParagraph || undefined,
@@ -10419,7 +10514,7 @@ export default function App() {
           setArsipSubPath([]);
         }
         setDocRegForm({
-          title: "", companyId: "", platform: "", platformCustom: false, employmentType: "", division: "", category: "Vendor", newCategory: "", docType: "Perjanjian Kerjasama",
+          title: "", companyId: "", platform: "", platformCustom: false, operator: "", employmentType: "", division: "", category: "General", newCategory: "", docType: "Perjanjian Kerjasama",
           party2Name: "", party2Type: "Vendor", startDate: "", endDate: "",
           contractValue: 0, currency: "IDR", reminderDaysBefore: 30, notes: "", subFolderId: "",
           newSubFolderName: "", hasMaterai: true, copyCount: 2, file: null, customOpeningParagraph: "",
@@ -11967,6 +12062,7 @@ export default function App() {
     { label: "Dropdown Form", hint: "Tipe pihak, mata uang, status, departemen", keywords: "dropdown pilihan tipe pihak mata uang currency status departemen master data", tab: "masterdata" },
     { label: "Pengingat / Reminder Kadaluarsa", hint: "Default hari pengingat kontrak", keywords: "reminder pengingat kadaluarsa expire jatuh tempo notifikasi hari", tab: "masterdata" },
     { label: "Data Vendor", hint: "Vendor, NPWP, rekening bank", keywords: "vendor npwp rekening bank supplier mitra pihak kedua", tab: "vendor" },
+    { label: "Mitra / Operator", hint: "Daftar mitra/operator per PT & platform (TBK, Bank, GKM) untuk Arsip Eksternal", keywords: "mitra operator tbk bank gkm rumah sakit shuttle travel platform pt arsip eksternal folder", tab: "operator" },
     { label: "Data Karyawan", hint: "Karyawan untuk kontrak kerja", keywords: "karyawan employee pegawai pkwt kontrak kerja", tab: "karyawan" },
     { label: "Kelola Pengguna", hint: "Akun & peran pengguna", keywords: "pengguna user akun peran role kelola admin", tab: "pengguna", role: ["admin", "super_admin", "it_system"] },
     { label: "Kelola Perusahaan", hint: "Tenant, cadangan, email, penyimpanan", keywords: "perusahaan tenant cadangan backup email penyimpanan storage", tab: "perusahaan", role: ["super_admin"] },
@@ -13089,7 +13185,7 @@ export default function App() {
     const tokens: Record<string, string> = {
       ...selectedContract!.variables,
       StartDate: selectedContract!.startDate
-        ? new Date(selectedContract!.startDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+        ? new Date(selectedContract!.startDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
         : selectedContract!.startDate,
       Party1Name: appSettings.companyName || "[Nama perusahaan belum diisi]",
       Party1Address: selectedContract!.party1Address || appSettings.companyAddress || "[Alamat perusahaan belum diisi]",
@@ -16329,7 +16425,7 @@ export default function App() {
 
           {/* VIEW: PEKERJAAN LEGAL */}
           {activeTab === "pekerjaan-legal" && (
-            <PekerjaanLegalPage currentUser={currentUser} focusJobId={focusLegalJobId} onFocusHandled={() => setFocusLegalJobId(null)} onOpenContract={(contractId) => {
+            <PekerjaanLegalPage currentUser={currentUser} actionPermissions={appSettings?.actionPermissions} focusJobId={focusLegalJobId} onFocusHandled={() => setFocusLegalJobId(null)} onOpenContract={(contractId) => {
               const c = contracts.find((x) => x.id === contractId);
               if (c) { setSelectedContract(c); setActiveTab("monitoring"); }
               else showToast("Kontrak terhubung tidak ditemukan.", "warning");
@@ -16343,7 +16439,7 @@ export default function App() {
                 party2Type: masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type,
                 linkedLegalJobId: job.id,
                 // Badan hukum yang dipilih saat input pekerjaan → PT dokumen.
-                ...(job.companyId ? { companyId: job.companyId, platform: "", platformCustom: false } : {}),
+                ...(job.companyId ? { companyId: job.companyId, platform: "", platformCustom: false, operator: "" } : {}),
               }));
               setCreationStep(1);
               setIsCreating(true);
@@ -16830,7 +16926,7 @@ export default function App() {
 
               <div className="space-y-3">
               {(() => {
-                const CFG_ICON: Record<string, any> = { beranda: LayoutDashboard, dokumen: FileText, master: Users, sistem: Settings, dcsdoctypes: FileText, masterdata: Hash, dcsclauses: FileCheck, clauses: Sliders, folder: Briefcase, vendor: Building2, karyawan: Users, app: Settings, pengguna: User, hakakses: ShieldAlert, perusahaan: Building2 };
+                const CFG_ICON: Record<string, any> = { beranda: LayoutDashboard, dokumen: FileText, master: Users, sistem: Settings, dcsdoctypes: FileText, masterdata: Hash, dcsclauses: FileCheck, clauses: Sliders, folder: Briefcase, vendor: Building2, karyawan: Users, operator: FolderOpen, app: Settings, pengguna: User, hakakses: ShieldAlert, perusahaan: Building2 };
                 const GROUPS = [
                   // Label dulu menyesatkan: penomoran KONTRAK ada di tab
                   // bernama "Dropdown Form" (tak ada petunjuk sama sekali),
@@ -16852,6 +16948,7 @@ export default function App() {
                   { group: "Master Data", items: [
                     { k: "vendor", label: "Data Vendor" },
                     { k: "karyawan", label: "Data Karyawan" },
+                    { k: "operator", label: "Mitra / Operator" },
                   ] },
                   { group: "Perusahaan & Sistem", items: [
                     { k: "app", label: "Perusahaan & e-Meterai" },
@@ -16928,6 +17025,7 @@ export default function App() {
                   folder: ["Kategori Kontrak", "Kategori Dokumen Eksternal dan Kategori Dokumen Karyawan — dua daftar terpisah, muncul otomatis di form masing-masing."],
                   vendor: ["Data Vendor", "Data pihak kedua: PIC, email, NPWP, dan alamat."],
                   karyawan: ["Data Karyawan", "Jabatan, departemen, gaji, dan tanggal mulai kerja."],
+                  operator: ["Mitra / Operator", "Daftar mitra/operator per PT dan platform — jadi isian di form & folder level ke-4 Arsip Eksternal."],
                   app: ["Perusahaan & e-Meterai", "Identitas perusahaan (kop dokumen), watermark PDF, dan e-Meterai."],
                   pengguna: ["Kelola Pengguna", "Akun, kata sandi, dan peran akses."],
                   hakakses: ["Hak Akses (RBAC)", "Menu dan folder arsip yang boleh dibuka tiap role."],
@@ -17208,6 +17306,94 @@ export default function App() {
               )}
 
               {/* MASTER DATA DROPDOWN DINAMIS */}
+              {/* MITRA / OPERATOR — master data tersendiri (kategori Master Data) */}
+              {configTab === "operator" && (
+                <div className="space-y-5">
+                    {/* Mitra/Operator — pilihan di form klasifikasi dokumen eksternal
+                        (menjadi level folder ke-4 Arsip Eksternal). Tiap grup terikat ke PT tertentu
+                        dan, opsional, ke platform tertentu. */}
+                    <div className="p-4 bg-slate-900 card-soft rounded-[22px] space-y-3 ">
+                      <div className="flex items-start justify-between gap-3 flex-wrap">
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                            <Users className="w-4 h-4 text-indigo-400" /> Mitra / Operator
+                          </h4>
+                          <p className="text-[11px] text-slate-500 mt-1 max-w-2xl">
+                            Daftar pilihan <b>Mitra/Operator</b> di form dokumen eksternal (sekaligus folder level ke-4 di Arsip Eksternal). Tiap grup berlaku untuk <b>PT</b> yang dicentang. <b>Platform</b> boleh dikosongkan = berlaku di <b>semua platform</b> PT itu; isi bila grup hanya untuk platform tertentu (pisahkan koma). Kalau sebuah platform punya grup sendiri (mis. Bank), grup umum PT tidak ikut tampil di platform itu. Satu mitra per baris.
+                          </p>
+                        </div>
+                        {can("settings.manage") && (
+                          <div className="flex gap-2 shrink-0">
+                            <button
+                              onClick={() => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, operatorGroups: [...operatorGroups, { id: `og-${Date.now()}`, name: "Grup Baru", companies: [], platforms: [], operators: [] }] } })}
+                              className="text-[11px] px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-200 rounded-lg font-semibold hover:border-indigo-500/50 cursor-pointer"
+                            >
+                              + Tambah Grup
+                            </button>
+                            <button onClick={handleSaveSettings} className="text-[11px] px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold cursor-pointer">
+                              Simpan
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      {operatorGroups.length === 0 && <p className="text-[12px] text-slate-500 italic">Belum ada grup Mitra/Operator.</p>}
+                      {operatorGroups.map((g, gi) => {
+                        const editable = can("settings.manage");
+                        const setGroups = (next: OperatorGroup[]) => setAppSettings({ ...appSettings, masterData: { ...appSettings.masterData, operatorGroups: next } });
+                        const patchGroup = (patch: Partial<OperatorGroup>) => setGroups(operatorGroups.map((x, i) => (i === gi ? { ...x, ...patch } : x)));
+                        const hasCompany = (c: TaxCompany) => (g.companies || []).some((x) => sameText(x, c.id) || sameText(x, c.code) || sameText(x, c.name));
+                        const toggleCompany = (c: TaxCompany) => {
+                          const rest = (g.companies || []).filter((x) => !(sameText(x, c.id) || sameText(x, c.code) || sameText(x, c.name)));
+                          patchGroup({ companies: hasCompany(c) ? rest : [...rest, c.id] });
+                        };
+                        return (
+                          <div key={g.id} className="p-3 bg-slate-950/60 border border-slate-800 rounded-xl space-y-2">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-semibold text-slate-400 uppercase">Nama Grup</label>
+                                <input value={g.name} disabled={!editable} onChange={(e) => patchGroup({ name: e.target.value })}
+                                  className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-[13px] text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-60" />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-semibold text-slate-400 uppercase">Platform <span className="normal-case font-normal">(kosong = semua platform PT)</span></label>
+                                <input value={(g.platforms || []).join(", ")} disabled={!editable} onChange={(e) => patchGroup({ platforms: e.target.value.split(",").map((x) => x.replace(/^\s+/, "")) })}
+                                  placeholder="mis. Tiketux, Bank"
+                                  className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-[13px] text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-60" />
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-semibold text-slate-400 uppercase">Berlaku untuk PT <span className="normal-case font-normal">(tidak ada yang dicentang = semua PT)</span></label>
+                              <div className="flex flex-wrap gap-x-4 gap-y-1">
+                                {numberCompanies.map((c) => (
+                                  <label key={c.id} className="flex items-center gap-1.5 text-[12px] text-slate-300 cursor-pointer">
+                                    <input type="checkbox" checked={hasCompany(c)} disabled={!editable} onChange={() => toggleCompany(c)} className="w-3.5 h-3.5 accent-indigo-600" />
+                                    {c.code || c.name}
+                                  </label>
+                                ))}
+                                {numberCompanies.length === 0 && <span className="text-[11px] text-slate-500 italic">Belum ada perusahaan (Kelola Perusahaan).</span>}
+                              </div>
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-semibold text-slate-400 uppercase">Mitra / Operator ({(g.operators || []).filter((x) => x.trim()).length}) — satu per baris</label>
+                              <textarea value={(g.operators || []).join("\n")} disabled={!editable} onChange={(e) => patchGroup({ operators: e.target.value.split("\n") })} rows={6}
+                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-[12px] text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-60" />
+                            </div>
+                            {editable && (
+                              <button
+                                onClick={async () => { if (await askConfirm(`Hapus grup "${g.name}"? Dokumen yang sudah punya mitra tetap menyimpan nilainya.`, { title: "Hapus Grup Mitra/Operator", confirmLabel: "Ya, Hapus" })) setGroups(operatorGroups.filter((_, i) => i !== gi)); }}
+                                className="text-[11px] text-rose-400 hover:text-rose-300 cursor-pointer"
+                              >
+                                Hapus grup ini
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                </div>
+              )}
+
               {configTab === "masterdata" && (
                 <div className="space-y-5">
                   {/* Tombol "Simpan Master Data" global yang dulu di sini
@@ -18776,6 +18962,101 @@ export default function App() {
                 );
               })()}
 
+              {/* MATRIKS HAK AKSES AKSI PER ROLE — daftar izin ada di PERMISSIONS
+                  (src/roles.ts), disimpan di appSettings.actionPermissions, dibaca
+                  server (requirePerm) DAN tombol di layar (can()). Mengubah siapa
+                  boleh hapus/pindah/upload TTD/dst. tidak perlu ubah kode lagi. */}
+              {(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
+                const ap: Record<string, string[]> = appSettings.actionPermissions || {};
+                const canEditMatrix = currentUser.role === "admin" || currentUser.role === "super_admin";
+                const isOn = (role: string, key: string) => {
+                  const def = PERMISSIONS.find((p) => p.key === key)!;
+                  return (Array.isArray(ap[key]) ? ap[key] : def.defaults).includes(role);
+                };
+                const toggle = (role: string, key: string) => {
+                  if (!canEditMatrix) return;
+                  const def = PERMISSIONS.find((p) => p.key === key)!;
+                  const cur = Array.isArray(ap[key]) ? ap[key] : [...def.defaults];
+                  const next = cur.includes(role) ? cur.filter((r) => r !== role) : [...cur, role];
+                  setAppSettings({ ...appSettings, actionPermissions: { ...ap, [key]: next } });
+                };
+                const resetKey = (key: string) => {
+                  const { [key]: _drop, ...rest } = ap;
+                  setAppSettings({ ...appSettings, actionPermissions: rest });
+                };
+                const isCustom = (key: string) => Array.isArray(ap[key]);
+                return (
+                  <div className="space-y-4 mt-8">
+                    <div className="space-y-0.5">
+                      <h3 className="text-base font-semibold text-slate-100">Hak Akses Aksi per Role</h3>
+                      <p className="text-[13px] text-slate-500">Centang = role itu BOLEH melakukan aksi tersebut — berlaku di tombol layar <b>dan</b> di server. <b>Super Admin</b> selalu penuh. Baris bertanda <span className="text-indigo-400 font-semibold">diubah</span> sudah berbeda dari bawaan (klik "bawaan" untuk mengembalikan). Aturan per dokumen (approver yang ditunjuk Legal, pembuat dokumen) tetap berlaku di luar matriks ini.{!canEditMatrix ? " Anda hanya dapat melihat; perubahan dilakukan Admin atau Super Admin." : ""}</p>
+                    </div>
+                    <div className="overflow-x-auto table-card">
+                      <table className="plain-table text-[12px] border-collapse w-full">
+                        <thead>
+                          <tr>
+                            <th className="text-left px-3 py-2 text-slate-400 font-semibold sticky left-0 bg-slate-950 min-w-[260px]">Aksi</th>
+                            {MATRIX_ROLES.map((role) => (
+                              <th key={role} className="px-3 py-2 text-slate-300 font-bold uppercase text-center">{roleLabelOf(role)}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {PERM_GROUPS.map((g) => (
+                            <React.Fragment key={g}>
+                              <tr><td colSpan={MATRIX_ROLES.length + 1} className="px-3 pt-4 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">{g}</td></tr>
+                              {PERMISSIONS.filter((p) => p.group === g).map((p) => (
+                                <tr key={p.key} className="border-t border-slate-850">
+                                  <td className="px-3 py-2 text-slate-200 sticky left-0 bg-slate-950" title={p.hint}>
+                                    {p.label}
+                                    {isCustom(p.key) && (
+                                      <>
+                                        <span className="ml-1.5 text-[9px] font-bold text-indigo-400 uppercase">diubah</span>
+                                        {canEditMatrix && (
+                                          <button type="button" onClick={() => resetKey(p.key)} className="ml-1.5 text-[9px] text-slate-500 hover:text-indigo-400 cursor-pointer">bawaan</button>
+                                        )}
+                                      </>
+                                    )}
+                                    {p.hint && <span className="block text-[10px] text-slate-500 font-normal leading-snug">{p.hint}</span>}
+                                  </td>
+                                  {MATRIX_ROLES.map((role) => (
+                                    <td key={role} className="px-3 py-2 text-center">
+                                      <input
+                                        type="checkbox"
+                                        checked={isOn(role, p.key)}
+                                        disabled={!canEditMatrix}
+                                        onChange={() => toggle(role, p.key)}
+                                        className="w-4 h-4 accent-indigo-600 cursor-pointer disabled:cursor-not-allowed disabled:opacity-60"
+                                      />
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {canEditMatrix && (
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={handleSaveSettings}
+                          className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Check className="w-4 h-4" /> Simpan Hak Akses Aksi
+                        </button>
+                        <button
+                          onClick={() => setAppSettings({ ...appSettings, actionPermissions: {} })}
+                          className="px-4 py-2 bg-slate-950 hover:bg-mist text-slate-300 text-xs font-semibold rounded-xl cursor-pointer"
+                        >
+                          Kembalikan Semua ke Bawaan
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* HAK AKSES FOLDER ARSIP PER ROLE — lapis KEDUA, independen dari
                   matriks menu di atas. Matriks di atas cuma menentukan boleh
                   buka halaman "Arsip per Folder" atau tidak SAMA SEKALI;
@@ -19017,10 +19298,11 @@ export default function App() {
                       party2Type: locked === "employee" ? "Karyawan" : (masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type),
                       // Kontrak eksternal: PT/Platform/Kategori/Jenis dipilih
                       // sendiri secara berurutan — tidak ada pra-isian kategori.
-                      category: locked === "employee" ? "Employment" : "",
+                      category: locked === "employee" ? "Employment" : "General",
                       docType: "",
                       platform: "",
                       platformCustom: false,
+                      operator: "",
                       employmentType: "",
                       division: "",
                     }));
@@ -19459,6 +19741,7 @@ export default function App() {
                                           <RefreshCw className="w-3 h-3" /> Perpanjang
                                         </button>
                                       )}
+                                      {canDelete && (
                                       <button
                                         onClick={(e) => { e.stopPropagation(); handleDeleteContract(c.id); }}
                                         className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-orange hover:bg-peach rounded-full transition cursor-pointer"
@@ -19466,6 +19749,7 @@ export default function App() {
                                       >
                                         <Trash2 className="w-3.5 h-3.5" />
                                       </button>
+                                      )}
                                     </div>
                                   </td>
                                 </tr>
@@ -20415,18 +20699,22 @@ export default function App() {
                 {selectedContractIds.length > 0 && (
                   <div className="flex flex-wrap items-center gap-2 bg-mist p-1.5 rounded-full">
                     <span className="text-xs font-bold text-indigo-400 px-2">{selectedContractIds.length} Terpilih</span>
+                    {canMove && (
                     <button onClick={() => setIsBulkMoveModalOpen(true)} className="btn-grad-primary px-4 py-2 text-white rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
                       <FolderOpen className="w-3.5 h-3.5" /> Pindahkan ke Arsip
                     </button>
+                    )}
                     <button onClick={handleBulkDownload} disabled={isBulkDownloading} className="px-4 py-2 bg-slate-900 hover:bg-slate-950 disabled:opacity-50 text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition border border-slate-700">
                       {isBulkDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Download PDF (Zip)
                     </button>
                     <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className="px-4 py-2 bg-peach hover:brightness-95 text-brand-orange rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
                       <Bell className="w-3.5 h-3.5" /> Kirim Pengingat
                     </button>
+                    {canDelete && (
                     <button onClick={handleBulkDelete} className="px-4 py-2 bg-peach hover:brightness-95 text-brand-orange rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
                       <Trash2 className="w-3.5 h-3.5" /> Hapus
                     </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -20503,6 +20791,7 @@ export default function App() {
                               <button onClick={() => handleOpenWorkspace(c)} className="px-4 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-300 text-[11px] font-semibold transition cursor-pointer">
                                 Buka
                               </button>
+                              {canMove && (
                               <button
                                 onClick={() => { setSelectedContractIds([c.id]); setIsBulkMoveModalOpen(true); }}
                                 title="Pindahkan dokumen ini ke folder/sub folder arsip lain"
@@ -20510,6 +20799,7 @@ export default function App() {
                               >
                                 <FolderOpen className="w-3.5 h-3.5" />
                               </button>
+                              )}
                               <button
                                 onClick={() => handleDownloadSingleContract(c)}
                                 title="Unduh PDF dokumen ini"
@@ -20517,6 +20807,7 @@ export default function App() {
                               >
                                 <Download className="w-3.5 h-3.5" />
                               </button>
+                              {canDelete && (
                               <button
                                 onClick={() => handleDeleteContract(c.id)}
                                 title="Hapus dokumen ini"
@@ -20524,6 +20815,7 @@ export default function App() {
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -20621,11 +20913,11 @@ export default function App() {
                       Arsip Dokumen Eksternal
                     </h2>
                     <p className="text-sm text-slate-400 mt-1">
-                      Tersusun per <b>PT › Platform › Jenis Dokumen › Draft/Aktif</b>, otomatis dari isian form saat dokumen dibuat atau didaftarkan.
+                      Tersusun per <b>PT › Jenis Dokumen › Platform › Mitra/Operator › Draft/Aktif</b>, otomatis dari isian form saat dokumen dibuat atau didaftarkan.
                     </p>
                   </div>
                   <button
-                    onClick={() => { setDocRegForm((f) => ({ ...f, category: "", docType: "", platform: "", platformCustom: false, companyId: f.companyId || defaultNumberCompanyId })); setIsRegisteringDoc(true); }}
+                    onClick={() => { setDocRegForm((f) => ({ ...f, category: "General", docType: "", platform: "", platformCustom: false, operator: "", companyId: f.companyId || defaultNumberCompanyId })); setIsRegisteringDoc(true); }}
                     className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg cursor-pointer shrink-0"
                   >
                     <Plus className="w-4 h-4" />
@@ -20635,11 +20927,11 @@ export default function App() {
                 <ExternalArchiveBrowser
                   contracts={arsipContracts}
                   companies={numberCompanies}
-                  categories={externalCategories}
                   docTypes={externalDocTypeNames}
+                  operatorGroups={operatorGroups}
                   isSigned={isSignedContract}
                   onOpen={(c) => handleOpenWorkspace(c)}
-                  onClassify={(c) => setClassifyTarget({ contract: c, requestingDivision: c.requestingDivision || "", value: { companyId: c.companyId || "", platform: c.platform || "", platformCustom: false, category: c.category || "", docType: c.docType || "" } })}
+                  onClassify={(c) => setClassifyTarget({ contract: c, requestingDivision: c.requestingDivision || "", value: { companyId: c.companyId || "", platform: c.platform || "", platformCustom: false, operator: c.operator || "", category: c.category || "", docType: c.docType || "" } })}
                   renderStatus={(c) => (
                     <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase shrink-0 border ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-800 text-slate-400"}`}>
                       {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
@@ -20688,7 +20980,6 @@ export default function App() {
                     mode="internal"
                     contracts={arsipContracts}
                     companies={numberCompanies}
-                    categories={[]}
                     docTypes={employeeDocTypeNames}
                     isSigned={isSignedContract}
                     onOpen={(c) => handleOpenWorkspace(c)}
@@ -20967,7 +21258,7 @@ export default function App() {
                       Buat Addendum
                     </button>
                   )}
-                  {isInForce(selectedContract.status) && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin") && (
+                  {isInForce(selectedContract.status) && can("release.announce") && (
                     <>
                       <button
                         onClick={() => setReleaseModalOpen(true)}
@@ -22360,7 +22651,7 @@ export default function App() {
               {(isInForce(selectedContract.status) || (selectedContract.releaseAnnouncements || []).length > 0) && (
                 <ReleaseAnnouncementsCard
                   contract={selectedContract}
-                  canEdit={isInForce(selectedContract.status) && (currentUser?.role === "admin" || currentUser?.role === "legal" || currentUser?.role === "super_admin")}
+                  canEdit={isInForce(selectedContract.status) && can("release.announce")}
                   onOpenInternal={() => setReleaseModalOpen(true)}
                   onOpenExternal={() => setReleaseExternalOpen(true)}
                 />
@@ -22828,7 +23119,7 @@ export default function App() {
                                 onClick={handleShareExternalReview}
                                 className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                               >
-                                <ExternalLink className="w-4 h-4" /> Kirim ke Review Pihak Kedua
+                                <ExternalLink className="w-4 h-4" /> {selectedContract.externalReviewToken ? "Buka Akses Link Review Pihak Kedua" : "Kirim ke Review Pihak Kedua"}
                               </button>
                               <button
                                 onClick={handleSkipExternalReview}
@@ -22915,12 +23206,16 @@ export default function App() {
                               </>
                             )}
                           </div>
+                          {can("signing.manage") ? (
                           <button
                             onClick={() => handleOpenActivateModal(selectedContract.id)}
                             className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
                           >
                             <Upload className="w-4 h-4" /> {selectedContract.amendsContractId ? "Unggah TTD Basah Addendum → Arsip" : "Unggah TTD Basah → Arsip"}
                           </button>
+                          ) : (
+                            <p className="text-[11px] text-slate-500 italic">Pengunggahan TTD dilakukan oleh role yang diizinkan (diatur di Hak Akses).</p>
+                          )}
                         </div>
                         );
                       })()}
@@ -24480,6 +24775,7 @@ export default function App() {
                             </p>
                           </button>
                           <span className={`shrink-0 text-[9px] font-bold px-2 py-1 rounded-full border uppercase ${label[kelompok].kelas}`}>{label[kelompok].teks}</span>
+                          {can("retention.manage") && (
                           <div className="shrink-0 flex gap-1.5">
                             {kelompok === "hold" ? (
                               <button onClick={() => lepasHold(c)} className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10px] font-semibold cursor-pointer">Lepas Hold</button>
@@ -24490,6 +24786,7 @@ export default function App() {
                               <button onClick={() => tandaiMusnah(c)} className="px-2.5 py-1 bg-rose-600/20 hover:bg-rose-600/30 text-rose-700 rounded-lg text-[10px] font-semibold cursor-pointer">Tandai Dimusnahkan</button>
                             )}
                           </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -25035,11 +25332,11 @@ export default function App() {
               <div className="space-y-1">
                 <h3 className="font-bold text-xl text-slate-100 flex items-center gap-2">
                   <Sparkles className="text-amber-400 w-6 h-6" />
-                  {creationLockedParty === "employee" ? "Form Dokumen Karyawan" : creationLockedParty === "external" ? "Form Dokumen Eksternal" : "Smart Contract Creation Wizard"}
+                  {creationLockedParty === "employee" ? "Form Dokumen Karyawan" : creationLockedParty === "external" ? "Form Dokumen Eksternal" : "Form Dokumen"}
                 </h3>
                 <p className="text-xs text-slate-400">
                   {newContractForm.creationMode === "upload" ? (
-                    "Langkah 1 dari 1: Unggah Dokumen Kontrak"
+                    "Langkah 1 dari 1: Unggah Dokumen"
                   ) : (
                     <>
                       Langkah {creationStep} dari 3:{" "}
@@ -25183,14 +25480,15 @@ export default function App() {
                     <div className="bg-slate-900/60 border border-slate-800 p-5 rounded-xl">
                       <TaxonomyFields
                         companies={numberCompanies}
-                        categories={externalCategories}
                         docTypes={externalDocTypeNames}
+                        operatorGroups={operatorGroups}
+                        categoryOf={categoryOfDocType}
                         value={newContractForm}
                         onChange={(patch) => {
                           let next: typeof newContractForm = { ...newContractForm, ...patch } as any;
-                          // Mode template: ganti kategori = daftar template ikut
+                          // Mode template: ganti jenis dokumen = daftar template ikut
                           // berubah, jadi template/pasal yang sudah terpasang dilepas.
-                          if (patch.category !== undefined && patch.category !== newContractForm.category && newContractForm.creationMode !== "upload") {
+                          if (((patch.category !== undefined && patch.category !== newContractForm.category) || (patch.docType !== undefined && patch.docType !== newContractForm.docType)) && newContractForm.creationMode !== "upload") {
                             next = { ...next, templateId: "", clauses: [], variables: {}, subFolderId: "" };
                           }
                           // Jenis dokumen dengan template default → terapkan.
@@ -25447,7 +25745,7 @@ export default function App() {
                     {newContractForm.creationMode === "smart" && (
                     <div className="space-y-1.5 pt-2">
                       <label className="block text-sm font-semibold text-slate-300">
-                        Pilih Master Template ({newContractForm.category})
+                        Pilih Master Template{newContractForm.docType ? ` (${newContractForm.docType})` : ""}
                       </label>
                       <select
                         value={newContractForm.templateId}
@@ -25457,17 +25755,16 @@ export default function App() {
                         className="w-full px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
                       >
                         <option value="">-- Tanpa Template (Susun Pasal Manual) --</option>
-                        {templates
-                          .filter((tpl) => tpl.category === newContractForm.category)
+                        {templatesForDocType(newContractForm.docType, newContractForm.category)
                           .map((tpl) => (
                             <option key={tpl.id} value={tpl.id}>
                               {tpl.name}
                             </option>
                           ))}
                       </select>
-                      {templates.filter((tpl) => tpl.category === newContractForm.category).length === 0 && (
+                      {templatesForDocType(newContractForm.docType, newContractForm.category).length === 0 && (
                         <p className="text-[11px] text-amber-400">
-                          Belum ada template untuk kategori "{newContractForm.category}". Anda bisa lanjut menyusun pasal secara manual di tahap berikutnya, atau buat template baru di menu Library Klausul & Tpl.
+                          Belum ada template untuk jenis dokumen {newContractForm.docType ? `"${newContractForm.docType}"` : "ini"}. Anda bisa lanjut menyusun pasal secara manual di tahap berikutnya, atau buat template baru di menu Library Klausul & Tpl.
                         </p>
                       )}
                     </div>
@@ -26640,12 +26937,13 @@ export default function App() {
               <TaxonomyFields
                 compact
                 companies={numberCompanies}
-                categories={externalCategories}
                 docTypes={externalDocTypeNames}
+                operatorGroups={operatorGroups}
+                categoryOf={categoryOfDocType}
                 value={classifyTarget.value}
                 onChange={(patch) => setClassifyTarget((t) => (t ? { ...t, value: { ...t.value, ...patch } } : t))}
               />
-              {["admin", "legal", "super_admin"].includes(currentUser?.role) && (
+              {can("contract.classify") && (
                 <div className="mt-3 space-y-1">
                   <label className="text-[11px] font-semibold text-slate-400">Divisi Peminta</label>
                   <select value={classifyTarget.requestingDivision || ""} onChange={(e) => setClassifyTarget((t) => (t ? { ...t, requestingDivision: e.target.value } : t))}
@@ -26725,7 +27023,7 @@ export default function App() {
             <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-start">
               <div>
                 <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
-                  <ExternalLink className="text-indigo-400 w-4 h-4" /> Bagikan Link Review Pihak Kedua
+                  <ExternalLink className="text-indigo-400 w-4 h-4" /> {shareLinkModal.newRound && (shareLinkModal.prevRound || 0) > 0 ? "Buka Akses Link Review Pihak Kedua" : "Bagikan Link Review Pihak Kedua"}
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   {shareLinkModal.kind === "contract" ? "Pihak kedua tanpa akun bisa melihat & mengomentari, atau menyetujui." : "Peninjau eksternal dokumen DCS bisa melihat & mengomentari sebelum approval."}
@@ -26768,7 +27066,7 @@ export default function App() {
                     <button onClick={() => setShareLinkModal(null)} className="px-4 py-2 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-xl cursor-pointer">Batal</button>
                     <button onClick={confirmShareLink} disabled={shareLinkModal.busy} className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl cursor-pointer flex items-center gap-1.5">
                       {shareLinkModal.busy ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ExternalLink className="w-3.5 h-3.5" />}
-                      {shareLinkModal.busy ? "Membuat…" : shareLinkModal.newRound ? "Kirim & Salin Link" : "Buat & Salin Link"}
+                      {shareLinkModal.busy ? "Memproses…" : shareLinkModal.newRound ? ((shareLinkModal.prevRound || 0) > 0 ? "Buka Akses & Salin Link" : "Kirim & Salin Link") : "Buat & Salin Link"}
                     </button>
                   </div>
                 </>
@@ -26973,7 +27271,7 @@ export default function App() {
               <div>
                 <h3 className="font-bold text-slate-100 text-sm flex items-center gap-2">
                   <FolderOpen className="text-indigo-400 w-4 h-4" />
-                  Form Pendaftaran Dokumen Kontrak
+                  Form Pendaftaran Dokumen
                 </h3>
                 <p className="text-[11px] text-slate-400 mt-0.5">
                   Untuk kontrak hardcopy (hasil scan) atau softcopy PDF yang sudah jadi. Setelah didaftarkan, dokumen otomatis masuk folder arsip & monitoring reminder.
@@ -27041,8 +27339,9 @@ export default function App() {
                   <TaxonomyFields
                     compact
                     companies={numberCompanies}
-                    categories={externalCategories}
                     docTypes={externalDocTypeNames}
+                    operatorGroups={operatorGroups}
+                    categoryOf={categoryOfDocType}
                     value={docRegForm}
                     onChange={(patch) => setDocRegForm((prev) => ({ ...prev, ...patch }))}
                   />
@@ -28211,7 +28510,7 @@ export default function App() {
           const canManage = currentUser?.id === cmt.userId || ["admin", "legal", "super_admin"].includes(currentUser?.role);
           const isMarkupProposal = cmt.kind === "strike" || cmt.kind === "replace";
           const isPendingMarkup = isMarkupProposal && cmt.status === "pending";
-          const canDecideMarkup = canEditContracts && isDocumentOwnerSide(selectedContract);
+          const canDecideMarkup = can("review.markup_decide") && isDocumentOwnerSide(selectedContract);
           return (
             <div className={`rounded-xl bg-slate-900 border p-3 space-y-1.5 cursor-pointer transition border-l-4 ${isMarkupProposal ? "border-l-indigo-400" : "border-l-indigo-400"} ${isActive ? "border-indigo-500 ring-1 ring-indigo-500/40 shadow-2xl" : "border-slate-800 shadow-md hover:border-slate-700"} ${cmt.resolved ? "opacity-60" : ""}`}>
               <div className="flex items-center gap-1.5">
@@ -28373,7 +28672,7 @@ export default function App() {
                       ? (selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Pihak Kedua: buat & salin link untuk PIHAK KEDUA (tanpa akun)." : "Salin link review pihak kedua yang sedang berjalan.")
                       : "Tersedia setelah dokumen disetujui internal (Draft → Review Internal → Acc Internal → Review Pihak Kedua)."}
                     className={`text-[10px] font-semibold px-2.5 py-1.5 rounded-lg border whitespace-nowrap ${canShareExt ? "bg-indigo-600/20 text-indigo-600 border-indigo-500/30 hover:bg-indigo-600/30 cursor-pointer" : "bg-slate-900 text-slate-500 border-slate-800 cursor-not-allowed"}`}
-                  >🔗 {selectedContract.status === "ApprovedInternal" ? "Kirim ke Review Pihak Kedua" : "Link Review Pihak Kedua"}</button>
+                  >🔗 {selectedContract.status === "ApprovedInternal" ? (selectedContract.externalReviewToken ? "Buka Akses Link Review" : "Kirim ke Review Pihak Kedua") : "Salin Link Review Pihak Kedua"}</button>
                 );
               })()}
               {canHoldDocument && selectedContract.externalReviewToken && selectedContract.externalReviewLocked && !selectedContract.externalRoundCount && (

@@ -12,7 +12,7 @@ import {
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
   SignatureFormat, SIGNATURE_FORMATS,
 } from "./src/types";
-import { R, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
+import { isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
@@ -41,8 +41,9 @@ import {
 } from "./dcs/repo.js";
 import { ai, isGeminiConfigured, parseAiJson, aiErrorResponse } from "./ai-client.js";
 import { renderMask, validateMask, suggestDocTypeCode } from "./numbering-utils.js";
+import { DEFAULT_OPERATOR_GROUPS, sanitizeOperatorGroups } from "./operatorDefaults.js";
 import {
-  requireAuth, requireRole, tenantOf, AuthedRequest,
+  requireAuth, requireRole, requirePerm, hasPerm, actionOverridesFor, tenantOf, AuthedRequest,
   hashPassword, verifyPassword, signToken, setAuthCookie, clearAuthCookie, stripUser,
   generateResetToken, hashResetToken, signTotpChallenge, verifyTotpChallenge,
 } from "./auth.js";
@@ -949,7 +950,7 @@ app.post("/api/auth/change-password", requireAuth, (req: AuthedRequest, res) => 
 });
 
 // ===== USER MANAGEMENT (admin dalam tenant; super_admin lintas tenant) =====
-app.get("/api/users", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
+app.get("/api/users", requireAuth, requirePerm("settings.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   if (pruneStaleRegistrations(db)) saveDB(db);
@@ -973,7 +974,7 @@ app.get("/api/users/mentionable", requireAuth, (req: AuthedRequest, res) => {
   );
 });
 
-app.post("/api/users", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
+app.post("/api/users", requireAuth, requirePerm("settings.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { name, email, password, role } = req.body;
@@ -997,7 +998,7 @@ app.post("/api/users", requireAuth, requireRole(...R.settings), (req: AuthedRequ
 // Aktifkan manual pendaftar yang belum memasukkan kode OTP — jalan keluar
 // bila email verifikasi tidak sampai (SMTP bermasalah, salah ketik). Admin
 // yang mengenal orangnya menjadi penjaminnya; dicatat jelas di audit.
-app.post("/api/users/:id/approve-registration", requireAuth, requireRole(...R.settings), async (req: AuthedRequest, res) => {
+app.post("/api/users/:id/approve-registration", requireAuth, requirePerm("settings.manage"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
@@ -1032,7 +1033,7 @@ app.post("/api/users/:id/approve-registration", requireAuth, requireRole(...R.se
 
 // Hapus pendaftaran yang belum diverifikasi (mis. orang tak dikenal). Akun
 // DIHAPUS supaya email itu bisa mendaftar ulang; jejaknya di Audit Trail.
-app.post("/api/users/:id/reject-registration", requireAuth, requireRole(...R.settings), async (req: AuthedRequest, res) => {
+app.post("/api/users/:id/reject-registration", requireAuth, requirePerm("settings.manage"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
@@ -1048,7 +1049,7 @@ app.post("/api/users/:id/reject-registration", requireAuth, requireRole(...R.set
 // Ganti kode pendaftaran perusahaan (admin perusahaan; super_admin boleh untuk
 // perusahaan lain lewat tenantId). Terpisah dari kode perusahaan di nomor
 // dokumen — mengubahnya TIDAK mengubah penomoran apa pun.
-app.put("/api/registration-code", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
+app.put("/api/registration-code", requireAuth, requirePerm("settings.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const tenant = (db.tenants as any[]).find((t) => t.id === tid);
@@ -1064,7 +1065,7 @@ app.put("/api/registration-code", requireAuth, requireRole(...R.settings), (req:
   res.json({ success: true, code });
 });
 
-app.put("/api/users/:id", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
+app.put("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
@@ -1165,7 +1166,7 @@ app.put("/api/users/:id/delegation", requireAuth, (req: AuthedRequest, res) => {
   res.json({ success: true, user: stripUser(user) });
 });
 
-app.delete("/api/users/:id", requireAuth, requireRole(...R.settings), (req: AuthedRequest, res) => {
+app.delete("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   if (req.params.id === req.user!.id) return res.status(400).json({ error: "Tidak bisa menghapus akun sendiri" });
@@ -1781,6 +1782,10 @@ function defaultSettings() {
     // fiturnya sendiri). super_admin SELALU penuh, tidak pernah dibatasi
     // config ini (lihat canAccessMenu di src/App.tsx).
     rolePermissions: {} as Record<string, string[]>,
+    // Matriks hak akses AKSI per role (hapus/pindah dokumen, upload TTD, dll) —
+    // key = id izin (PERMISSIONS di src/roles.ts), value = role yang BOLEH.
+    // Izin yang tidak ada di sini memakai default dari registry.
+    actionPermissions: {} as Record<string, string[]>,
     // Akses per FOLDER (kategori) di halaman "Arsip Dokumen Kontrak" — beda
     // level dgn rolePermissions di atas (itu per MENU/halaman; ini per
     // folder DI DALAM satu halaman itu). Konvensi sama: role tidak ada di
@@ -1827,6 +1832,9 @@ function defaultSettings() {
     // dikonfigurasi per tenant lewat Konfigurasi > Master Data. Bentuknya
     // sengaja sederhana (array string / record) supaya gampang diedit di UI.
     masterData: {
+      // Master Mitra/Operator (pilihan di form klasifikasi dokumen eksternal; BUKAN
+      // level folder arsip). Seed dari operatorDefaults.ts.
+      operatorGroups: DEFAULT_OPERATOR_GROUPS,
       // Jenis kontrak/dokumen. `categories` membatasi jenis ini muncul hanya
       // saat kategori tsb dipilih di form (kosong = berlaku semua kategori).
       // `id` stabil dipakai sebagai kunci defaultTemplateId/numberMask (lihat
@@ -1935,7 +1943,7 @@ app.get("/api/clause-categories", requireAuth, (req: AuthedRequest, res) => {
   res.json(catsFor(db, tenantOf(req)));
 });
 
-app.post("/api/clause-categories", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.post("/api/clause-categories", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { category } = req.body;
@@ -1949,7 +1957,7 @@ app.post("/api/clause-categories", requireAuth, requireRole(...R.templates), (re
 });
 
 // Rename a folder/category everywhere it is referenced (cascade, within tenant)
-app.put("/api/clause-categories", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.put("/api/clause-categories", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { oldName, newName } = req.body;
@@ -1967,7 +1975,7 @@ app.put("/api/clause-categories", requireAuth, requireRole(...R.templates), (req
 });
 
 // Delete a folder/category (blocked if still used by any contract in tenant)
-app.delete("/api/clause-categories/:name", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.delete("/api/clause-categories/:name", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const name = decodeURIComponent(req.params.name);
@@ -2062,21 +2070,23 @@ app.get("/api/settings", requireAuth, (req: AuthedRequest, res) => {
   res.json(withSettingsDefaults(rawSettingsFor(db, tenantOf(req))));
 });
 
-app.put("/api/settings", requireAuth, requireRole(...R.settings, "hr_ga"), (req: AuthedRequest, res) => {
+app.put("/api/settings", requireAuth, requirePerm("settings.manage", "settings.employment_types"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   let { tenantId, ...patch } = req.body; // tenantId handled by tenantOf, not stored in settings
   // HR/GA hanya boleh mengubah Kategori Dokumen Karyawan (employmentTypes);
   // bagian lain dari kiriman diabaikan.
-  if (req.user!.role === "hr_ga") {
+  // Pemanggil yang hanya punya izin "settings.employment_types" (bukan
+  // "settings.manage") dibatasi ke employmentTypes.
+  if (!hasPerm(req, "settings.manage")) {
     const types = patch?.masterData?.employmentTypes;
-    if (!Array.isArray(types)) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Dokumen Karyawan." });
+    if (!Array.isArray(types)) return res.status(403).json({ error: "Anda hanya dapat mengubah Kategori Dokumen Karyawan." });
     const cur = rawSettingsFor(db, tid) || {};
     const curFull = withSettingsDefaults(cur);
     const same = (x: unknown, y: unknown) => JSON.stringify(x ?? null) === JSON.stringify(y ?? null);
     const otherTop = Object.keys(patch).filter((k) => k !== "masterData" && !same(patch[k], (curFull as any)[k]));
     const otherMd = Object.keys(patch.masterData || {}).filter((k) => k !== "employmentTypes" && !same(patch.masterData[k], (curFull as any).masterData?.[k]));
-    if (otherTop.length || otherMd.length) return res.status(403).json({ error: "HR/GA hanya dapat mengubah Kategori Dokumen Karyawan. Pengaturan lain diubah oleh Admin." });
+    if (otherTop.length || otherMd.length) return res.status(403).json({ error: "Anda hanya dapat mengubah Kategori Dokumen Karyawan. Pengaturan lain diubah oleh Admin." });
     patch = { masterData: { ...(cur.masterData || {}), employmentTypes: types.map((x: unknown) => String(x).trim()).filter(Boolean) } };
   }
   // Validasi format nomor kontrak sebelum disimpan — mask tak valid baru
@@ -2095,6 +2105,22 @@ app.put("/api/settings", requireAuth, requireRole(...R.settings, "hr_ga"), (req:
       }
     }
   }
+  // Matriks hak akses aksi: hanya Admin/Super Admin yang boleh MENGUBAH (kalau
+  // tidak, IT/System atau role lain bisa memberi dirinya izin sendiri). Kiriman
+  // yang isinya sama dengan yang tersimpan dibiarkan lewat — halaman Konfigurasi
+  // mengirim seluruh pengaturan tiap kali menyimpan.
+  if (patch && "actionPermissions" in patch) {
+    const before = JSON.stringify(rawSettingsFor(db, tid)?.actionPermissions || {});
+    const cleaned = sanitizeActionPermissions(patch.actionPermissions);
+    if (JSON.stringify(cleaned) !== before) {
+      if (req.user!.role !== "admin" && req.user!.role !== "super_admin") {
+        return res.status(403).json({ error: "Hanya Admin atau Super Admin yang dapat mengubah matriks hak akses." });
+      }
+      pushAudit(db, req, { action: "Update Hak Akses Aksi", details: "Memperbarui matriks hak akses aksi per role" });
+    }
+    patch.actionPermissions = cleaned;
+  }
+  if (patch?.masterData && "operatorGroups" in patch.masterData) patch.masterData.operatorGroups = sanitizeOperatorGroups(patch.masterData.operatorGroups);
   const merged = withSettingsDefaults({ ...rawSettingsFor(db, tid), ...patch });
   setSettingsFor(db, tid, merged);
   pushAudit(db, req, { action: "Update Settings", details: "Memperbarui konfigurasi (perusahaan / master data)" });
@@ -2102,7 +2128,7 @@ app.put("/api/settings", requireAuth, requireRole(...R.settings, "hr_ga"), (req:
   res.json({ success: true, settings: merged });
 });
 
-app.post("/api/clauses", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.post("/api/clauses", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const newClause: Clause = {
@@ -2122,7 +2148,7 @@ app.post("/api/clauses", requireAuth, requireRole(...R.templates), (req: AuthedR
   res.json({ success: true, clause: newClause });
 });
 
-app.put("/api/clauses/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.put("/api/clauses/:id", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.clauses.findIndex((c: Clause) => c.id === req.params.id && c.tenantId === tid);
@@ -2148,7 +2174,7 @@ app.put("/api/clauses/:id", requireAuth, requireRole(...R.templates), (req: Auth
   }
 });
 
-app.delete("/api/clauses/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.delete("/api/clauses/:id", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   db.clauses = db.clauses.filter((c: Clause) => !(c.id === req.params.id && c.tenantId === tid));
@@ -2163,7 +2189,7 @@ app.get("/api/templates", requireAuth, (req: AuthedRequest, res) => {
   res.json(scoped(db.templates as Template[], tenantOf(req)));
 });
 
-app.post("/api/templates", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.post("/api/templates", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const newTemplate: Template = {
     id: "tmp-" + Date.now(),
@@ -2184,7 +2210,7 @@ app.post("/api/templates", requireAuth, requireRole(...R.templates), (req: Authe
   res.json({ success: true, template: newTemplate });
 });
 
-app.delete("/api/templates/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.delete("/api/templates/:id", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const target = db.templates.find((t: Template) => t.id === req.params.id && t.tenantId === tid);
@@ -2194,7 +2220,7 @@ app.delete("/api/templates/:id", requireAuth, requireRole(...R.templates), (req:
   res.json({ success: true });
 });
 
-app.put("/api/templates/:id", requireAuth, requireRole(...R.templates), (req: AuthedRequest, res) => {
+app.put("/api/templates/:id", requireAuth, requirePerm("templates.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.templates.findIndex((t: Template) => t.id === req.params.id && t.tenantId === tid);
@@ -2241,7 +2267,7 @@ app.get("/api/modules/employees", requireAuth, (req: AuthedRequest, res) => {
   res.json(scoped(db.employees as EmployeeData[], tenantOf(req)));
 });
 
-app.post("/api/modules/employees", requireAuth, requireRole(...R.employeeData), (req: AuthedRequest, res) => {
+app.post("/api/modules/employees", requireAuth, requirePerm("employees.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const emp: EmployeeData = {
     id: "EMP" + Date.now(),
@@ -2257,7 +2283,7 @@ app.post("/api/modules/employees", requireAuth, requireRole(...R.employeeData), 
   res.json({ success: true, employee: emp });
 });
 
-app.put("/api/modules/employees/:id", requireAuth, requireRole(...R.employeeData), (req: AuthedRequest, res) => {
+app.put("/api/modules/employees/:id", requireAuth, requirePerm("employees.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.employees.findIndex((e: EmployeeData) => e.id === req.params.id && e.tenantId === tid);
@@ -2267,7 +2293,7 @@ app.put("/api/modules/employees/:id", requireAuth, requireRole(...R.employeeData
   res.json({ success: true, employee: db.employees[idx] });
 });
 
-app.delete("/api/modules/employees/:id", requireAuth, requireRole(...R.employeeData), (req: AuthedRequest, res) => {
+app.delete("/api/modules/employees/:id", requireAuth, requirePerm("employees.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   db.employees = db.employees.filter((e: EmployeeData) => !(e.id === req.params.id && e.tenantId === tid));
@@ -2280,7 +2306,7 @@ app.get("/api/modules/vendors", requireAuth, (req: AuthedRequest, res) => {
   res.json(scoped(db.vendors as VendorData[], tenantOf(req)));
 });
 
-app.post("/api/modules/vendors", requireAuth, requireRole(...R.vendorData), (req: AuthedRequest, res) => {
+app.post("/api/modules/vendors", requireAuth, requirePerm("vendors.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const vendor: VendorData = {
     id: "VND" + Date.now(),
@@ -2303,7 +2329,7 @@ app.post("/api/modules/vendors", requireAuth, requireRole(...R.vendorData), (req
   res.json({ success: true, vendor });
 });
 
-app.put("/api/modules/vendors/:id", requireAuth, requireRole(...R.vendorData), (req: AuthedRequest, res) => {
+app.put("/api/modules/vendors/:id", requireAuth, requirePerm("vendors.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = db.vendors.findIndex((v: VendorData) => v.id === req.params.id && v.tenantId === tid);
@@ -2313,7 +2339,7 @@ app.put("/api/modules/vendors/:id", requireAuth, requireRole(...R.vendorData), (
   res.json({ success: true, vendor: db.vendors[idx] });
 });
 
-app.delete("/api/modules/vendors/:id", requireAuth, requireRole(...R.vendorData), (req: AuthedRequest, res) => {
+app.delete("/api/modules/vendors/:id", requireAuth, requirePerm("vendors.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   db.vendors = db.vendors.filter((v: VendorData) => !(v.id === req.params.id && v.tenantId === tid));
@@ -2330,7 +2356,7 @@ app.get("/api/subfolders", requireAuth, (req: AuthedRequest, res) => {
   res.json(list);
 });
 
-app.post("/api/subfolders", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/subfolders", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const { category, parentId, name } = req.body;
@@ -2362,7 +2388,7 @@ app.post("/api/subfolders", requireAuth, requireRole(...R.contractEditors), (req
   res.json(folder);
 });
 
-app.put("/api/subfolders/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.put("/api/subfolders/:id", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const folder = (db.subFolders as SubFolder[]).find((f) => f.id === req.params.id && f.tenantId === tid);
@@ -2374,7 +2400,7 @@ app.put("/api/subfolders/:id", requireAuth, requireRole(...R.contractEditors), (
   res.json(folder);
 });
 
-app.delete("/api/subfolders/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.delete("/api/subfolders/:id", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const folder = (db.subFolders as SubFolder[]).find((f) => f.id === req.params.id && f.tenantId === tid);
@@ -3075,7 +3101,7 @@ app.post("/api/dcs/lampiran-upload", requireAuth, uploadLampiran.single("file"),
 // dcs/routes.ts to fetchFile() at compose time) — same two-step convention
 // as master-contracts/upload: this just uploads, the caller still needs to
 // PUT /api/settings to actually persist the returned fields onto the tenant.
-app.post("/api/settings/company-logo", requireAuth, requireRole(...R.settings), upload.single("file"), async (req, res) => {
+app.post("/api/settings/company-logo", requireAuth, requirePerm("settings.manage"), upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "Tidak ada berkas" });
   if (!/^image\/(png|jpe?g)$/.test(req.file.mimetype)) {
     return res.status(400).json({ error: "Logo harus berformat PNG atau JPEG" });
@@ -3092,7 +3118,7 @@ app.post("/api/settings/company-logo", requireAuth, requireRole(...R.settings), 
 // /api/contracts/:id yang sudah ada (lihat komentar showLetterhead/
 // party2LogoUrl di situ) — konsisten dgn alur "Edit Data Pihak & Kontrak" yg
 // juga baru benar-benar tersimpan setelah tombol Simpan di modal itu diklik.
-app.post("/api/contracts/:id/party2-logo", requireAuth, requireRole(...R.contractEditors), upload.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/party2-logo", requireAuth, requirePerm("contract.edit"), upload.single("file"), async (req: AuthedRequest, res) => {
   if (!req.file) return res.status(400).json({ error: "Tidak ada berkas" });
   if (!/^image\/(png|jpe?g)$/.test(req.file.mimetype)) {
     return res.status(400).json({ error: "Logo harus berformat PNG atau JPEG" });
@@ -3120,7 +3146,7 @@ function buildContractCopies(copyCount: number, hasMaterai: boolean): any[] {
   });
 }
 
-app.post("/api/contracts", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/contracts", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
   // HR/GA hanya membuat kontrak karyawan; kontrak eksternal lewat Legal.
   if (req.user!.role === "hr_ga" && !(req.body?.party2Type === "Karyawan" || req.body?.party2Type === "Employee")) {
     return res.status(403).json({ error: "HR/GA hanya dapat membuat kontrak karyawan. Kontrak eksternal diajukan lewat Permintaan Kontrak ke Legal." });
@@ -3196,8 +3222,8 @@ app.post("/api/contracts", requireAuth, requireRole(...R.contractEditors), async
     templateSnapshot: captureTemplateSnapshot(db, tid, req.body.templateId),
     contractNumber,
     numberSeq,
-    title: req.body.title || `Kontrak Baru ${req.body.category}`,
-    category: req.body.category,
+    title: req.body.title || `Dokumen Baru ${req.body.docType || req.body.category || ""}`.trim(),
+    category: req.body.category || "General",
     party1Name: company,
     party2Name: req.body.party2Name,
     party2Type: req.body.party2Type || "Vendor",
@@ -3226,6 +3252,7 @@ app.post("/api/contracts", requireAuth, requireRole(...R.contractEditors), async
     masterPdfUrl: originalDocument ? originalDocument.url : (req.body.masterPdfUrl || null),
     docType: req.body.docType || undefined,
     platform: platform || undefined,
+    operator: typeof req.body.operator === "string" && req.body.operator.trim() ? req.body.operator.trim().slice(0, 120) : undefined,
     employmentType: typeof req.body.employmentType === "string" && req.body.employmentType.trim() ? req.body.employmentType.trim().slice(0, 80) : undefined,
     division: typeof req.body.division === "string" && req.body.division.trim() ? req.body.division.trim().slice(0, 80) : undefined,
     companyId: numberCompany?.id,
@@ -3382,7 +3409,7 @@ const CONTRACT_PUT_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   Terminated: [],
 };
 
-app.put("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = (db.contracts as Contract[]).findIndex((c) => c.id === req.params.id && c.tenantId === tid);
@@ -3395,6 +3422,15 @@ app.put("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (r
       const hint = oldContract.status === "Draft" && req.body.status === "Aktif"
         ? ' Gunakan endpoint "Aktifkan Kontrak".' : "";
       return res.status(400).json({ error: `Transisi status ${oldContract.status} → ${req.body.status} tidak diizinkan lewat endpoint ini.${hint}` });
+    }
+  }
+
+  // Memindahkan dokumen (ganti folder/kategori arsip): izin "contract.move" di matriks Hak Akses.
+  {
+    const movesFolder = req.body.subFolderId !== undefined && (req.body.subFolderId || "") !== ((oldContract as any).subFolderId || "");
+    const movesCategory = req.body.category !== undefined && (req.body.category || "") !== (oldContract.category || "");
+    if ((movesFolder || movesCategory) && !hasPerm(req, "contract.move")) {
+      return res.status(403).json({ error: "Role Anda tidak punya izin memindahkan dokumen (atur di Konfigurasi > Hak Akses)." });
     }
   }
 
@@ -3560,7 +3596,7 @@ app.put("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (r
 // ---------------------------------------------------------------------------
 const BULK_IMPORT_MAX_FILES = 25;
 
-app.post("/api/contracts/bulk-import/extract", requireAuth, requireRole(...R.contractEditors),
+app.post("/api/contracts/bulk-import/extract", requireAuth, requirePerm("contract.bulk"),
   upload.array("files", BULK_IMPORT_MAX_FILES), async (req: AuthedRequest, res) => {
   const files = (req.files as Express.Multer.File[]) || [];
   if (files.length === 0) return res.status(400).json({ error: "Tidak ada berkas yang diunggah." });
@@ -3636,7 +3672,7 @@ Balas JSON: {"title","category","docType","party1Name","party2Name","party2Type"
   res.json({ success: true, rows: hasil, terbaca: hasil.filter((r) => r.ocrOk).length, total: hasil.length });
 });
 
-app.post("/api/contracts/bulk-import/commit", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/bulk-import/commit", requireAuth, requirePerm("contract.bulk"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const rows: any[] = Array.isArray(req.body.rows) ? req.body.rows : [];
@@ -3762,7 +3798,7 @@ function normalizeBudgetBody(body: any): { ok: boolean; value?: Partial<BudgetEn
   };
 }
 
-app.post("/api/budgets", requireAuth, requireRole(...R.budgets), (req: AuthedRequest, res) => {
+app.post("/api/budgets", requireAuth, requirePerm("budgets.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const v = normalizeBudgetBody(req.body);
@@ -3780,7 +3816,7 @@ app.post("/api/budgets", requireAuth, requireRole(...R.budgets), (req: AuthedReq
   res.json({ success: true, entry });
 });
 
-app.put("/api/budgets/:id", requireAuth, requireRole(...R.budgets), (req: AuthedRequest, res) => {
+app.put("/api/budgets/:id", requireAuth, requirePerm("budgets.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const entry = (db.budgets as BudgetEntry[]).find((b) => b.id === req.params.id && b.tenantId === tid);
@@ -3793,7 +3829,7 @@ app.put("/api/budgets/:id", requireAuth, requireRole(...R.budgets), (req: Authed
   res.json({ success: true, entry });
 });
 
-app.delete("/api/budgets/:id", requireAuth, requireRole(...R.budgets), (req: AuthedRequest, res) => {
+app.delete("/api/budgets/:id", requireAuth, requirePerm("budgets.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const entry = (db.budgets as BudgetEntry[]).find((b) => b.id === req.params.id && b.tenantId === tid);
@@ -3804,7 +3840,7 @@ app.delete("/api/budgets/:id", requireAuth, requireRole(...R.budgets), (req: Aut
   res.json({ success: true });
 });
 
-app.post("/api/contracts/:id/legal-hold", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/legal-hold", requireAuth, requirePerm("retention.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const c = (db.contracts as Contract[]).find((x) => x.id === req.params.id && x.tenantId === tid);
@@ -3827,7 +3863,7 @@ app.post("/api/contracts/:id/legal-hold", requireAuth, requireRole(...R.legalOnl
   res.json({ success: true, contract: c });
 });
 
-app.post("/api/contracts/:id/mark-destroyed", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/mark-destroyed", requireAuth, requirePerm("retention.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const c = (db.contracts as Contract[]).find((x) => x.id === req.params.id && x.tenantId === tid);
@@ -3849,7 +3885,7 @@ app.post("/api/contracts/:id/mark-destroyed", requireAuth, requireRole(...R.lega
   res.json({ success: true, contract: c });
 });
 
-app.post("/api/contracts/bulk-reminder", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/bulk-reminder", requireAuth, requirePerm("contract.bulk"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const ids: string[] = Array.isArray(req.body.contractIds) ? req.body.contractIds.filter((x: unknown) => typeof x === "string") : [];
@@ -3915,7 +3951,7 @@ function isDocumentOwnerSide(c: Contract, user: { id: string; role: string }) {
   return owner === user.id;
 }
 
-app.post("/api/contracts/:id/submit-review", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -4195,7 +4231,7 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
 });
 
 // Delete contract
-app.delete("/api/contracts/:id", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.delete("/api/contracts/:id", requireAuth, requirePerm("contract.delete"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const target = findOwnedContract(db, req, req.params.id);
@@ -4255,11 +4291,11 @@ function releaseContractNumber(db: any, tid: string, c: Contract): boolean {
 
 // Lepas nomor TANPA menghapus dokumennya (mis. dokumen mau ditulis ulang dari
 // awal tapi arsipnya masih ingin disimpan sebentar).
-// Klasifikasi arsip (PT / Platform / Kategori / Jenis Dokumen) — urusan
+// Klasifikasi arsip eksternal (PT / Jenis Dokumen / Platform; Mitra-Operator = isian, bukan folder) — urusan
 // FILING, jadi boleh di status apa pun (seperti Pindahkan ke Arsip). Nomor
 // dokumen yang sudah terbit TIDAK diubah. Dipakai untuk menata dokumen lama
 // yang belum punya PT/Platform ("Belum Diklasifikasi" di Arsip Eksternal).
-app.post("/api/contracts/:id/classify", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/classify", requireAuth, requirePerm("contract.classify"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -4285,28 +4321,33 @@ app.post("/api/contracts/:id/classify", requireAuth, requireRole(...R.contractEd
     return res.json({ success: true, contract });
   }
   const platform = String(req.body.platform || "").trim().slice(0, 60);
-  const category = String(req.body.category || "").trim().slice(0, 80);
+  // Kategori tidak lagi dipilih manual (bukan level arsip) — tetap tersimpan
+  // sebagai kunci template/nomor: pakai kiriman klien bila ada, kalau tidak
+  // pertahankan yang sudah ada.
+  const category = String(req.body.category || contract.category || "General").trim().slice(0, 80);
   const docType = String(req.body.docType || "").trim().slice(0, 80);
-  if (!platform || !category || !docType) return res.status(400).json({ error: "PT, Platform, Kategori, dan Jenis Dokumen wajib diisi." });
+  const operator = String(req.body.operator || "").trim().slice(0, 120);
+  if (!platform || !docType) return res.status(400).json({ error: "PT, Jenis Dokumen, dan Platform wajib diisi." });
   const platformErr = validateContractPlatform(db, tid, company.id, platform, req.body.platformCustom === true);
   if (platformErr) return res.status(400).json({ error: platformErr });
-  const before = [contract.companyName, contract.platform, contract.category, contract.docType].map((x) => x || "-").join(" / ");
+  const before = [contract.companyName, contract.docType, contract.platform, contract.operator].map((x) => x || "-").join(" / ");
   contract.companyId = company.id;
   contract.companyName = company.name;
   contract.companyCode = company.code;
   contract.platform = platform;
+  contract.operator = operator || undefined;
   contract.category = category;
   contract.docType = docType;
   contract.updatedAt = new Date().toISOString();
   if (req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)) {
     contract.requestingDivision = isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined;
   }
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Klasifikasi Arsip", details: `${before} → ${company.name} / ${platform} / ${category} / ${docType} (nomor dokumen tidak berubah)` });
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Klasifikasi Arsip", details: `${before} → ${company.name} / ${docType} / ${platform} / ${operator || "-"} (nomor dokumen tidak berubah)` });
   saveDB(db);
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/release-number", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/release-number", requireAuth, requirePerm("contract.classify"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const target = findOwnedContract(db, req, req.params.id);
@@ -4330,7 +4371,7 @@ app.post("/api/contracts/:id/release-number", requireAuth, requireRole(...R.cont
 // rangkap, atau upload scan berkas rangkap tsb. Kontrak lama (dibuat sebelum
 // fitur ini) belum punya `copies`; endpoint update menginisialisasi on-demand
 // lewat req.body.initCopies agar arsip lama bisa mulai dilacak juga.
-app.put("/api/contracts/:id/copies/:index", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.put("/api/contracts/:id/copies/:index", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4353,7 +4394,7 @@ app.put("/api/contracts/:id/copies/:index", requireAuth, requireRole(...R.contra
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/copies/:index/upload", requireAuth, requireRole(...R.contractEditors), upload.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/copies/:index/upload", requireAuth, requirePerm("contract.edit"), upload.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4413,7 +4454,7 @@ const isoDateOnly = (v: any): string | null => {
   const t = typeof v === "string" ? v.trim().slice(0, 10) : "";
   return /^\d{4}-\d{2}-\d{2}$/.test(t) && !isNaN(new Date(t).getTime()) ? t : null;
 };
-app.post("/api/contracts/:id/signing-dispatch", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/signing-dispatch", requireAuth, requirePerm("signing.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4442,7 +4483,7 @@ app.post("/api/contracts/:id/signing-dispatch", requireAuth, requireRole(...R.co
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/signing-receipt", requireAuth, requirePerm("signing.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4478,7 +4519,7 @@ app.post("/api/contracts/:id/signing-receipt", requireAuth, requireRole(...R.con
   res.json({ success: true, contract });
 });
 
-app.post("/api/contracts/:id/activate", requireAuth, requireRole(...R.contractEditors), upload.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/activate", requireAuth, requirePerm("signing.manage"), upload.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4562,7 +4603,7 @@ app.post("/api/contracts/:id/activate", requireAuth, requireRole(...R.contractEd
 // "kontrak ini sudah rilis" ke orang-orang yang dipilih PER NAMA, lengkap
 // dengan keterangan bebas. Bisa dikirim berkali-kali (mis. menyusul orang
 // lain); tiap pengumuman dicatat di contract.releaseAnnouncements + Audit Trail.
-app.post("/api/contracts/:id/announce-release", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/announce-release", requireAuth, requirePerm("release.announce"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -4631,7 +4672,7 @@ function releaseShareUrl(req: express.Request, token: string): string {
   return `${shareBaseUrl(req)}/api/public/release/${token}`;
 }
 
-app.post("/api/contracts/:id/announce-release-external", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/announce-release-external", requireAuth, requirePerm("release.announce"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -4707,7 +4748,7 @@ app.get("/api/contracts/:id/addendum-context", requireAuth, (req: AuthedRequest,
 // tetap hidup, tidak digantikan — beda dari /renew yang membuat kontrak
 // pengganti independen). Hanya valid untuk kontrak induk yang sudah Aktif
 // (amandemen cuma masuk akal untuk kontrak yang sudah mengikat).
-app.post("/api/contracts/:id/addendum", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/addendum", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const parent = findOwnedContract(db, req, req.params.id);
@@ -5472,7 +5513,7 @@ function pushDocumentVersion(
 // Simpan hasil edit workspace (atau revisi yang diunggah) sbg versi BARU.
 // Multipart: file, comment, baseVersion (versi yang sedang diedit — cegah
 // menimpa perubahan orang lain), editMethod.
-app.post("/api/contracts/:id/document-versions", requireAuth, requireRole(...R.contractEditors),
+app.post("/api/contracts/:id/document-versions", requireAuth, requirePerm("contract.edit"),
   uploadContractDoc.single("file"), async (req: AuthedRequest, res) => {
   if (!req.file) return res.status(400).json({ error: "Berkas versi baru wajib dikirim." });
   const fileName = cleanFileName(req.file.originalname);
@@ -5630,7 +5671,7 @@ function assertEditableUploadContract(contract: Contract | undefined, res: any):
 }
 
 // Konversi versi aktif .doc -> .docx sebagai versi BARU (agar bisa diedit).
-app.post("/api/contracts/:id/document-versions/convert", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/convert", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
   const pre = findOwnedContract(loadDB(), req, req.params.id);
   if (!assertEditableUploadContract(pre, res)) return;
   const preVersions = uploadedDocumentVersions(loadDB(), pre);
@@ -5660,7 +5701,7 @@ app.post("/api/contracts/:id/document-versions/convert", requireAuth, requireRol
 // "Edit seperti Word": ubah versi aktif PDF -> .docx sebagai versi BARU
 // (pdf-to-docx.ts, tanpa Python/layanan luar). PDF-nya tetap tersimpan utuh
 // di versi sebelumnya & jadi sourceFile versi baru ini.
-app.post("/api/contracts/:id/document-versions/pdf-to-docx", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/pdf-to-docx", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
   const pre = findOwnedContract(loadDB(), req, req.params.id);
   if (!assertEditableUploadContract(pre, res)) return;
   const preVersions = uploadedDocumentVersions(loadDB(), pre);
@@ -5712,7 +5753,7 @@ app.get("/api/contracts/:id/document/pdf-layout", requireAuth, async (req: Authe
 });
 
 // Simpan edit TEKS ASLI PDF (+ teks baru & redaksi) sebagai versi baru.
-app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
   const pre = findOwnedContract(loadDB(), req, req.params.id);
   if (!assertEditableUploadContract(pre, res)) return;
   const preVersions = uploadedDocumentVersions(loadDB(), pre);
@@ -5755,7 +5796,7 @@ app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requireRo
 
 // Kembalikan ke versi lama = buat versi BARU yang menunjuk berkas versi itu
 // (riwayat tidak pernah ditulis ulang/dihapus).
-app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -5781,7 +5822,7 @@ app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, r
 });
 
 // 8. SMART RENEWAL ENGINE (klik perpanjang, AI atau sistem buat perpanjangan otomatis tahun berikutnya)
-app.post("/api/contracts/:id/renew", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/renew", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const sourceContract = findOwnedContract(db, req, req.params.id);
@@ -7131,8 +7172,8 @@ app.post("/api/contracts/:id/comments", requireAuth, async (req: AuthedRequest, 
   if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
   // Komentar / coret / ganti hanya untuk Legal, Admin & Super Admin, atau orang
   // yang ditunjuk Legal sebagai reviewer pada dokumen ini.
-  if (!canReviewContract(viewerOf(db, req), contract)) {
-    return res.status(403).json({ error: "Anda tidak punya akses untuk meninjau dokumen ini. Mode Tinjau hanya untuk Legal/Super Admin atau reviewer yang ditunjuk Legal." });
+  if (!canReviewContract(viewerOf(db, req), contract, actionOverridesFor(db, tid))) {
+    return res.status(403).json({ error: "Anda tidak punya akses untuk meninjau dokumen ini. Mode Tinjau hanya untuk role yang diizinkan di Hak Akses atau reviewer yang ditunjuk Legal." });
   }
 
   const { clauseId, clauseTitle, text, parentId, mentions, anchor } = req.body;
@@ -7245,7 +7286,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   // baru), jadi dibatasi ke peran yang boleh mengubah dokumen kontrak.
   if (req.body.status !== undefined) {
     if (!["pending", "accepted", "rejected"].includes(req.body.status)) return res.status(400).json({ error: "Status tidak valid." });
-    if (![...R.contractEditors, "super_admin"].includes(req.user!.role)) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
+    if (!hasPerm(req, "review.markup_decide")) return res.status(403).json({ error: "Anda tidak berwenang menerima/menolak usulan." });
     const parent = (db.contracts as Contract[]).find((c) => c.id === comment.contractId && c.tenantId === tid);
     if (parent && !isDocumentOwnerSide(parent, req.user!)) {
       return res.status(403).json({ error: `Usulan diterima/ditolak oleh pembuat dokumen (${parent.approvalSubmittedByName || parent.createdByName || "pengaju"}).` });
@@ -7298,7 +7339,7 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
 // field kontrak sensitif lain yang dibocorkan.
 
 // Aktifkan/putar token review eksternal (authed). Hanya sebelum FullyApproved.
-app.post("/api/contracts/:id/external-review/enable", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/enable", requireAuth, requirePerm("review.send_external"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -7383,7 +7424,7 @@ function startExternalRevision(db: any, contract: Contract, note: string, by: st
 
 // Lewati Review Eksternal (mis. dokumen tidak perlu ditinjau pihak kedua).
 // Dibatasi admin/legal/manager & wajib alasan — tercatat jelas di audit.
-app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/skip-external-review", requireAuth, requirePerm("review.send_external"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -7401,7 +7442,7 @@ app.post("/api/contracts/:id/skip-external-review", requireAuth, requireRole(...
 });
 
 // Matikan token (link lama langsung tidak berlaku).
-app.post("/api/contracts/:id/external-review/disable", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/disable", requireAuth, requirePerm("review.send_external"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -7416,7 +7457,7 @@ app.post("/api/contracts/:id/external-review/disable", requireAuth, requireRole(
 
 // Buka kembali akses komentar/setuju setelah tamu eksternal mengunci sesinya
 // (klik Setuju/OK) — TIDAK memutar ulang token, link yang sama tetap berlaku.
-app.post("/api/contracts/:id/external-review/unlock", requireAuth, requireRole(...R.contractEditors), (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/external-review/unlock", requireAuth, requirePerm("review.send_external"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -7476,6 +7517,15 @@ const DEFAULT_PREAMBLE_TEMPLATE_SERVER =
 // menyisipkan "pseudo-klausul" narasi pembuka ke halaman review eksternal —
 // mengirim TEKS SUDAH JADI (bukan field mentah appSettings/party) supaya
 // permukaan data yang diekspos ke publik tetap sekecil mungkin.
+// Tanggal panjang bahasa Indonesia ("Rabu, 21 Oktober 2026") dari YYYY-MM-DD.
+// timeZone UTC: tanggal tanpa jam diparse sebagai UTC, jadi tanpa ini hasilnya
+// bisa mundur sehari di server berzona waktu negatif.
+function formatLongDateId(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
 function composeContractPreambleText(db: any, contract: Contract): string {
   const settings = withSettingsDefaults(rawSettingsFor(db, contract.tenantId));
   // Potret template didahulukan dari template hidup: redaksi yang dipakai
@@ -7490,7 +7540,9 @@ function composeContractPreambleText(db: any, contract: Contract): string {
     DEFAULT_PREAMBLE_TEMPLATE_SERVER;
   const tokens: Record<string, string> = {
     ...(contract.variables || {}),
-    StartDate: contract.startDate,
+    // Sama dengan frontend: tanggal ditulis panjang (Rabu, 21 Oktober 2026),
+    // bukan mentah YYYY-MM-DD.
+    StartDate: formatLongDateId(contract.startDate),
     // Placeholder untuk field yang belum diisi WAJIB berkurung siku — harus
     // sama persis dengan getPreambleTemplateAndTokens() di src/App.tsx. Dulu
     // tanpa kurung ("Alamat Perusahaan Anda"), sehingga di halaman review
@@ -7550,7 +7602,7 @@ function composeContractPreambleForTranslation(db: any, contract: Contract, sour
     settings.masterData?.categoryOpeningParagraphs?.[contract.category] ||
     DEFAULT_PREAMBLE_TEMPLATE_SERVER;
   const formattedStartDate = contract.startDate
-    ? new Date(contract.startDate).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    ? new Date(contract.startDate).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
     : contract.startDate;
   const tokens: Record<string, string> = {
     ...(contract.variables || {}),
@@ -7695,7 +7747,7 @@ function fixFixedPartyLabels(text: string | undefined, targetLang: "id" | "en"):
 // terjemahan bisa dibuat ulang kapan saja tanpa kehilangan naskah asli, dan
 // arah terjemahan bisa dibalik (kontrak yang aslinya berbahasa Inggris
 // diterjemahkan ke Indonesia).
-app.post("/api/contracts/:id/translate", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/translate", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -8048,7 +8100,7 @@ function sanitizeDcsAnchor(raw: any): DcsReviewCommentAnchor {
   return a;
 }
 
-app.post("/api/dcs/versions/:vid/external-review/enable", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/dcs/versions/:vid/external-review/enable", requireAuth, requirePerm("dcs.edit"), async (req: AuthedRequest, res) => {
   try {
     const tid = tenantOf(req);
     const token = randomBytes(24).toString("hex");
@@ -8061,12 +8113,12 @@ app.post("/api/dcs/versions/:vid/external-review/enable", requireAuth, requireRo
   }
 });
 
-app.post("/api/dcs/versions/:vid/external-review/disable", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/dcs/versions/:vid/external-review/disable", requireAuth, requirePerm("dcs.edit"), async (req: AuthedRequest, res) => {
   await disableDcsExternalReview(dcsPool, { tenantId: tenantOf(req), versionId: req.params.vid });
   res.json({ success: true });
 });
 
-app.post("/api/dcs/versions/:vid/external-review/unlock", requireAuth, requireRole(...R.contractEditors), async (req: AuthedRequest, res) => {
+app.post("/api/dcs/versions/:vid/external-review/unlock", requireAuth, requirePerm("dcs.edit"), async (req: AuthedRequest, res) => {
   const tid = tenantOf(req);
   // Guard yang sama seperti sisi Kontrak (/api/contracts/:id/external-review/unlock):
   // tanpa ini, versi yang belum pernah punya link review eksternal balas 200
@@ -8219,7 +8271,7 @@ app.get("/api/legal-jobs/:id", requireAuth, (req: AuthedRequest, res) => {
 // Divisi bisnis (Marketing / BP / AE / Operasional) memakai endpoint yang
 // sama untuk PERMINTAAN KONTRAK: masuk "Menunggu Persetujuan" Legal, PIC =
 // divisinya, tanpa prioritas (prioritas ditentukan Legal saat menyetujui).
-app.post("/api/legal-jobs", requireAuth, requireRole(...R.legalOnly, ...R.requesters), uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
+app.post("/api/legal-jobs", requireAuth, requirePerm("legaljob.request"), uploadLegalDoc.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const b = req.body || {};
@@ -8308,7 +8360,7 @@ app.post("/api/legal-jobs", requireAuth, requireRole(...R.legalOnly, ...R.reques
 });
 
 // Setujui pekerjaan masuk → tentukan prioritas → pindah ke alur kerja utama (status: draft).
-app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole(...R.legalOnly), (req: AuthedRequest, res) => {
+app.patch("/api/legal-jobs/:id/approve", requireAuth, requirePerm("legaljob.process"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const job = findLegalJob(db, tenantOf(req), req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
@@ -8334,7 +8386,7 @@ app.patch("/api/legal-jobs/:id/approve", requireAuth, requireRole(...R.legalOnly
 });
 
 // Tolak pekerjaan masuk → wajib alasan → arsip penolakan (status: ditolak), TIDAK masuk alur kerja utama.
-app.patch("/api/legal-jobs/:id/reject", requireAuth, requireRole(...R.legalOnly), async (req: AuthedRequest, res) => {
+app.patch("/api/legal-jobs/:id/reject", requireAuth, requirePerm("legaljob.process"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const job = findLegalJob(db, tenantOf(req), req.params.id);
   if (!job) return res.status(404).json({ error: "Pekerjaan legal tidak ditemukan." });
@@ -8478,7 +8530,7 @@ app.get("/api/legal-form-link", requireAuth, async (req: AuthedRequest, res) => 
 });
 
 // Reset/nonaktifkan link lama — token baru diterbitkan, link lama langsung tidak berlaku.
-app.post("/api/legal-form-link/regenerate", requireAuth, requireRole(...R.legalOnly), async (req: AuthedRequest, res) => {
+app.post("/api/legal-form-link/regenerate", requireAuth, requirePerm("legaljob.process"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   if (!db.legalFormLinks) db.legalFormLinks = [];

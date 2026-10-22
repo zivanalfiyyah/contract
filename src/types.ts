@@ -437,6 +437,7 @@ export interface Contract {
   companyId?: string;
   companyName?: string;
   companyCode?: string;
+  operator?: string; // Mitra/Operator (level folder Arsip Eksternal di bawah Platform; master: settings.operatorGroups)
   platform?: string; // Platform kerja sama (Asmat, Tiketux, dst — masterData.platforms); mengisi token {Platform} di nomor. Kosong = tidak terkait platform
   notes?: string; // Catatan bebas dari form pendaftaran dokumen
   exportedPdfUrl?: string; // Hasil export PDF yang di-host server untuk dibagikan via email/WA

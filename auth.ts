@@ -6,6 +6,7 @@ import type { Request, Response, NextFunction } from "express";
 import { loadDB } from "./db.js";
 import { logger } from "./logger.js";
 import type { User, SafeUser, UserRole } from "./src/types";
+import { isPermAllowed, type ActionPermissions } from "./src/roles";
 
 // ES module imports execute before the importing module's own top-level code
 // (server.ts's `dotenv.config()` runs too late for this file), so this must
@@ -146,6 +147,30 @@ export function requireRole(...roles: readonly (UserRole | string)[]) {
   return (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: "Belum login" });
     if (req.user.role === "super_admin" || roles.includes(req.user.role)) return next();
+    return res.status(403).json({ error: "Anda tidak memiliki izin untuk tindakan ini." });
+  };
+}
+
+// ----- Matriks hak akses aksi (lihat PERMISSIONS di src/roles.ts) -----
+// Override per tenant disimpan di pengaturan: settingsByTenant[tid].actionPermissions.
+export function actionOverridesFor(db: any, tid: string): ActionPermissions | undefined {
+  return db?.settingsByTenant?.[tid]?.actionPermissions;
+}
+/** Boleh melakukan `key`? (super_admin selalu; selain itu matriks tenant, lalu default). */
+export function hasPerm(req: AuthedRequest, key: string): boolean {
+  if (!req.user) return false;
+  if (req.user.role === "super_admin") return true;
+  return isPermAllowed(req.user.role, key, actionOverridesFor(loadDB(), tenantOf(req)));
+}
+/**
+ * Pengganti requireRole untuk aksi yang bisa diatur lewat matriks. Lolos bila
+ * role pemanggil punya SALAH SATU izin yang disebut. Menggantikan daftar role
+ * yang dulu ditulis mati di tiap route.
+ */
+export function requirePerm(...keys: string[]) {
+  return (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: "Belum login" });
+    if (keys.some((k) => hasPerm(req, k))) return next();
     return res.status(403).json({ error: "Anda tidak memiliki izin untuk tindakan ini." });
   };
 }

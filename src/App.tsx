@@ -9765,30 +9765,41 @@ export default function App() {
   // Preview / Compare / Extend.
   const handleRunOcr = async () => {
     if (!selectedContract) return;
-    const overwrite =
-      selectedContract.clauses.length > 0
-        ? await askConfirm("Kontrak ini sudah punya pasal teks. Timpa dengan hasil OCR baru?", { title: "Jalankan OCR Ulang" })
-        : false;
-    if (selectedContract.clauses.length > 0 && !overwrite) return;
+    // Pasal hanya boleh ditimpa pada dokumen susunan sistem yang masih bisa
+    // diedit (aturan yang sama dengan server). Selain itu OCR hanya mengambil
+    // teks untuk pencarian & Compare — pasal tidak disentuh.
+    let overwrite = false;
+    if (!isUploadedDocument(selectedContract) && isContractEditable(selectedContract) && selectedContract.clauses.length > 0) {
+      overwrite = await askConfirm(
+        "Kontrak ini sudah punya pasal teks. Timpa pasal dengan hasil OCR? Pasal saat ini otomatis dicadangkan di Riwayat Versi.",
+        { title: "Jalankan OCR Ulang", confirmLabel: "Ya, Timpa Pasal" },
+      );
+      if (!overwrite) {
+        const textOnly = await askConfirm(
+          "Ambil teks OCR saja tanpa mengubah pasal? Teksnya dipakai untuk pencarian dan Compare.",
+          { title: "Ambil Teks Saja", confirmLabel: "Ya, Ambil Teks Saja", danger: false },
+        );
+        if (!textOnly) return;
+      }
+    }
     setIsOcrRunning(true);
     try {
       const res = await fetch(`/api/contracts/${selectedContract.id}/ocr`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ overwrite, userName: "Ahmad GA" }),
+        body: JSON.stringify({ overwrite }),
       });
-      const data = await res.json();
-      if (data.success) {
+      // Respons non-JSON (mis. error proxy) jangan jadi "OCR gagal" tanpa alasan.
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
         setSelectedContract(data.contract);
         showToast(
-          data.simulated
-            // Jangan menuduh "AI belum aktif": penyebab sebenarnya bisa juga
-            // panggilan/parsing AI yang gagal walau API key terpasang.
-            ? "Dokumen TIDAK berhasil dibaca — isi pasal masih placeholder. Alasannya tertulis di baris pertama teks hasil OCR."
+          data.clausesUpdated
             // Arahkan langsung ke langkah berikut (toggle ID/EN/ID+EN) supaya
             // penyambungan OCR -> terjemahan tidak perlu ditebak user.
-            : "OCR selesai! Teks dokumen kini tampil di preview & compare. Ingin versi Inggris/dwibahasa? Pilih EN atau ID+EN di toolbar atas.",
-          data.simulated ? "warning" : "success",
+            ? "OCR selesai! Teks dokumen kini tampil di preview & compare. Ingin versi Inggris/dwibahasa? Pilih EN atau ID+EN di toolbar atas."
+            : "OCR selesai! Teks tersimpan untuk pencarian & Compare. Pasal dokumen tidak diubah.",
+          "success",
         );
         fetchInitialData();
       } else {
@@ -21286,7 +21297,12 @@ export default function App() {
                     <ExternalLink className="w-3.5 h-3.5" />
                     Kirim PDF (Email/WA)
                   </button>
-                  {selectedContract.masterPdfUrl && !isUploadedDocument(selectedContract) && (
+                  {/* Server mewajibkan izin contract.edit untuk OCR. Berkas Word (.docx/.doc)
+                      sudah berupa teks & tidak didukung OCR — tombol disembunyikan bila
+                      berkas yang akan dibaca adalah dokumen Word kerja kontrak Upload. */}
+                  {canEditContracts && selectedContract.masterPdfUrl
+                    && !(isUploadedDocument(selectedContract) && !selectedContract.activationProofKey
+                      && (selectedContract.currentDocument?.format === "docx" || selectedContract.currentDocument?.format === "doc")) && (
                     <button
                       onClick={handleRunOcr}
                       disabled={isOcrRunning}

@@ -5305,80 +5305,186 @@ app.post("/api/contracts/:id/export-share/email", requireAuth, async (req: Authe
   res.json({ success: result.sent, error: result.error });
 });
 
-// 6d. OCR DOKUMEN HARDCOPY/SCAN — menerjemahkan berkas upload menjadi teks
-// pasal, sehingga fitur Preview / Compare / Extend menampilkan isi teksnya.
-// Memakai Gemini vision jika GEMINI_API_KEY dikonfigurasi; jika tidak,
-// fallback ke hasil simulasi yang DIBERI LABEL JELAS (tidak pura-pura asli).
-app.post("/api/contracts/:id/ocr", requireAuth, async (req: AuthedRequest, res) => {
+// 6d. OCR DOKUMEN HARDCOPY/SCAN — membaca berkas (PDF/JPG/PNG) lewat Gemini
+// vision dan menyimpan teksnya di contract.ocrText (dipakai pencarian &
+// Compare). Pasal kontrak HANYA diisi/ditimpa bila isinya memang boleh diubah
+// (lihat ocrCanWriteClauses) — selain itu OCR cuma mengisi ocrText.
+//
+// Prinsip: bila pembacaan gagal (API key belum diisi, AI error/kuota, balasan
+// tidak bisa diurai, dokumen kosong) endpoint MEMBALAS ERROR dan TIDAK
+// mengubah data apa pun. Dulu kegagalan disimpan sebagai "hasil OCR simulasi"
+// (teks & pasal placeholder): ocrText yang sudah bagus tertimpa, dan bila
+// pasal ikut ditimpa pasal asli diganti pasal palsu tanpa cadangan.
+const ocrLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Terlalu banyak permintaan OCR. Coba lagi dalam beberapa menit." },
+});
+
+// Isi prompt TIDAK diubah dari versi sebelumnya (sudah teruji dengan Gemini).
+const OCR_PROMPT = `Lakukan OCR penuh pada dokumen kontrak ini, lalu strukturkan menjadi pasal-pasal.
+            Balas JSON: { "fullText": "seluruh teks dokumen", "clauses": [ { "title": "Judul Pasal", "content": "Isi pasal" } ] }.
+            Jika dokumen tidak memiliki struktur pasal, bagi ke bagian-bagian logis dengan judul deskriptif.`;
+
+type OcrClause = { title: string; content: string };
+
+// Pasal kontrak hanya boleh diisi/ditimpa OCR bila isinya boleh diubah:
+// dokumen disusun di sistem (isi dokumen Upload ADALAH berkasnya, bukan pasal),
+// berstatus Draft, dan — saat revisi — oleh sisi pembuat/pengaju. Sama dengan
+// isContractEditable di App.tsx dan aturan canEditContent di PUT /api/contracts/:id.
+function ocrCanWriteClauses(c: Contract, user: { id: string; role: string }): boolean {
+  return resolveDocumentSource(c) === "template"
+    && c.status === "Draft"
+    && (!c.revisionStage || isDocumentOwnerSide(c, user));
+}
+
+// Ambil berkas yang akan di-OCR dari penyimpanan — lokal ATAU cloud (S3/R2).
+// Kontrak Upload yang belum diaktivasi memakai versi dokumen terkini; selain
+// itu memakai masterPdfUrl (berkas upload / bukti TTD basah). Dulu berkas
+// hanya dicari di disk lokal, sehingga OCR selalu gagal bila cloud storage aktif.
+async function loadOcrSourceFile(contract: Contract): Promise<{ buf: Buffer; fileName: string }> {
+  const fail = (status: number, message: string) => Object.assign(new Error(message), { status });
+  const useWorkingDocument = resolveDocumentSource(contract) === "upload" && !contract.activationProofKey;
+  const ref = useWorkingDocument
+    ? (contract.currentDocument || contract.originalDocument || legacyDocumentRef(contract))
+    : undefined;
+  if (ref) return { buf: await readStoredDocument(ref, uploadDir), fileName: ref.fileName };
+  const url = contract.masterPdfUrl;
+  if (!url) throw fail(400, "Kontrak ini tidak memiliki dokumen upload untuk di-OCR");
+  const fileName = path.basename(url.split("?")[0]);
+  const key = contract.activationProofKey || fileName;
+  return { buf: await readStoredDocument({ key, url } as StoredDocumentRef, uploadDir), fileName };
+}
+
+// Rapikan balasan Gemini menjadi { fullText, clauses } yang pasti bertipe benar,
+// atau null bila tidak ada teks sama sekali. Menerima objek { fullText, clauses }
+// maupun array pasal di level atas.
+function normalizeOcrPayload(raw: any): { fullText: string; clauses: OcrClause[] } | null {
+  const rawClauses: any[] = Array.isArray(raw) ? raw : Array.isArray(raw?.clauses) ? raw.clauses : [];
+  const clauses: OcrClause[] = [];
+  for (const c of rawClauses) {
+    const title = typeof c?.title === "string" ? c.title.trim() : "";
+    const content = typeof c?.content === "string" ? c.content.trim() : "";
+    if (!title && !content) continue;
+    clauses.push({ title: title || "Bagian Dokumen", content });
+  }
+  let fullText = !Array.isArray(raw) && typeof raw?.fullText === "string" ? raw.fullText.trim() : "";
+  if (!fullText && clauses.length > 0) fullText = clauses.map((c) => `${c.title}\n${c.content}`.trim()).join("\n\n");
+  if (!fullText) return null;
+  // Ada teks tetapi tanpa pasal → jadikan satu bagian utuh (jangan sampai pasal jadi kosong).
+  if (clauses.length === 0) clauses.push({ title: "Isi Dokumen", content: fullText });
+  return { fullText, clauses };
+}
+
+app.post("/api/contracts/:id/ocr", requireAuth, requirePerm("contract.edit"), ocrLimiter, async (req: AuthedRequest, res) => {
+  const contract0 = findOwnedContract(loadDB(), req, req.params.id);
+  if (!contract0) return res.status(404).json({ error: "Contract not found" });
+  if (!contract0.masterPdfUrl) {
+    return res.status(400).json({ error: "Kontrak ini tidak memiliki dokumen upload untuk di-OCR" });
+  }
+  // Hanya boolean true yang dianggap permintaan menimpa pasal.
+  const wantOverwrite = req.body?.overwrite === true;
+  if (wantOverwrite && !ocrCanWriteClauses(contract0, req.user!)) {
+    return res.status(409).json({ error: "Pasal hanya bisa ditimpa hasil OCR pada dokumen yang disusun di sistem dan masih berstatus Draft. Jalankan OCR tanpa menimpa pasal untuk hanya mengambil teksnya." });
+  }
+  if (!isGeminiConfigured()) {
+    return res.status(503).json({ error: "OCR belum tersedia — GEMINI_API_KEY belum dikonfigurasi di server. Hubungi admin. Tidak ada data yang diubah." });
+  }
+
+  let source: { buf: Buffer; fileName: string };
+  try {
+    source = await loadOcrSourceFile(contract0);
+  } catch (err: any) {
+    logger.warn({ err, contractId: contract0.id }, "OCR: gagal membaca berkas dokumen");
+    const known = typeof err?.status === "number";
+    return res.status(known ? err.status : 502).json({
+      error: known ? String(err.message) : "Gagal mengambil berkas dari penyimpanan. Coba lagi beberapa saat lagi.",
+    });
+  }
+
+  const format = sniffFormat(source.buf, source.fileName);
+  if (format !== "pdf" && format !== "image") {
+    const isWord = format === "docx" || format === "doc";
+    return res.status(415).json({
+      error: isWord
+        ? "OCR hanya untuk berkas PDF, JPG, atau PNG. Dokumen Word sudah berupa teks — tidak perlu di-OCR."
+        : "Format berkas tidak dikenali. OCR hanya mendukung PDF, JPG, atau PNG.",
+    });
+  }
+  const mime = format === "pdf" ? "application/pdf" : source.buf[0] === 0x89 ? "image/png" : "image/jpeg";
+  // Berkas dikirim inline (base64, +33%) — batas request Gemini ±20 MB.
+  if (source.buf.length > 14 * 1024 * 1024) {
+    return res.status(413).json({ error: "Berkas terlalu besar untuk OCR (maks. ±14 MB). Kompres atau pecah berkas lalu coba lagi." });
+  }
+
+  let aiText: string | undefined;
+  let aiFinishReason = "";
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: [
+        { inlineData: { mimeType: mime, data: source.buf.toString("base64") } },
+        { text: OCR_PROMPT },
+      ],
+      config: { responseMimeType: "application/json" },
+    });
+    aiText = response.text;
+    aiFinishReason = String(response.candidates?.[0]?.finishReason || "");
+  } catch (err) {
+    logger.warn({ err, contractId: contract0.id }, "Gemini OCR failed");
+    return aiErrorResponse(res, err, "OCR gagal membaca dokumen. Tidak ada data yang diubah. Coba lagi beberapa saat lagi.");
+  }
+
+  let payload: { fullText: string; clauses: OcrClause[] } | null;
+  try {
+    payload = normalizeOcrPayload(parseAiJson(aiText));
+  } catch (err) {
+    logger.warn({ err, finishReason: aiFinishReason, contractId: contract0.id }, "OCR: balasan AI tidak bisa diurai");
+    return res.status(502).json({
+      error: aiFinishReason === "MAX_TOKENS"
+        ? "Dokumen terlalu panjang untuk dibaca sekaligus — hasil AI terpotong. Tidak ada data yang diubah. Pecah dokumen menjadi beberapa berkas lalu coba lagi."
+        : "Hasil pembacaan AI tidak bisa diurai. Tidak ada data yang diubah. Coba jalankan OCR sekali lagi.",
+    });
+  }
+  if (!payload) {
+    logger.warn({ finishReason: aiFinishReason, contractId: contract0.id }, "OCR: AI tidak mengembalikan teks");
+    return res.status(422).json({ error: "Tidak ada teks yang terbaca dari dokumen ini (kosong, buram, atau bukan dokumen teks). Tidak ada data yang diubah." });
+  }
+
+  // Panggilan AI bisa memakan puluhan detik — ambil ulang kontrak & periksa
+  // status TERBARU sebelum menulis (mungkin sudah diajukan/dikunci/dihapus).
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
-  if (!contract.masterPdfUrl) {
-    return res.status(400).json({ error: "Kontrak ini tidak memiliki dokumen upload untuk di-OCR" });
+  const canWriteClauses = ocrCanWriteClauses(contract, req.user!);
+  if (wantOverwrite && !canWriteClauses) {
+    return res.status(409).json({ error: "Status dokumen berubah selama OCR berjalan, pasal tidak ditimpa dan tidak ada data yang diubah. Muat ulang halaman lalu coba lagi." });
   }
-  const filePath = path.join(uploadDir, path.basename(contract.masterPdfUrl));
-  if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: "Berkas dokumen tidak ditemukan di server" });
-  }
+  const hadClauses = (contract.clauses || []).length > 0;
+  // Pasal hanya ditulis bila diizinkan DAN (diminta menimpa ATAU pasal masih kosong).
+  const writeClauses = canWriteClauses && (wantOverwrite || !hadClauses);
 
-  const hasRealKey = !!process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY";
-  let ocrResult: { fullText: string; clauses: { title: string; content: string }[]; simulated: boolean } | null = null;
-  let ocrFailureReason = "";
-
-  if (hasRealKey) {
-    try {
-      const ext = path.extname(filePath).toLowerCase();
-      const mime = ext === ".pdf" ? "application/pdf" : ext === ".png" ? "image/png" : "image/jpeg";
-      const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
-        contents: [
-          { inlineData: { mimeType: mime, data: fs.readFileSync(filePath).toString("base64") } },
-          {
-            text: `Lakukan OCR penuh pada dokumen kontrak ini, lalu strukturkan menjadi pasal-pasal.
-            Balas JSON: { "fullText": "seluruh teks dokumen", "clauses": [ { "title": "Judul Pasal", "content": "Isi pasal" } ] }.
-            Jika dokumen tidak memiliki struktur pasal, bagi ke bagian-bagian logis dengan judul deskriptif.`,
-          },
-        ],
-        config: { responseMimeType: "application/json" },
+  if (writeClauses) {
+    if (hadClauses) {
+      // Cadangkan pasal lama ke Riwayat Versi sebelum ditimpa (pola yang sama
+      // dengan PUT /api/contracts/:id) supaya bisa dipulihkan.
+      const verNo = (db.versions as ContractVersion[]).filter((v) => v.contractId === contract.id && v.kind !== "document").length + 1;
+      (db.versions as ContractVersion[]).push({
+        id: "ver-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6) + "-ocr",
+        tenantId: contract.tenantId,
+        contractId: contract.id,
+        version: verNo,
+        title: contract.title,
+        variables: contract.variables,
+        clauses: contract.clauses,
+        updatedAt: contract.updatedAt,
+        updatedBy: req.user!.name,
+        comment: "Cadangan otomatis — pasal ditimpa hasil OCR",
       });
-      const parsed = parseAiJson(response.text);
-      if (parsed.fullText || (parsed.clauses && parsed.clauses.length)) {
-        ocrResult = { fullText: parsed.fullText || "", clauses: parsed.clauses || [], simulated: false };
-      }
-    } catch (err) {
-      logger.warn({ err }, "Gemini OCR failed, falling back to simulation mode");
-      ocrFailureReason = String((err as any)?.message || err).slice(0, 200);
     }
-  }
-
-  if (!ocrResult) {
-    // Fallback simulasi: susun teks dari metadata kontrak yang sudah dikenal,
-    // dengan penanda jelas bahwa ini bukan hasil pembacaan dokumen asli.
-    // Sebabnya HARUS jujur: dulu selalu tertulis "GEMINI_API_KEY belum
-    // dikonfigurasi" walau key-nya terpasang dan yang gagal sebenarnya
-    // panggilan/parsing AI — menyesatkan saat menelusuri masalah.
-    const fileName = path.basename(contract.masterPdfUrl);
-    const reasonLabel = !hasRealKey
-      ? "GEMINI_API_KEY belum dikonfigurasi"
-      : `pembacaan AI gagal — ${ocrFailureReason || "penyebab tidak diketahui"}`;
-    ocrResult = {
-      simulated: true,
-      fullText: `[HASIL OCR SIMULASI — ${reasonLabel}]\nBerkas: ${fileName}\nDokumen: ${contract.title}\nPara pihak: ${contract.party1Name} dan ${contract.party2Name}\nMasa berlaku: ${contract.startDate} s/d ${contract.endDate}`,
-      clauses: [
-        { title: "Para Pihak [OCR Simulasi]", content: `Perjanjian ini dibuat antara ${contract.party1Name} selaku Pihak Pertama dan ${contract.party2Name} selaku Pihak Kedua, sebagaimana tercantum pada dokumen "${contract.title}".` },
-        { title: "Jangka Waktu [OCR Simulasi]", content: `Perjanjian berlaku sejak ${contract.startDate} sampai dengan ${contract.endDate}.` },
-        { title: "Nilai Perjanjian [OCR Simulasi]", content: `Nilai perjanjian sebesar ${contract.currency} ${Number(contract.contractValue || 0).toLocaleString("id-ID")}.` },
-        { title: "Isi Dokumen [OCR Simulasi]", content: `Teks lengkap belum dapat dibaca otomatis karena OCR AI belum aktif (GEMINI_API_KEY belum diisi). Isi asli tetap dapat dilihat pada berkas terlampir: ${fileName}. Setelah API key dikonfigurasi, jalankan ulang OCR untuk mengganti bagian ini dengan teks asli dokumen.` },
-      ],
-    };
-  }
-
-  contract.ocrText = ocrResult.fullText;
-  contract.ocrSimulated = ocrResult.simulated;
-  // Isi pasal dari hasil OCR agar Preview/Compare/Extend menampilkan teks.
-  // Jangan timpa pasal yang sudah ada kecuali diminta eksplisit.
-  if (!contract.clauses || contract.clauses.length === 0 || req.body?.overwrite) {
-    contract.clauses = ocrResult.clauses.map((c, i) => ({
+    contract.clauses = payload.clauses.map((c, i) => ({
       id: `ocr-cls-${Date.now()}-${i}`,
       title: c.title,
       content: c.content,
@@ -5398,16 +5504,22 @@ app.post("/api/contracts/:id/ocr", requireAuth, async (req: AuthedRequest, res) 
       if (contract.documentLanguage && contract.documentLanguage !== "id") contract.documentLanguage = "id";
     }
   }
+  contract.ocrText = payload.fullText;
+  contract.ocrSimulated = false;
   contract.updatedAt = new Date().toISOString();
 
   pushAudit(db, req, {
     contractId: contract.id, contractNumber: contract.contractNumber,
-    action: ocrResult.simulated ? "OCR Dokumen (Simulasi)" : "OCR Dokumen",
-    details: `Menerjemahkan dokumen upload menjadi ${contract.clauses.length} pasal teks${ocrResult.simulated ? " (mode simulasi, AI belum aktif)" : " via Gemini OCR"}`,
+    action: "OCR Dokumen",
+    details: `Membaca dokumen "${source.fileName}" via Gemini OCR (${payload.fullText.length} karakter). ${
+      writeClauses
+        ? `Pasal ${hadClauses ? "ditimpa (versi lama dicadangkan di Riwayat Versi)" : "diisi"}: ${contract.clauses.length} pasal.`
+        : "Pasal tidak diubah — hanya teks OCR yang disimpan."
+    }`,
   });
   saveDB(db);
 
-  res.json({ success: true, contract, simulated: ocrResult.simulated });
+  res.json({ success: true, contract, clausesUpdated: writeClauses });
 });
 
 // 7. VERSION CONTROL COMPARISON & HISTORI

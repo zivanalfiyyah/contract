@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { randomBytes, createHash, randomInt, timingSafeEqual } from "crypto";
+import { randomBytes, randomUUID, createHash, randomInt, timingSafeEqual } from "crypto";
 import dotenv from "dotenv";
 import {
   Clause, Variable, Template, Contract, ContractVersion, ContractStatus,
@@ -23,8 +23,12 @@ import { storeFile, fetchFile, isStorageCloudBacked } from "./storage.js";
 import { sha256 } from "./dcs/pdf-io.js";
 import {
   resolveDocumentSource, sniffFormat, extForFormat, cleanFileName, buildDocumentRef,
-  legacyDocumentRef, documentVersionsOf, readStoredDocument, contentDisposition,
+  legacyDocumentRef, documentVersionsOf, readStoredDocument, contentDisposition, DOCX_MIME,
 } from "./contract-documents.js";
+import {
+  onlyOfficeSettings, signLink, verifyLink, verifyDsRequest, isAllowedDsDownloadUrl, rewriteDsUrlToInternal, buildEditorConfig,
+} from "./onlyoffice.js";
+import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap } from "./template-docx.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
@@ -5594,7 +5598,7 @@ app.get("/api/contracts/:id/document-versions", requireAuth, (req: AuthedRequest
     // kalau LibreOffice belum ada). officeToPdfExact: true = hasilnya persis
     // tata letak asli (LibreOffice), false = teks polos (fallback, tanpa
     // tabel/gambar/format) — dipakai utk pesan info di pop-up unduhan.
-    capabilities: { docConversion: isOfficeConverterAvailable(), pdfTextEdit: true, pdfToWord: true, officeToPdf: true, officeToPdfExact: isOfficeConverterAvailable() },
+    capabilities: { onlyOffice: onlyOfficeSettings().enabled, docConversion: isOfficeConverterAvailable(), pdfTextEdit: true, pdfToWord: true, officeToPdf: true, officeToPdfExact: isOfficeConverterAvailable() },
   });
 });
 
@@ -5684,6 +5688,227 @@ app.get("/api/contracts/:id/document", requireAuth, async (req: AuthedRequest, r
   } catch (err: any) {
     logger.error({ err, contractId: contract.id }, "Gagal membaca berkas dokumen kontrak");
     res.status(err?.status || 500).json({ error: err?.message || "Gagal membaca berkas dokumen." });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ONLYOFFICE Document Server — editor .docx persis Word (lihat onlyoffice.ts).
+// ---------------------------------------------------------------------------
+// Kebijakan pasal (wajib/terlindungi) dari database — satu-satunya sumber yang dipercaya.
+function clausePolicyMap(db: any, tenantId: string): PolicyMap {
+  const out: PolicyMap = {};
+  for (const c of (db.clauses || []) as any[]) {
+    if (c.tenantId && c.tenantId !== tenantId) continue;
+    if (c.isMandatory || c.isProtected) out[c.id] = { isMandatory: !!c.isMandatory, isProtected: !!c.isProtected };
+  }
+  return out;
+}
+
+const OO_FILE_TTL = 60 * 60 * 12; // 12 jam: tautan berkas & callback hidup selama sesi edit
+
+// Konfigurasi editor utk satu versi dokumen. enabled:false => frontend memakai editor lama.
+app.get("/api/contracts/:id/onlyoffice/config", requireAuth, async (req: AuthedRequest, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.json({ enabled: false });
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (resolveDocumentSource(contract) !== "upload") return res.status(409).json({ error: "Hanya untuk kontrak hasil Upload Dokumen." });
+  if (!DOC_VIEW_STATUSES.includes(contract.status)) return res.status(403).json({ error: "Dokumen belum bisa dibuka." });
+  const versions = uploadedDocumentVersions(db, contract);
+  const current = currentDocumentVersionNumber(contract, versions);
+  const q = String(req.query.version ?? "current");
+  const wanted = q === "original" ? 0 : q === "current" ? current : Number(q);
+  const ver = versions.find((v) => v.version === wanted);
+  if (!ver?.file) return res.status(404).json({ error: `Versi dokumen ${q} tidak ditemukan.` });
+  if (ver.file.format !== "docx") return res.json({ enabled: false });
+  // Boleh mengedit hanya: versi aktif, kontrak Draft, punya izin edit, dan diminta mode edit.
+  const canEdit = req.query.mode !== "view" && wanted === current && contract.status === "Draft" && hasPerm(req, "contract.edit");
+  // Sesi baru per pembukaan editor; sesi yang sama menimpa versi yang dibuatnya sendiri.
+  const session = randomUUID();
+  const claims = { contractId: contract.id, version: wanted, userId: req.user!.id, tenantId: contract.tenantId, session };
+  const fileUrl = `${oo.appUrl}/api/onlyoffice/file/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "file" }, OO_FILE_TTL))}`;
+  const callbackUrl = `${oo.appUrl}/api/onlyoffice/callback/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "callback" }, OO_FILE_TTL))}`;
+  const editorConfig = buildEditorConfig(oo, {
+    contractId: contract.id, fileName: ver.file.fileName, version: wanted, sha256: ver.file.sha256,
+    canEdit, keyVariant: CLAUSE_OVERRIDE_ROLES.includes(req.user!.role) ? "u" : "l", user: { id: req.user!.id, name: req.user!.name }, fileUrl, callbackUrl,
+  });
+  res.json({ enabled: true, documentServerUrl: oo.publicUrl, config: editorConfig, canEdit, version: wanted });
+});
+
+// DS mengambil berkas lewat tautan bertoken (tanpa cookie login).
+app.get("/api/onlyoffice/file/:id", async (req, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(404).end();
+  const claims = verifyLink(oo, req.query.t, "file", req.params.id);
+  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
+  const db = loadDB();
+  const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+  if (!contract) return res.status(404).end();
+  const ver = uploadedDocumentVersions(db, contract).find((v) => v.version === claims.version);
+  if (!ver?.file) return res.status(404).end();
+  try {
+    let buf = await readStoredDocument(ver.file, uploadDir);
+    // Kunci pasal mengikuti peran pembuka: legal/admin boleh mengubah pasal terlindungi, staf lain terkunci.
+    const opener = (db.users as User[]).find((u) => u.id === claims.userId);
+    const policy = clausePolicyMap(db, contract.tenantId);
+    if (opener && Object.keys(policy).length) {
+      buf = await applyLocks(buf, policy, { unlockProtected: CLAUSE_OVERRIDE_ROLES.includes(opener.role) });
+    }
+    res.setHeader("Content-Type", ver.file.mimeType);
+    res.setHeader("Content-Length", buf.length);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(buf);
+  } catch (err: any) {
+    logger.error({ err, contractId: contract.id }, "ONLYOFFICE: gagal membaca berkas");
+    res.status(500).end();
+  }
+});
+
+// DS mengirim hasil edit. status 2 = siap disimpan (editor ditutup), 6 = simpan paksa (Ctrl+S / autosave).
+app.post("/api/onlyoffice/callback/:id", async (req, res) => {
+  const oo = onlyOfficeSettings();
+  const fail = (msg: string, code = 1) => res.json({ error: code, message: msg });
+  if (!oo.enabled) return fail("ONLYOFFICE tidak aktif");
+  const claims = verifyLink(oo, req.query.t, "callback", req.params.id);
+  if (!claims) return res.status(401).json({ error: 1, message: "Tautan tidak valid atau kedaluwarsa." });
+  const ds = verifyDsRequest(oo, req.headers, req.body);
+  if (!ds) return res.status(403).json({ error: 1, message: "Tanda tangan Document Server tidak valid." });
+  const status = Number(ds.status);
+  if (status !== 2 && status !== 6) {
+    if (status === 3 || status === 7) logger.error({ contractId: claims.contractId, status }, "ONLYOFFICE: DS gagal menyimpan dokumen");
+    return res.json({ error: 0 });
+  }
+  if (!isAllowedDsDownloadUrl(oo, ds.url)) return fail("Alamat hasil edit tidak diizinkan");
+  try {
+    const dl = await fetch(rewriteDsUrlToInternal(oo, ds.url));
+    if (!dl.ok) return fail(`Gagal mengunduh hasil edit (${dl.status})`);
+    let buf = Buffer.from(await dl.arrayBuffer());
+    if (buf.length > 40 * 1024 * 1024) return fail("Berkas hasil edit terlalu besar");
+    if (sniffFormat(buf, "x.docx") !== "docx") return fail("Hasil edit bukan berkas Word yang valid");
+
+    const pre = loadDB();
+    const c0 = (pre.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+    if (!c0) return fail("Kontrak tidak ditemukan");
+    if (c0.status !== "Draft") return fail("Dokumen hanya bisa diubah selagi kontrak berstatus Draft.");
+    // Penjaga pasal wajib/terlindungi (lapis penentu — kunci di editor hanya lapis pertama).
+    const saver = (pre.users as User[]).find((u) => u.id === claims.userId && u.active);
+    if (!saver) return fail("Pengguna tidak aktif");
+    const policy0 = clausePolicyMap(pre, c0.tenantId);
+    if (Object.keys(policy0).length) {
+      const vers0 = uploadedDocumentVersions(pre, c0);
+      const cur0 = vers0.find((v) => v.version === currentDocumentVersionNumber(c0, vers0));
+      if (cur0?.file) {
+        const baseline = await readStoredDocument(cur0.file, uploadDir);
+        const violations = await checkTemplateEdit({ baseline, edited: buf, policy: policy0, canOverride: CLAUSE_OVERRIDE_ROLES.includes(saver.role) });
+        if (violations.length) {
+          logger.warn({ contractId: c0.id, userId: saver.id, violations }, "ONLYOFFICE: penyimpanan ditolak (pasal wajib/terlindungi)");
+          return fail(violations.map((v) => v.message).join(" "));
+        }
+      }
+      // Simpan dengan kunci lengkap supaya pembuka berikutnya (staf biasa) kembali terkunci.
+      buf = await applyLocks(buf, policy0, { unlockProtected: false });
+    }
+    const key = `contractdoc-${claims.contractId.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
+    const stored = await storeFile(buf, key, DOCX_MIME);
+
+    const db = loadDB();
+    const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+    if (!contract) return fail("Kontrak tidak ditemukan");
+    const user = (db.users as User[]).find((u) => u.id === claims.userId && u.active);
+    if (!user) return fail("Pengguna tidak aktif");
+    const actor = { user: stripUser(user), ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest;
+    const versions = uploadedDocumentVersions(db, contract);
+    const current = currentDocumentVersionNumber(contract, versions);
+    const currentVer = versions.find((v) => v.version === current);
+    const fileName = currentVer?.file?.fileName || "dokumen.docx";
+    const file = buildDocumentRef(buf, stored, fileName, "docx", user.name);
+    if (currentVer?.file && currentVer.file.sha256 === file.sha256) return res.json({ error: 0 }); // tidak ada perubahan isi
+
+    if (currentVer && currentVer.editSession === claims.session) {
+      // Simpanan berikutnya di sesi yang sama: perbarui versi yang dibuat sesi ini, bukan menumpuk versi baru.
+      currentVer.file = file;
+      currentVer.updatedAt = new Date().toISOString();
+      contract.currentDocument = file;
+      contract.updatedAt = currentVer.updatedAt;
+    } else {
+      if (current !== claims.version) return fail(`Dokumen sudah diperbarui ke versi ${current} oleh pengguna lain.`);
+      const ver = pushDocumentVersion(db, actor, contract, file, {
+        comment: "Diedit di editor Word (ONLYOFFICE)", basedOnVersion: claims.version, editMethod: "onlyoffice",
+      });
+      ver.editSession = claims.session;
+      pushAudit(db, actor, {
+        contractId: contract.id, contractNumber: contract.contractNumber, action: "Save Document Version",
+        details: `Menyimpan dokumen versi ${ver.version} (dari versi ${claims.version}, metode onlyoffice): "${file.fileName}" · SHA-256 ${file.sha256.slice(0, 16)}… — original tetap utuh.`,
+      });
+    }
+    saveDB(db);
+    res.json({ error: 0 });
+  } catch (err: any) {
+    logger.error({ err, contractId: claims.contractId }, "ONLYOFFICE: gagal menyimpan hasil edit");
+    fail(err?.message || "Gagal menyimpan");
+  }
+});
+
+// Ubah kontrak "Buat dari Template" menjadi dokumen Word (.docx) yang diedit di ONLYOFFICE.
+// Searah: setelah ini kontrak bersumber "upload" (berkas .docx = dokumen utama); data pasal/variabel
+// di kontrak tetap tersimpan, tetapi tidak lagi dipakai untuk tampilan. Narasi pembuka & kalimat
+// penutup pembuka dirakit klien (butuh pengaturan perusahaan, kategori, dst) lalu dikirim ke sini.
+app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(409).json({ error: "Editor Word (ONLYOFFICE) belum diaktifkan di server ini." });
+  const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max) : "");
+  const opening = str(req.body?.opening, 30000);
+  const closing = str(req.body?.closing, 5000);
+  const tokens: Record<string, string> = {};
+  if (req.body?.tokens && typeof req.body.tokens === "object") {
+    for (const [k, v] of Object.entries(req.body.tokens as Record<string, unknown>).slice(0, 300)) {
+      if (typeof v === "string") tokens[k.slice(0, 80)] = v.slice(0, 2000);
+    }
+  }
+  const pre = loadDB();
+  const c0 = findOwnedContract(pre, req, req.params.id);
+  if (!c0) return res.status(404).json({ error: "Contract not found" });
+  if (resolveDocumentSource(c0) !== "template") return res.status(409).json({ error: "Kontrak ini sudah berupa dokumen Word/upload." });
+  if (c0.status !== "Draft") return res.status(400).json({ error: "Hanya kontrak berstatus Draft yang bisa diubah ke editor Word." });
+  if (c0.documentLanguage === "bilingual") return res.status(409).json({ error: "Dokumen dua bahasa (bilingual) belum didukung di editor Word." });
+  const en = c0.documentLanguage === "en";
+  const policy = clausePolicyMap(pre, c0.tenantId);
+  const clauses = [...(c0.clauses || [])].sort((a, b) => a.order - b.order).map((cl) => ({
+    id: cl.id,
+    title: (en && cl.titleEn) || cl.title,
+    content: (en && cl.contentEn) || cl.content,
+    isMandatory: !!policy[cl.id]?.isMandatory,
+    isProtected: !!policy[cl.id]?.isProtected,
+  }));
+  try {
+    const buf = await buildTemplateDocx({
+      title: (en && c0.titleEn) || c0.title,
+      docType: String((en && c0.docTypeEn) || c0.docType || (en ? "Cooperation Agreement Letter" : "Surat Perjanjian Kerjasama")).toUpperCase(),
+      numberLine: `${en ? "NUMBER" : "NOMOR"}: ${c0.contractNumber}`,
+      opening, closing, clauses,
+      values: { ...(c0.variables || {}), ...tokens },
+    });
+    const fileName = cleanFileName(((en && c0.titleEn) || c0.title) + ".docx", "dokumen.docx");
+    const key = `contractdoc-${c0.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
+    const stored = await storeFile(buf, key, DOCX_MIME);
+    const db = loadDB();
+    const contract = findOwnedContract(db, req, req.params.id);
+    if (!contract) return res.status(404).json({ error: "Contract not found" });
+    if (resolveDocumentSource(contract) !== "template" || contract.status !== "Draft") return res.status(409).json({ error: "Status kontrak berubah; muat ulang halaman." });
+    const file = buildDocumentRef(buf, stored, fileName.endsWith(".docx") ? fileName : fileName + ".docx", "docx", req.user!.name);
+    const ver = pushDocumentVersion(db, req, contract, file, {
+      comment: "Dibuat dari template — diedit di editor Word", basedOnVersion: 0, editMethod: "converted",
+    });
+    pushAudit(db, req, {
+      contractId: contract.id, contractNumber: contract.contractNumber, action: "Convert To Word",
+      details: `${req.user!.name} mengubah kontrak template menjadi dokumen Word (${clauses.length} pasal) · SHA-256 ${file.sha256.slice(0, 16)}…`,
+    });
+    saveDB(db);
+    res.json({ success: true, contract, version: ver });
+  } catch (err: any) {
+    logger.error({ err, contractId: req.params.id }, "Gagal mengubah kontrak template ke Word");
+    res.status(500).json({ error: err?.message || "Gagal membuat dokumen Word." });
   }
 });
 

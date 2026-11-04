@@ -34,6 +34,19 @@ export interface DocxModel {
   xml: XMLDocument;
   /** <w:p> di body dokumen, urut dokumen (termasuk yang di dalam tabel). */
   paragraphs: Element[];
+  /**
+   * word/numbering.xml (definisi list). null = berkas tidak ada. Dibaca supaya
+   * list BARU (hasil paste) bisa ditambahkan tanpa merusak list yang sudah ada.
+   */
+  numbering?: XMLDocument | null;
+  /** numbering.xml ada tapi tidak bisa dibaca -> list baru TIDAK dibuat (jangan menimpanya). */
+  numberingBroken?: boolean;
+  /** numbering.xml dibuat dari nol (perlu didaftarkan di [Content_Types] & rels saat simpan). */
+  numberingIsNew?: boolean;
+  /** numbering.xml diubah -> harus ditulis ulang saat simpan. */
+  numberingDirty?: boolean;
+  /** Cache definisi list yang dibuat dalam sesi ini. */
+  numState?: { bullet?: number; decimalAbs?: number };
 }
 
 type Seg =
@@ -104,7 +117,15 @@ export async function loadDocx(buf: ArrayBuffer): Promise<DocxModel> {
   const body = xml.getElementsByTagNameNS(W_NS, "body")[0];
   if (!body) throw new Error("Berkas .docx tidak punya body dokumen.");
   const paragraphs = Array.from(body.getElementsByTagNameNS(W_NS, "p")).filter((p) => !insideTextbox(p, body));
-  return { zip, xml, paragraphs };
+  let numbering: XMLDocument | null = null;
+  let numberingBroken = false;
+  const numEntry = zip.file("word/numbering.xml");
+  if (numEntry) {
+    const doc = new DOMParser().parseFromString(await numEntry.async("string"), "application/xml");
+    if (doc.getElementsByTagName("parsererror").length || !doc.documentElement) numberingBroken = true;
+    else numbering = doc;
+  }
+  return { zip, xml, paragraphs, numbering, numberingBroken };
 }
 
 // ---- Normalisasi & ekstraksi teks dari DOM hasil render --------------------
@@ -152,6 +173,34 @@ function styleFontInfo(el: Element | null, host: Element): { font: string; sizeH
   return { font: firstFontFamily(cs), sizeHp: pxToHalfPt(cs.fontSize) };
 }
 
+/** Warna teks aktif pada sebuah node sebagai hex 6 digit huruf besar tanpa "#" ("" kalau tak terbaca). */
+function styleColor(el: Element | null, host: Element): string {
+  const c = getComputedStyle((el as HTMLElement) || (host as HTMLElement)).color || "";
+  const m = /^rgba?\(\s*(\d{1,3})\s*[, ]\s*(\d{1,3})\s*[, ]\s*(\d{1,3})/.exec(c.trim());
+  if (!m) return "";
+  return [m[1], m[2], m[3]].map((n) => Math.min(255, parseInt(n, 10)).toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
+/**
+ * Gaya karakter yang diwarisi sebuah <p> POLOS (tanpa class gaya dokumen) di tempat
+ * yang sama dgn `el`. Paragraf baru hasil paste tidak membawa class gaya docx-preview,
+ * jadi teks tanpa format eksplisit terbaca bergaya "bawaan aplikasi" — bukan gaya
+ * dokumen. Nilai ini dipakai utk mengenalinya supaya TIDAK ditulis ke .docx.
+ */
+export function defaultCharStyle(el: HTMLElement): { font: string; size: number; color: string } | undefined {
+  const parent = el.parentElement;
+  if (!parent) return undefined;
+  const probe = document.createElement("p");
+  probe.textContent = "x";
+  parent.appendChild(probe);
+  try {
+    const rc = renderedChars(probe);
+    return { font: rc.fonts[0], size: rc.sizes[0], color: rc.colors[0] };
+  } finally {
+    parent.removeChild(probe);
+  }
+}
+
 /** Rasio line-height thd font-size ("normal"/tanpa unit eksplisit -> dianggap 1). */
 export function renderedLineSpacing(el: HTMLElement): number {
   const cs = getComputedStyle(el);
@@ -168,35 +217,38 @@ export function renderedLineSpacing(el: HTMLElement): number {
  * Teks + atribut per karakter sebuah <p> hasil render.
  * <br> -> "\n", tab-stop docx-preview -> "\t", nbsp -> spasi.
  */
-export function renderedChars(el: Element): { text: string; attrs: number[]; fonts: string[]; sizes: number[] } {
+export function renderedChars(el: Element): { text: string; attrs: number[]; fonts: string[]; sizes: number[]; colors: string[] } {
   let text = "";
   const attrs: number[] = [];
   const fonts: string[] = [];
   const sizes: number[] = [];
-  const push = (s: string, a: number, fi: { font: string; sizeHp: number }) => {
+  const colors: string[] = [];
+  const push = (s: string, a: number, fi: { font: string; sizeHp: number }, color: string) => {
     for (const ch of s) {
       if (ch === "\u200b" || ch === "\ufeff") continue;
       text += ch === "\u00a0" ? " " : ch;
       attrs.push(a);
       fonts.push(fi.font);
       sizes.push(fi.sizeHp);
+      colors.push(color);
     }
   };
   const walk = (n: Node) => {
-    if (n.nodeType === Node.TEXT_NODE) { push((n as Text).data, styleAttrs(n.parentElement, el), styleFontInfo(n.parentElement, el)); return; }
+    if (n.nodeType === Node.TEXT_NODE) { push((n as Text).data, styleAttrs(n.parentElement, el), styleFontInfo(n.parentElement, el), styleColor(n.parentElement, el)); return; }
     if (n.nodeType !== Node.ELEMENT_NODE) return;
     const e = n as HTMLElement;
     if (e.tagName === "BR") {
       const a = attrs.length ? attrs[attrs.length - 1] : styleAttrs(e.parentElement, el);
       const fi = fonts.length ? { font: fonts[fonts.length - 1], sizeHp: sizes[sizes.length - 1] } : styleFontInfo(e.parentElement, el);
-      push("\n", a, fi);
+      const col = colors.length ? colors[colors.length - 1] : styleColor(e.parentElement, el);
+      push("\n", a, fi, col);
       return;
     }
-    if (e.classList.contains("docx-tab-stop")) { push("\t", styleAttrs(e, el), styleFontInfo(e, el)); return; }
+    if (e.classList.contains("docx-tab-stop")) { push("\t", styleAttrs(e, el), styleFontInfo(e, el), styleColor(e, el)); return; }
     e.childNodes.forEach(walk);
   };
   el.childNodes.forEach(walk);
-  return { text, attrs, fonts, sizes };
+  return { text, attrs, fonts, sizes, colors };
 }
 
 /** Teks sebuah <p> hasil render (lihat renderedChars). */
@@ -211,7 +263,7 @@ export function renderedAlign(el: HTMLElement): string {
 
 export interface ParagraphBinding {
   el: HTMLElement; index: number; original: string; attrs: number[]; align: string;
-  fonts: string[]; sizes: number[]; lineSpacing: number;
+  fonts: string[]; sizes: number[]; lineSpacing: number; colors: string[];
 }
 
 /**
@@ -237,7 +289,7 @@ export function bindRenderedParagraphs(container: HTMLElement, model: DocxModel)
     if (found === -1) continue;
     bindings.push({
       el, index: found, original: rc.text, attrs: rc.attrs, align: renderedAlign(el),
-      fonts: rc.fonts, sizes: rc.sizes, lineSpacing: renderedLineSpacing(el),
+      fonts: rc.fonts, sizes: rc.sizes, lineSpacing: renderedLineSpacing(el), colors: rc.colors,
     });
     j = found + 1;
   }
@@ -574,6 +626,22 @@ export function setRangeSize(xml: XMLDocument, p: Element, s: number, e: number,
   }
 }
 
+/** Set warna teks eksplisit (hex 6 digit tanpa "#") pada rentang [s, e) paragraf. */
+export function setRangeColor(xml: XMLDocument, p: Element, s: number, e: number, hex: string) {
+  if (e <= s || !/^[0-9A-Fa-f]{6}$/.test(hex)) return;
+  splitRunAt(xml, p, s);
+  splitRunAt(xml, p, e);
+  const runs = new Set<Element>();
+  for (const seg of segmentsOf(p)) {
+    if (seg.start >= s && seg.start + seg.len <= e) { const r = runOf(seg.el); if (r) runs.add(r); }
+  }
+  for (const r of runs) {
+    const el = setOrderedChild(xml, ensureRPr(xml, r), "color", RPR_ORDER, hex.toUpperCase());
+    // Warna tema (themeColor/Shade/Tint) menimpa w:val — buang supaya warna eksplisit yang berlaku.
+    for (const a of ["themeColor", "themeShade", "themeTint"]) el.removeAttributeNS(W_NS, a);
+  }
+}
+
 /**
  * Terapkan format karakter: bandingkan atribut lama vs baru, dengan
  * penyelarasan teks lama->baru lewat diff. Hanya karakter yang atributnya
@@ -665,6 +733,168 @@ function applySizeChanges(xml: XMLDocument, p: Element, oldText: string, newText
   }
 }
 
+/** Terapkan perubahan warna teks, pola sama dgn applyFontChanges (hanya yang BERUBAH yang ditulis). */
+function applyColorChanges(xml: XMLDocument, p: Element, oldText: string, newText: string, oldColors: string[], newColors: string[]) {
+  const want: (string | null)[] = new Array(newText.length).fill(null);
+  let io = 0, inew = 0;
+  for (const part of diffChars(oldText, newText)) {
+    const n = part.value.length;
+    if (part.removed) { io += n; continue; }
+    if (part.added) {
+      const inherit = io > 0 ? oldColors[io - 1] : oldColors[0];
+      for (let k = 0; k < n; k++) if ((newColors[inew + k] ?? inherit) !== inherit) want[inew + k] = newColors[inew + k];
+      inew += n;
+      continue;
+    }
+    for (let k = 0; k < n; k++) if (newColors[inew + k] !== oldColors[io + k]) want[inew + k] = newColors[inew + k];
+    io += n; inew += n;
+  }
+  let k = 0;
+  while (k < want.length) {
+    if (want[k] === null) { k++; continue; }
+    const v = want[k]!;
+    let e = k + 1;
+    while (e < want.length && want[e] === v) e++;
+    if (v) setRangeColor(xml, p, k, e, v);
+    k = e;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// List Word sungguhan (word/numbering.xml + w:numPr)
+//
+// Paste list di editor upload menghasilkan paragraf berpenanda (lihat
+// paste-clean.ts, mode "flat"). Saat simpan, penanda dibuang dan paragraf diberi
+// numPr yang menunjuk ke definisi list di numbering.xml. Definisi dibuat sendiri
+// (bullet + desimal, 9 level) dan ditambahkan di AKHIR numbering.xml tanpa
+// menyentuh definisi yang sudah ada. List bernomor baru selalu mulai dari 1
+// (satu w:num per list + startOverride).
+// ---------------------------------------------------------------------------
+export interface ListSpec { kind: "bullet" | "decimal"; level: number; id: string; prefixLen: number }
+
+const NUMBERING_CT = "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml";
+const NUMBERING_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering";
+
+function listsSupported(model: DocxModel): boolean {
+  return !model.numberingBroken;
+}
+
+function ensureNumbering(model: DocxModel): XMLDocument {
+  if (!model.numbering) {
+    model.numbering = new DOMParser().parseFromString(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering xmlns:w="${W_NS}"/>`, "application/xml");
+    model.numberingIsNew = true;
+  }
+  return model.numbering;
+}
+
+function maxAttrOf(root: Element, local: string, attr: string): number {
+  let max = -1;
+  for (const c of Array.from(root.children)) {
+    if (!isW(c, local)) continue;
+    const v = parseInt(c.getAttributeNS(W_NS, attr) || c.getAttribute(`w:${attr}`) || "", 10);
+    if (!isNaN(v) && v > max) max = v;
+  }
+  return max;
+}
+
+function lvlXml(kind: "bullet" | "decimal", i: number): string {
+  const left = 720 * (i + 1);
+  const ind = `<w:pPr><w:ind w:left="${left}" w:hanging="360"/></w:pPr>`;
+  if (kind === "bullet") {
+    const ch = ["•", "◦", "▪"][i % 3];
+    return `<w:lvl w:ilvl="${i}"><w:start w:val="1"/><w:numFmt w:val="bullet"/><w:lvlText w:val="${ch}"/><w:lvlJc w:val="left"/>${ind}</w:lvl>`;
+  }
+  // Semua level angka desimal: yang ditempel hanya list angka ("1.") — di level bersarang pun
+  // tetap tampil "1." seperti di sumbernya (bukan "a." ala list bertingkat Word).
+  const fmt = "decimal";
+  return `<w:lvl w:ilvl="${i}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/><w:lvlText w:val="%${i + 1}."/><w:lvlJc w:val="left"/>${ind}</w:lvl>`;
+}
+
+function importXml(xml: XMLDocument, fragment: string): Element {
+  const parsed = new DOMParser().parseFromString(fragment, "application/xml");
+  return xml.importNode(parsed.documentElement, true) as Element;
+}
+
+function addAbstractNum(model: DocxModel, kind: "bullet" | "decimal"): number {
+  const xml = ensureNumbering(model);
+  const root = xml.documentElement;
+  const id = maxAttrOf(root, "abstractNum", "abstractNumId") + 1;
+  const lvls = Array.from({ length: 9 }, (_, i) => lvlXml(kind, i)).join("");
+  const node = importXml(xml, `<w:abstractNum xmlns:w="${W_NS}" w:abstractNumId="${id}"><w:multiLevelType w:val="hybridMultilevel"/>${lvls}</w:abstractNum>`);
+  // Skema: semua w:abstractNum harus sebelum w:num.
+  const firstNum = Array.from(root.children).find((c) => isW(c, "num"));
+  root.insertBefore(node, firstNum || null);
+  model.numberingDirty = true;
+  return id;
+}
+
+function addNum(model: DocxModel, abstractId: number, restart: boolean): number {
+  const xml = ensureNumbering(model);
+  const root = xml.documentElement;
+  // numId 0 dicadangkan Word utk "tanpa penomoran" — id pertama harus 1.
+  const id = Math.max(1, maxAttrOf(root, "num", "numId") + 1);
+  const ov = restart
+    ? Array.from({ length: 9 }, (_, i) => `<w:lvlOverride w:ilvl="${i}"><w:startOverride w:val="1"/></w:lvlOverride>`).join("")
+    : "";
+  const node = importXml(xml, `<w:num xmlns:w="${W_NS}" w:numId="${id}"><w:abstractNumId w:val="${abstractId}"/>${ov}</w:num>`);
+  // w:numIdMacAtCleanup (bila ada) harus tetap yang terakhir.
+  const tail = Array.from(root.children).find((c) => isW(c, "numIdMacAtCleanup"));
+  root.insertBefore(node, tail || null);
+  model.numberingDirty = true;
+  return id;
+}
+
+/** numId untuk sebuah list baru; null kalau numbering.xml tak bisa dipakai. */
+function numIdFor(model: DocxModel, spec: ListSpec, cache: Map<string, number>): number | null {
+  if (!listsSupported(model)) return null;
+  model.numState = model.numState || {};
+  if (spec.kind === "bullet") {
+    if (model.numState.bullet === undefined) model.numState.bullet = addNum(model, addAbstractNum(model, "bullet"), false);
+    return model.numState.bullet;
+  }
+  const cached = cache.get(spec.id);
+  if (cached !== undefined) return cached;
+  if (model.numState.decimalAbs === undefined) model.numState.decimalAbs = addAbstractNum(model, "decimal");
+  const n = addNum(model, model.numState.decimalAbs, true);
+  cache.set(spec.id, n);
+  return n;
+}
+
+/** Jadikan paragraf butir list (numPr); indentasi mengikuti definisi list, bukan w:ind lama. */
+export function setParagraphList(xml: XMLDocument, p: Element, numId: number, level: number) {
+  const pPr = ensurePPr(xml, p);
+  for (const tag of ["numPr", "ind"]) { const e = childW(pPr, tag); if (e) pPr.removeChild(e); }
+  const numPr = xml.createElementNS(W_NS, "w:numPr");
+  const il = xml.createElementNS(W_NS, "w:ilvl");
+  il.setAttributeNS(W_NS, "w:val", String(Math.max(0, Math.min(8, level))));
+  const ni = xml.createElementNS(W_NS, "w:numId");
+  ni.setAttributeNS(W_NS, "w:val", String(numId));
+  numPr.appendChild(il);
+  numPr.appendChild(ni);
+  const idx = PPR_ORDER.indexOf("numPr");
+  const before = Array.from(pPr.children).find((c) => c.namespaceURI === W_NS && PPR_ORDER.indexOf(c.localName) > idx);
+  pPr.insertBefore(numPr, before || null);
+}
+
+/** Daftarkan numbering.xml yang baru dibuat di [Content_Types].xml dan word/_rels/document.xml.rels. */
+async function registerNumberingPart(zip: JSZip) {
+  const ctFile = zip.file("[Content_Types].xml");
+  if (ctFile) {
+    const ct = await ctFile.async("string");
+    if (!/PartName="\/word\/numbering\.xml"/.test(ct)) {
+      zip.file("[Content_Types].xml", ct.replace("</Types>", `<Override PartName="/word/numbering.xml" ContentType="${NUMBERING_CT}"/></Types>`));
+    }
+  }
+  const relsPath = "word/_rels/document.xml.rels";
+  const relsFile = zip.file(relsPath);
+  const rels = relsFile ? await relsFile.async("string") : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>`;
+  if (/Target="numbering\.xml"/.test(rels)) return;
+  let max = 0;
+  for (const m of rels.matchAll(/Id="rId(\d+)"/g)) max = Math.max(max, parseInt(m[1], 10));
+  zip.file(relsPath, rels.replace("</Relationships>", `<Relationship Id="rId${max + 1}" Type="${NUMBERING_REL}" Target="numbering.xml"/></Relationships>`));
+}
+
 function paragraphIsRemovable(p: Element): boolean {
   if (p.getElementsByTagNameNS(W_NS, "sectPr").length) return false;
   for (const tag of ["drawing", "pict", "object", "fldChar", "fldSimple"]) if (p.getElementsByTagNameNS(W_NS, tag).length) return false;
@@ -680,6 +910,7 @@ function paragraphIsRemovable(p: Element): boolean {
 function makeParagraph(
   xml: XMLDocument, anchor: Element, text: string, attrs: number[], baseAttr: number,
   align?: string, fonts?: string[], baseFont?: string, sizes?: number[], baseSize?: number, lineSpacing?: number,
+  colors?: string[], baseColor?: string, list?: { numId: number; level: number },
 ): Element {
   const p = xml.createElementNS(W_NS, "w:p");
   const aPPr = childW(anchor, "pPr");
@@ -732,19 +963,39 @@ function makeParagraph(
       k3 = e;
     }
   }
+  if (colors && baseColor !== undefined) {
+    let k4 = 0;
+    while (k4 < colors.length) {
+      if (colors[k4] === baseColor || !colors[k4]) { k4++; continue; }
+      const v = colors[k4];
+      let e = k4 + 1;
+      while (e < colors.length && colors[e] === v) e++;
+      setRangeColor(xml, p, k4, e, v);
+      k4 = e;
+    }
+  }
+  if (list) setParagraphList(xml, p, list.numId, list.level);
   return p;
 }
 
 export interface EditedParagraph {
   index: number; oldText: string; newText: string; oldAttrs: number[]; newAttrs: number[]; oldAlign: string; newAlign: string;
   oldFonts: string[]; newFonts: string[]; oldSizes: number[]; newSizes: number[]; oldLineSpacing: number; newLineSpacing: number;
+  oldColors?: string[]; newColors?: string[];
 }
-export interface NewParagraph { text: string; attrs: number[]; align?: string; fonts: string[]; sizes: number[]; lineSpacing?: number }
+export interface NewParagraph {
+  text: string; attrs: number[]; align?: string; fonts: string[]; sizes: number[]; lineSpacing?: number;
+  colors?: string[];
+  /** Butir list hasil paste: awal `prefixLen` karakter adalah penanda ("• "/"1. ") yang dibuang saat simpan. */
+  list?: ListSpec;
+  /** Gaya "tanpa format" di tempat paragraf ini (lihat defaultCharStyle) — karakter bergaya ini mewarisi gaya paragraf acuan. */
+  inherit?: { font: string; size: number; color: string };
+}
 export interface DocxEditPlan {
   edits: EditedParagraph[];
   deleted: number[];
   /** Paragraf baru; afterIndex -1 = sebelum paragraf terikat pertama. */
-  inserts: { afterIndex: number; anchorIndex: number; baseAttr: number; baseFont: string; baseSize: number; paragraphs: NewParagraph[] }[];
+  inserts: { afterIndex: number; anchorIndex: number; baseAttr: number; baseFont: string; baseSize: number; baseColor?: string; paragraphs: NewParagraph[] }[];
 }
 
 /** Terapkan rencana edit ke model (in-place). Elemen w:p lama tetap sama. */
@@ -757,21 +1008,44 @@ export function applyPlan(model: DocxModel, plan: DocxEditPlan) {
     applyAttrChanges(xml, p, e.oldText, e.newText, e.oldAttrs, e.newAttrs);
     applyFontChanges(xml, p, e.oldText, e.newText, e.oldFonts, e.newFonts);
     applySizeChanges(xml, p, e.oldText, e.newText, e.oldSizes, e.newSizes);
+    if (e.oldColors && e.newColors) applyColorChanges(xml, p, e.oldText, e.newText, e.oldColors, e.newColors);
     if (e.newAlign && e.newAlign !== e.oldAlign) setParagraphAlign(xml, p, e.newAlign);
     if (e.newLineSpacing && Math.abs(e.newLineSpacing - e.oldLineSpacing) > 0.02) setParagraphLineSpacing(xml, p, e.newLineSpacing);
   }
+  const listCache = new Map<string, number>();
   for (const ins of plan.inserts) {
     const anchor = paragraphs[ins.anchorIndex];
     if (!anchor) continue;
-    if (ins.afterIndex === -1) {
-      for (const np of ins.paragraphs) {
-        const el = makeParagraph(xml, anchor, np.text, np.attrs, ins.baseAttr, np.align, np.fonts, ins.baseFont, np.sizes, ins.baseSize, np.lineSpacing);
-        anchor.parentNode!.insertBefore(el, anchor);
+    // Butir list: buang penanda teks di awal & ganti dgn numPr — hanya kalau
+    // definisi list bisa dibuat; kalau tidak, penanda dibiarkan sbg teks biasa.
+    const build = (np: NewParagraph): Element => {
+      let { text, attrs, fonts, sizes } = np;
+      let colors = np.colors;
+      let list: { numId: number; level: number } | undefined;
+      if (np.inherit) {
+        const inh = np.inherit;
+        fonts = fonts.map((f) => (f === inh.font ? ins.baseFont : f));
+        sizes = sizes.map((s) => (s === inh.size ? ins.baseSize : s));
+        if (colors && ins.baseColor !== undefined) colors = colors.map((c) => (c === inh.color ? ins.baseColor! : c));
       }
+      const spec = np.list;
+      if (spec && spec.prefixLen > 0 && text.length >= spec.prefixLen) {
+        const numId = numIdFor(model, spec, listCache);
+        if (numId !== null) {
+          const n = spec.prefixLen;
+          text = text.slice(n); attrs = attrs.slice(n); fonts = fonts.slice(n); sizes = sizes.slice(n);
+          colors = colors?.slice(n);
+          list = { numId, level: spec.level };
+        }
+      }
+      return makeParagraph(xml, anchor, text, attrs, ins.baseAttr, np.align, fonts, ins.baseFont, sizes, ins.baseSize, np.lineSpacing, colors, ins.baseColor, list);
+    };
+    if (ins.afterIndex === -1) {
+      for (const np of ins.paragraphs) anchor.parentNode!.insertBefore(build(np), anchor);
     } else {
       let cursor: Element = paragraphs[ins.afterIndex];
       for (const np of ins.paragraphs) {
-        const el = makeParagraph(xml, anchor, np.text, np.attrs, ins.baseAttr, np.align, np.fonts, ins.baseFont, np.sizes, ins.baseSize, np.lineSpacing);
+        const el = build(np);
         cursor.parentNode!.insertBefore(el, cursor.nextSibling);
         cursor = el;
       }
@@ -788,6 +1062,12 @@ export function applyPlan(model: DocxModel, plan: DocxEditPlan) {
 export async function serializeDocx(model: DocxModel): Promise<ArrayBuffer> {
   const serialized = new XMLSerializer().serializeToString(model.xml);
   model.zip.file("word/document.xml", serialized.startsWith("<?xml") ? serialized : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${serialized}`);
+  // numbering.xml hanya ditulis ulang bila ada list baru; kalau tidak, tetap byte-per-byte seperti aslinya.
+  if (model.numbering && model.numberingDirty) {
+    const ns = new XMLSerializer().serializeToString(model.numbering);
+    model.zip.file("word/numbering.xml", ns.startsWith("<?xml") ? ns : `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n${ns}`);
+    if (model.numberingIsNew) await registerNumberingPart(model.zip);
+  }
   return model.zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" });
 }
 

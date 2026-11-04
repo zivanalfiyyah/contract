@@ -12,10 +12,12 @@ import { diffWords } from "diff";
 import DOMPurify from "dompurify";
 import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, canReviewContract, isPermAllowed, PERMISSIONS, PERM_GROUPS, MATRIX_ROLES, R as ROLE_GROUPS } from "./roles";
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
+import WordLayoutBar from "./WordLayoutBar";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
 import DigitalSignatureEditor from "./DigitalSignatureEditor";
 import { fitWithin } from "./signature-image";
+import { handlePaste, PasteOptionsOverlay } from "./paste-options";
 import {
   FileText,
   Briefcase,
@@ -2637,7 +2639,7 @@ const looksLikeHtml = (s: string) => /<[a-z][\s\S]*>/i.test(s || "");
 const escapeHtml = (s: string) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 // Tag/atribut yang diizinkan di HTML narasi — cukup untuk format teks Word-like,
 // tanpa script/iframe/dll. Dipakai saat render (DOMPurify) & saat simpan.
-const RICH_ALLOWED = { ALLOWED_TAGS: ["p", "br", "b", "strong", "i", "em", "u", "s", "span", "div", "ul", "ol", "li", "h3", "h4", "font", "table", "thead", "tbody", "tr", "td", "th", "img", "a", "hr", "blockquote"], ALLOWED_ATTR: ["style", "color", "size", "align", "src", "href", "target", "rel", "alt", "colspan", "rowspan", "contenteditable"] };
+const RICH_ALLOWED = { ALLOWED_TAGS: ["p", "br", "b", "strong", "i", "em", "u", "s", "span", "div", "ul", "ol", "li", "h3", "h4", "font", "table", "thead", "tbody", "tr", "td", "th", "img", "a", "hr", "blockquote"], ALLOWED_ATTR: ["style", "color", "size", "align", "src", "href", "target", "rel", "alt", "colspan", "rowspan", "contenteditable", "type", "start"] };
 const sanitizeRich = (html: string): string => DOMPurify.sanitize(html || "", RICH_ALLOWED as any) as unknown as string;
 // Substitusi {{Token}} lalu render HTML aman. Nilai token di-escape agar tak
 // bisa menyuntik tag lewat data kontrak.
@@ -2840,6 +2842,7 @@ function RichTextEditor({ valueHtml, onChange, tokens, minHeight = 120 }: {
         suppressContentEditableWarning
         onInput={emit}
         onBlur={emit}
+        onPaste={(e) => handlePaste(e.nativeEvent, { mode: "rich", sanitize: sanitizeRich, onChange: emit })}
         onFocus={syncFontFromSelection}
         onMouseUp={syncFontFromSelection}
         onKeyUp={syncFontFromSelection}
@@ -3291,19 +3294,10 @@ function InlineRich({ html, onSave, className, placeholder }: { html: string; on
       suppressContentEditableWarning
       data-placeholder={placeholder}
       onBlur={() => { if (ref.current) onSave(sanitizeRich(stripPaginationMarks(ref.current.innerHTML))); }}
-      onPaste={(e) => {
-        // Paste dari Word/aplikasi lain bawa font-family sendiri (mis.
-        // Calibri) menempel di tiap <span style="...">. Dibuang di sini
-        // supaya teks yang ditempel IKUT font default dokumen (Times New
-        // Roman / pilihan dropdown Font), bukan font asal sumbernya —
-        // formatting lain (bold/italic/list/dll) tetap dipertahankan.
-        e.preventDefault();
-        const html = e.clipboardData.getData("text/html");
-        const text = e.clipboardData.getData("text/plain");
-        const cleaned = html ? sanitizeRich(stripPastedFontFamily(html)) : "";
-        try { document.execCommand("styleWithCSS", false, "true"); } catch { /* noop */ }
-        document.execCommand("insertHTML", false, cleaned || text.replace(/\n/g, "<br>"));
-      }}
+      // Paste ala Word: bawaan "Ikuti Format Dokumen" (font/warna sumber dibuang,
+      // tebal/miring/list/tabel tetap), Ctrl+Shift+V = teks saja, dan popup kecil
+      // utk memilih "Format Asal" / "Teks Saja" (lihat paste-options.tsx).
+      onPaste={(e) => handlePaste(e.nativeEvent, { mode: "rich", sanitize: sanitizeRich })}
       onClick={(e) => {
         const target = e.target as HTMLElement;
         const img = target.closest("img") as HTMLImageElement | null;
@@ -8935,6 +8929,11 @@ export default function App() {
           "success",
         );
         closeCreationWizard();
+        // Kontrak dari template langsung menjadi dokumen Word (bila editor Word aktif).
+        if (data.contract && data.contract.documentSource !== "upload" && newContractForm.creationMode === "smart" && data.contract.documentLanguage !== "bilingual" && (data.contract.clauses || []).length > 0) {
+          const converted = await convertContractToWord(data.contract);
+          if (converted) setSelectedContract(converted);
+        }
         // Reset form
         setNewContractForm({
           title: "",
@@ -9129,6 +9128,13 @@ export default function App() {
       const data = await res.json();
       if (data.success) {
         showToast("Draft kontrak & versi baru berhasil disimpan!", "success");
+        // Dokumen Word: bila data sistem yang dipakai di dokumen berubah (tanggal, pihak, variabel),
+        // muat ulang editor agar server menyelaraskan isinya.
+        {
+          const before: any = contractOverride || selectedContract;
+          const dataKey = (c: any) => JSON.stringify([c?.startDate, c?.endDate, c?.party2Name, c?.party1Address, c?.party2Address, c?.variables]);
+          if (before && isUploadedDocument(data.contract) && dataKey(before) !== dataKey(data.contract)) setDocReloadKey((k) => k + 1);
+        }
         setSelectedContract(data.contract);
         setDraftSavedSnapshot(JSON.stringify(data.contract));
         // Refresh version list
@@ -9997,6 +10003,28 @@ export default function App() {
   // (lihat SignatureFormat di types.ts). showMeteraiPlaceholder ikut disetel
   // supaya data lama/klien lama tetap konsisten.
   const [signatureMenuOpen, setSignatureMenuOpen] = useState(false);
+  // Kategori tombol aksi di header detail dokumen. Satu tab aktif = hanya
+  // tombol kategori itu yang tampil (tombol "Simpan Draft Baru" selalu
+  // tampil di semua tab supaya penanda "belum disimpan" tidak tersembunyi).
+  // Pilihan terakhir diingat di localStorage.
+  type ToolbarCat = "doc" | "view" | "sign" | "review";
+  const [toolbarCat, setToolbarCatState] = useState<ToolbarCat>(() => {
+    try {
+      const v = localStorage.getItem("ct-toolbar-cat");
+      if (v === "doc" || v === "view" || v === "sign" || v === "review") return v;
+    } catch { /* noop */ }
+    return "doc";
+  });
+  const setToolbarCat = (c: ToolbarCat) => {
+    setToolbarCatState(c);
+    setSignatureMenuOpen(false);
+    try { localStorage.setItem("ct-toolbar-cat", c); } catch { /* noop */ }
+  };
+  // Tab Tampilan & Tanda Tangan hanya berlaku utk dokumen TEMPLATE; dokumen
+  // upload tampil dgn kop & layout aslinya, jadi tab itu disembunyikan dan
+  // pilihan tersimpan yg tidak berlaku jatuh ke "Dokumen".
+  const toolbarIsUpload = !!selectedContract && isUploadedDocument(selectedContract);
+  const toolbarCatEff: ToolbarCat = toolbarIsUpload && (toolbarCat === "view" || toolbarCat === "sign") ? "doc" : toolbarCat;
   const handleChangeSignatureFormat = async (format: SignatureFormat) => {
     setSignatureMenuOpen(false);
     if (!selectedContract || getSignatureFormat(selectedContract) === format) return;
@@ -13232,28 +13260,53 @@ export default function App() {
   // Template + token untuk narasi pembuka kontrak yang SEDANG dibuka
   // (selectedContract) — dipakai BERSAMA oleh render JSX (dengan bold) dan
   // pseudo-klausul teks polos di Mode Tinjau, supaya keduanya selalu sinkron.
-  const getPreambleTemplateAndTokens = () => {
+  const getPreambleTemplateAndTokens = (forContract?: Contract) => {
+    const sc = (forContract || selectedContract)!;
+    const tpl = forContract
+      ? (forContract.templateSnapshot ? { openingParagraph: forContract.templateSnapshot.openingParagraph } : templates.find((t) => t.id === forContract.templateId))
+      : selectedContractTemplate;
     // Prioritas: override PER-KONTRAK (diisi di wizard/form registrasi) >
     // Template.openingParagraph (per-dokumen) > narasi kategori (Library
     // Klausul) > narasi bawaan sistem.
     const template =
-      selectedContract!.customOpeningParagraph ||
-      selectedContractTemplate?.openingParagraph ||
-      masterData.categoryOpeningParagraphs[selectedContract!.category] ||
+      sc.customOpeningParagraph ||
+      tpl?.openingParagraph ||
+      masterData.categoryOpeningParagraphs[sc.category] ||
       DEFAULT_PREAMBLE_TEMPLATE;
     const tokens: Record<string, string> = {
-      ...selectedContract!.variables,
-      StartDate: selectedContract!.startDate
-        ? new Date(selectedContract!.startDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
-        : selectedContract!.startDate,
+      ...sc.variables,
+      StartDate: sc.startDate
+        ? new Date(sc.startDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" })
+        : sc.startDate,
       Party1Name: appSettings.companyName || "[Nama perusahaan belum diisi]",
-      Party1Address: selectedContract!.party1Address || appSettings.companyAddress || "[Alamat perusahaan belum diisi]",
+      Party1Address: sc.party1Address || appSettings.companyAddress || "[Alamat perusahaan belum diisi]",
       Party1Representative: appSettings.companyRepresentative || "[Nama perwakilan belum diisi]",
       Party1RepTitle: appSettings.companyRepresentativeTitle || "[Jabatan perwakilan belum diisi]",
-      Party2Name: selectedContract!.party2Name,
-      Party2Address: selectedContract!.party2Address || selectedContract!.variables.Address || "[Alamat belum diisi]",
+      Party2Name: sc.party2Name,
+      Party2Address: sc.party2Address || sc.variables.Address || "[Alamat belum diisi]",
     };
     return { template, tokens };
+  };
+
+  // Kontrak template otomatis dijadikan dokumen Word saat dibuat (tanpa tombol / konfirmasi).
+  // Mengembalikan kontrak hasil konversi, atau null bila editor Word tidak aktif / gagal
+  // (kontrak tetap ada dan bisa diedit lewat editor lama).
+  const convertContractToWord = async (c: Contract): Promise<Contract | null> => {
+    try {
+      const { template, tokens } = getPreambleTemplateAndTokens(c);
+      const lang = c.documentLanguage || "id";
+      const closingId = c.closingStatement || "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
+      const closingEn = c.closingStatementEn || "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
+      const res = await fetch(`/api/contracts/${c.id}/convert-to-word`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ opening: template, closing: lang === "en" ? closingEn : closingId, tokens }),
+      });
+      const data = await res.json().catch(() => ({}));
+      return res.ok && data.success ? (data.contract as Contract) : null;
+    } catch {
+      return null;
+    }
   };
 
   const renderDiffSide = (
@@ -14028,6 +14081,9 @@ export default function App() {
           dokumen manapun (lihat komentar di definisi komponennya). */}
       <ImageSelectionOverlay />
       <TableSelectionOverlay />
+      {/* Popup pilihan paste (Ikuti Format Dokumen / Format Asal / Teks Saja) —
+          global, dipakai semua editor dokumen. Lihat paste-options.tsx. */}
+      <PasteOptionsOverlay />
       {/* Toast Alert — z-[100], DI ATAS semua modal (z-50): modal disusun
           belakangan di urutan DOM, jadi kalau z-index-nya SAMA (50=50), modal
           menang dan toast tertutup di belakangnya — user tidak tahu simpan
@@ -21137,8 +21193,37 @@ export default function App() {
                   </p>
                 </div>
 
-                <div className="ct-toolbar flex flex-wrap items-center gap-2 pt-4 border-t border-slate-800/70 relative">
-                  {isContractEditable(selectedContract) && (
+                {/* Tab kategori fitur — klik satu kategori, hanya tombol miliknya
+                    yang muncul di bawah. Sengaja di LUAR .ct-toolbar supaya gaya
+                    pil `.ct-toolbar > button` tidak menimpa tab ini. */}
+                <div role="tablist" aria-label="Kategori fitur dokumen" className="flex flex-wrap items-center gap-1 pt-4 border-t border-slate-800/70">
+                  {([
+                    { k: "doc" as const, label: "Dokumen", Icon: FileText },
+                    { k: "view" as const, label: "Tampilan", Icon: Building2 },
+                    { k: "sign" as const, label: "Tanda Tangan", Icon: PenTool },
+                    { k: "review" as const, label: "Tinjau & Kirim", Icon: MessageSquare },
+                  ]).filter((c) => !toolbarIsUpload || (c.k !== "view" && c.k !== "sign")).map(({ k, label, Icon }) => {
+                    const active = toolbarCatEff === k;
+                    return (
+                      <button
+                        key={k}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => setToolbarCat(k)}
+                        className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                          active ? "bg-indigo-600 text-white shadow-md" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/60"
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="ct-toolbar flex flex-wrap items-center gap-2 pt-3 relative">
+                  {toolbarCatEff === "doc" && isContractEditable(selectedContract) && (
                     <button
                       onClick={() => handleOpenEditPartyModal(selectedContract)}
                       title="Ubah judul dokumen, jenis dokumen, tanggal, dan detail identitas Pihak Pertama/Kedua. Nomor dokumen tidak bisa diubah di sini."
@@ -21148,12 +21233,25 @@ export default function App() {
                       Edit Data Pihak &amp; Kontrak
                     </button>
                   )}
+                  {toolbarCatEff === "doc" && toolbarIsUpload && selectedContract.currentDocument?.format === "docx" && (
+                    <WordLayoutBar
+                      contract={selectedContract}
+                      showToast={showToast}
+                      onChanged={(c) => {
+                        setSelectedContract(c);
+                        setDraftSavedSnapshot(JSON.stringify(c));
+                        setDocReloadKey((k) => k + 1);
+                        fetchInitialData();
+                      }}
+                    />
+                  )}
                   {/* Ada TIGA "Bandingkan" di aplikasi ini dan dulu ketiganya
                       bernama sama persis. Nama masing-masing kini menyebut apa
                       yang dibandingkan:
                         1. di sini  — vs kontrak terakhir dari pihak yang sama
                         2. Riwayat Versi — vs versi lain dokumen yang sama
                         3. menu AI  — dua dokumen bebas dari arsip / tempelan */}
+                  {toolbarCatEff === "doc" && (
                   <button
                     onClick={handleComparePreviousContract}
                     title={`Mengadu kontrak ini dengan kontrak TERAKHIR dari ${selectedContract.party2Name || "pihak kedua yang sama"}. Untuk membandingkan antar versi dokumen ini, pakai panel Riwayat Versi.`}
@@ -21162,9 +21260,11 @@ export default function App() {
                     <ArrowLeftRight className="w-3.5 h-3.5" />
                     Bandingkan dgn Kontrak Sebelumnya
                   </button>
+                  )}
                   {/* Toggle kop/logo/meterai/bahasa hanya berlaku utk preview
                       TEMPLATE — dokumen upload tampil dgn kop & layout aslinya. */}
                   {!isUploadedDocument(selectedContract) && (<>
+                  {toolbarCatEff === "view" && (
                   <button
                     onClick={handleToggleLetterhead}
                     title="Kop surat opsional untuk kontrak kerjasama — dokumennya milik bersama dua pihak, bukan surat sepihak dari salah satu perusahaan. Mematikannya juga menghemat ruang halaman."
@@ -21177,7 +21277,8 @@ export default function App() {
                     <Building2 className="w-3.5 h-3.5" />
                     Kop Surat: {(selectedContract.showLetterhead ?? true) ? "Nyala" : "Mati"}
                   </button>
-                  {(selectedContract.showLetterhead ?? true) && (
+                  )}
+                  {toolbarCatEff === "view" && (selectedContract.showLetterhead ?? true) && (
                     <button
                       onClick={handleToggleLetterheadLogo}
                       title="Nyala/matikan GAMBAR logo di kop surat saja — nama & alamat perusahaan tetap tampil (kop jadi teks doang kalau dimatikan). Berbeda dari tombol Kop Surat di sebelah kiri yang mematikan kop seluruhnya."
@@ -21196,6 +21297,7 @@ export default function App() {
                       pilihan dirender sbg <section> selebar toolbar (bukan
                       popover melayang) supaya tidak terpotong overflow kartu
                       header & tidak kena gaya `.ct-toolbar > div`. */}
+                  {toolbarCatEff === "sign" && (
                   <button
                     onClick={() => setSignatureMenuOpen((v) => !v)}
                     aria-expanded={signatureMenuOpen}
@@ -21206,9 +21308,11 @@ export default function App() {
                     Format TTD: {SIGNATURE_FORMAT_OPTIONS.find((o) => o.value === getSignatureFormat(selectedContract))?.label}
                     <ChevronDown className={`w-3.5 h-3.5 transition-transform ${signatureMenuOpen ? "rotate-180" : ""}`} />
                   </button>
+                  )}
                   {/* TTD Digital — opsional per dokumen, mati secara bawaan.
                       Nyala: gambar tanda tangan Pihak Pertama otomatis rapi di
                       kolom TTD (semua Format TTD). Mati: kolom TTD kosong. */}
+                  {toolbarCatEff === "sign" && (
                   <button
                     onClick={handleToggleDigitalSignature}
                     aria-pressed={!!selectedContract.useDigitalSignature}
@@ -21224,8 +21328,10 @@ export default function App() {
                     <SignatureIcon className="w-3.5 h-3.5" />
                     TTD Digital: {selectedContract.useDigitalSignature ? "Nyala" : "Mati"}
                   </button>
+                  )}
                   {/* Bahasa dokumen — terjemahan AI dijalankan sekali saat
                       pertama kali butuh teks Inggris, lalu tersimpan. */}
+                  {toolbarCatEff === "view" && (
                   <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-0.5" title="Bahasa tampilan dokumen. Terjemahan dibuat otomatis oleh AI saat pertama kali dipilih.">
                     {([
                       { k: "id" as const, label: "ID" },
@@ -21248,8 +21354,9 @@ export default function App() {
                       );
                     })}
                   </div>
+                  )}
                   {/* Susunan dwibahasa — cuma relevan di mode ID+EN. */}
-                  {(selectedContract.documentLanguage || "id") === "bilingual" && (
+                  {toolbarCatEff === "view" && (selectedContract.documentLanguage || "id") === "bilingual" && (
                     <div className="flex items-center gap-1 bg-slate-900 border border-slate-800 rounded-xl p-0.5" title="Susunan dua bahasa pada dokumen.">
                       {([
                         { k: "side" as const, label: "Kiri-Kanan", tip: "Berdampingan — Indonesia di kiri, Inggris di kanan", Icon: Columns2 },
@@ -21273,6 +21380,7 @@ export default function App() {
                     </div>
                   )}
                   </>)}
+                  {toolbarCatEff === "review" && (<>
                   <button
                     onClick={handleExportPdf}
                     disabled={isExportingPdf || !isContractDownloadable(selectedContract)}
@@ -21297,10 +21405,11 @@ export default function App() {
                     <ExternalLink className="w-3.5 h-3.5" />
                     Kirim PDF (Email/WA)
                   </button>
+                  </>)}
                   {/* Server mewajibkan izin contract.edit untuk OCR. Berkas Word (.docx/.doc)
                       sudah berupa teks & tidak didukung OCR — tombol disembunyikan bila
                       berkas yang akan dibaca adalah dokumen Word kerja kontrak Upload. */}
-                  {canEditContracts && selectedContract.masterPdfUrl
+                  {toolbarCatEff === "doc" && canEditContracts && selectedContract.masterPdfUrl
                     && !(isUploadedDocument(selectedContract) && !selectedContract.activationProofKey
                       && (selectedContract.currentDocument?.format === "docx" || selectedContract.currentDocument?.format === "doc")) && (
                     <button
@@ -21332,7 +21441,7 @@ export default function App() {
                       {isDraftDirty && <span className="text-[9px] font-normal opacity-80">(ada perubahan belum disimpan)</span>}
                     </button>
                   )}
-                  {canEditContracts && isContractRenewable(selectedContract) && (
+                  {toolbarCatEff === "doc" && canEditContracts && isContractRenewable(selectedContract) && (
                     <button
                       onClick={() => handleOpenRenewModal(selectedContract)}
                       title="Muncul setelah matriks approval selesai penuh — membuat kontrak PENERUS baru, dokumen ini tetap tersimpan sbg riwayat."
@@ -21342,7 +21451,7 @@ export default function App() {
                       Perpanjang / Extend
                     </button>
                   )}
-                  {canEditContracts && isContractAmendable(selectedContract) && (
+                  {toolbarCatEff === "doc" && canEditContracts && isContractAmendable(selectedContract) && (
                     <button
                       onClick={() => handleOpenAddendumModal(selectedContract)}
                       title="Buat dokumen amandemen terpisah yang mendokumentasikan pasal yang berubah — kontrak ini tetap berlaku, tidak digantikan."
@@ -21352,7 +21461,7 @@ export default function App() {
                       Buat Addendum
                     </button>
                   )}
-                  {isInForce(selectedContract.status) && can("release.announce") && (
+                  {toolbarCatEff === "review" && isInForce(selectedContract.status) && can("release.announce") && (
                     <>
                       <button
                         onClick={() => setReleaseModalOpen(true)}
@@ -21376,7 +21485,7 @@ export default function App() {
                       dokumen — tombol "Komentar" terpisah dulu redundan (data &
                       fungsi sama) sehingga dihapus. Badge jumlah komentar terbuka
                       dipindah ke sini agar tetap terlihat sekilas. */}
-                  {canReviewDoc && (
+                  {toolbarCatEff === "review" && canReviewDoc && (
                   <button
                     onClick={() => { setReviewModeOpen(true); setActiveMarginId(null); }}
                     title="Buka dokumen dalam Mode Tinjau: kartu komentar melayang di margin kanan sejajar kalimatnya, persis fitur Comment di Microsoft Word. Di sini juga tempat membuat/menyalin Link Review Pihak Kedua."
@@ -21391,7 +21500,7 @@ export default function App() {
                     )}
                   </button>
                   )}
-                  {signatureMenuOpen && !isUploadedDocument(selectedContract) && (
+                  {toolbarCatEff === "sign" && signatureMenuOpen && !isUploadedDocument(selectedContract) && (
                     <section className="basis-full mt-1 p-3 bg-slate-900 border border-slate-800 rounded-2xl" aria-label="Pilih format tanda tangan">
                       <div className="flex items-center justify-between mb-2 px-1">
                         <p className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">Format Tanda Tangan</p>

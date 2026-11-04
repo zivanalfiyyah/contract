@@ -1,0 +1,22 @@
+{
+  "name": "Sisipkan Pasal",
+  "nameLocale": { "id": "Sisipkan Pasal", "en": "Insert Clause" },
+  "guid": "asc.{9F4C7A52-3E1B-4B7D-8C6A-2D5E7A1B0C33}",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "description": "Sisipkan pasal dari Library Klausul ke dokumen",
+      "descriptionLocale": { "id": "Sisipkan pasal dari Library Klausul ke dokumen" },
+      "url": "index.html",
+      "icons": ["icon.png", "icon@2x.png"],
+      "isViewer": false,
+      "EditorsSupport": ["word"],
+      "isVisual": true,
+      "isModal": false,
+      "isInsideMode": true,
+      "initDataType": "none",
+      "initData": "",
+      "buttons": []
+    }
+  ]
+}

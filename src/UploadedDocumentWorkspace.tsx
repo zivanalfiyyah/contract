@@ -33,10 +33,12 @@ import {
 } from "lucide-react";
 import type { Contract, ContractVersion, StoredDocumentRef } from "./types";
 import {
-  loadDocx, bindRenderedParagraphs, renderedChars, renderedAlign, renderedLineSpacing, applyPlan, serializeDocx,
+  loadDocx, bindRenderedParagraphs, renderedChars, renderedAlign, renderedLineSpacing, applyPlan, serializeDocx, defaultCharStyle,
   addTableRowAfter, removeTableRow, type ParagraphBinding, type DocxEditPlan, type NewParagraph,
 } from "./docx-patch";
 import DocumentDownloadModal, { buildDocumentDownloadUrl } from "./DocumentDownloadModal";
+import { handlePaste } from "./paste-options";
+import OnlyOfficeEditor from "./OnlyOfficeEditor";
 
 type ToastFn = (message: string, type?: "success" | "info" | "warning") => void;
 type ConfirmFn = (body: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>;
@@ -53,7 +55,7 @@ interface Props {
 interface VersionsResponse {
   currentVersion: number;
   versions: ContractVersion[];
-  capabilities?: { docConversion: boolean; pdfTextEdit: boolean; pdfToWord?: boolean; officeToPdf?: boolean; officeToPdfExact?: boolean };
+  capabilities?: { onlyOffice?: boolean; docConversion: boolean; pdfTextEdit: boolean; pdfToWord?: boolean; officeToPdf?: boolean; officeToPdfExact?: boolean };
 }
 
 type BuildResult =
@@ -105,6 +107,7 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
   const [comment, setComment] = useState("");
   const [showHistory, setShowHistory] = useState(true);
   const [pendingEdit, setPendingEdit] = useState(false);
+  const [ooFailed, setOoFailed] = useState(false);
   const [showDownloadPicker, setShowDownloadPicker] = useState(false);
   const revisionInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<EditorHandle>(null);
@@ -114,6 +117,8 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
   const shownFile = shown?.file;
   const isViewingCurrent = shownVersion === currentVersion;
   const docAsDocx = shownFile?.format === "doc" && !!caps?.docConversion;
+  // Editor Word sungguhan (ONLYOFFICE) dipakai utk .docx bila server sudah mengaktifkannya; kalau gagal dimuat -> editor lama.
+  const useOO = !!caps?.onlyOffice && !ooFailed && shownFile?.format === "docx";
   const viewKind = docAsDocx ? "docx" : shownFile?.format;
   const canEditShown = canEdit && isViewingCurrent && !!shownFile && (shownFile.format === "pdf" || shownFile.format === "docx" || docAsDocx);
 
@@ -137,6 +142,7 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
   // Unduh berkas versi yang sedang ditampilkan (.doc -> pratinjau .docx).
   useEffect(() => {
     if (!versions.length || !shownFile) return;
+    if (useOO) { setLoading(false); setLoadError(null); return; }
     let cancelled = false;
     setLoading(true);
     setLoadError(null);
@@ -150,7 +156,7 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
       .catch((e) => { if (!cancelled) setLoadError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [contract.id, shownVersion, versions.length, docAsDocx, shownFile?.key]);
+  }, [contract.id, shownVersion, versions.length, docAsDocx, shownFile?.key, useOO]);
 
   // Setelah konversi .doc selesai & versi .docx baru termuat -> masuk mode edit.
   useEffect(() => {
@@ -340,7 +346,7 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
               <option key={v.id} value={v.version}>{versionLabel(v, currentVersion)}</option>
             ))}
           </select>
-          {!editMode && canEditShown && (
+          {!editMode && canEditShown && !useOO && (
             <button type="button" onClick={startEdit} disabled={saving || loading}
               className="px-3 py-1.5 text-[11px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
               {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Edit3 className="w-3.5 h-3.5" />} Edit Dokumen
@@ -438,7 +444,17 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
           {loadError && !loading && (
             <div className="p-6 text-xs text-rose-300 flex items-start gap-2"><AlertTriangle className="w-4 h-4 shrink-0" /> {loadError}</div>
           )}
-          {!loading && !loadError && fileBuf && shownFile && (
+          {useOO && !loadError && (
+            <OnlyOfficeEditor
+              key={`oo-${contract.id}-${viewVersion ?? "current"}`}
+              contractId={contract.id}
+              version={viewVersion ?? "current"}
+              canEdit={canEditShown}
+              onSaved={() => { refreshVersions().catch(() => {}); }}
+              onUnavailable={() => setOoFailed(true)}
+            />
+          )}
+          {!useOO && !loading && !loadError && fileBuf && shownFile && (
             viewKind === "pdf" ? (
               <PdfDocumentView ref={editorRef} key={`${shownVersion}`} contractId={contract.id} version={shownVersion} data={fileBuf} editMode={editMode} onDirty={markDirty} />
             ) : viewKind === "docx" ? (
@@ -567,11 +583,33 @@ function selectionInRoot(root: HTMLElement | null): boolean {
   return !!el && root.contains(el);
 }
 
-function stripTrailingGuard<T extends { text: string; attrs: number[]; fonts: string[]; sizes: number[] }>(t: T, original?: string): T {
+function stripTrailingGuard<T extends { text: string; attrs: number[]; fonts: string[]; sizes: number[]; colors: string[] }>(t: T, original?: string): T {
   if (t.text.endsWith("\n") && !(original ?? "").endsWith("\n")) {
-    return { ...t, text: t.text.slice(0, -1), attrs: t.attrs.slice(0, -1), fonts: t.fonts.slice(0, -1), sizes: t.sizes.slice(0, -1) };
+    return { ...t, text: t.text.slice(0, -1), attrs: t.attrs.slice(0, -1), fonts: t.fonts.slice(0, -1), sizes: t.sizes.slice(0, -1), colors: t.colors.slice(0, -1) };
   }
   return t;
+}
+
+/**
+ * Penanda list hasil paste ("Keep/Merge Formatting" di editor upload):
+ * <span data-list-marker="jenis|level|id">• </span> di AWAL paragraf. Dianggap
+ * butir list hanya kalau penanda memang paling depan & teksnya masih utuh;
+ * selain itu (mis. paragraf menyatu dgn teks lain, atau penanda sudah diedit)
+ * tetap diperlakukan sebagai teks biasa — lebih aman daripada salah membuat list.
+ */
+function readListMarker(el: HTMLElement, text: string): NewParagraph["list"] | undefined {
+  const span = el.querySelector("span[data-list-marker]") as HTMLElement | null;
+  if (!span) return undefined;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.setEnd(span, 0);
+  if (range.toString().replace(/[​﻿]/g, "") !== "") return undefined; // ada teks sebelum penanda
+  const marker = renderedChars(span).text;
+  if (!marker || !text.startsWith(marker)) return undefined;
+  const [kind, lvl, id] = (span.getAttribute("data-list-marker") || "").split("|");
+  if ((kind !== "bullet" && kind !== "decimal") || !id) return undefined;
+  const level = Math.max(0, Math.min(8, parseInt(lvl, 10) || 0));
+  return { kind, level, id, prefixLen: marker.length };
 }
 
 // ---- Terapkan style karakter (font/ukuran) pada seleksi -------------------
@@ -689,15 +727,10 @@ const DocxDocumentView = React.forwardRef<EditorHandle, { data: ArrayBuffer; edi
       // Elemen non-teks / area terproteksi: tidak boleh ikut diketik langsung.
       root.querySelectorAll("header, footer").forEach((n) => (n as HTMLElement).setAttribute("contenteditable", "false"));
       root.querySelectorAll(".docx-tab-stop, img, svg").forEach((n) => (n as HTMLElement).setAttribute("contenteditable", "false"));
-      const onPaste = (ev: ClipboardEvent) => {
-        ev.preventDefault();
-        const text = (ev.clipboardData?.getData("text/plain") || "").replace(/\r\n?/g, "\n");
-        text.split("\n").forEach((line, i) => {
-          if (i > 0) document.execCommand("insertParagraph"); // baris baru dari paste = paragraf baru, spt Word
-          if (line) document.execCommand("insertText", false, line);
-        });
-        onDirtyRef.current();
-      };
+      // Paste ala Word (paste-options.tsx): bawaan "Ikuti Format Dokumen", Ctrl+Shift+V
+      // = teks saja, popup utk "Format Asal". Mode "flat": penyimpanan .docx hanya
+      // mengenal paragraf + format karakter + list (tabel/gambar diratakan jadi teks).
+      const onPaste = (ev: ClipboardEvent) => handlePaste(ev, { mode: "flat", onChange: () => onDirtyRef.current() });
       const onInput = () => onDirtyRef.current();
       root.addEventListener("paste", onPaste);
       root.addEventListener("input", onInput);
@@ -771,7 +804,7 @@ const DocxDocumentView = React.forwardRef<EditorHandle, { data: ArrayBuffer; edi
           if (!b) continue;
           seen.add(idx);
           if (before.length) {
-            plan.inserts.push({ afterIndex: -1, anchorIndex: idx, baseAttr: b.attrs[0] ?? 0, baseFont: b.fonts[0] ?? "", baseSize: b.sizes[0] ?? 22, paragraphs: before });
+            plan.inserts.push({ afterIndex: -1, anchorIndex: idx, baseAttr: b.attrs[0] ?? 0, baseFont: b.fonts[0] ?? "", baseSize: b.sizes[0] ?? 22, baseColor: b.colors[0] ?? "", paragraphs: before });
             before = [];
           }
           lastBound = idx;
@@ -783,22 +816,29 @@ const DocxDocumentView = React.forwardRef<EditorHandle, { data: ArrayBuffer; edi
           const lineSpacingChanged = Math.abs(lineSpacing - b.lineSpacing) > 0.02;
           const fontsChanged = now.fonts.length !== b.fonts.length || now.fonts.some((f, k) => f !== b.fonts[k]);
           const sizesChanged = now.sizes.length !== b.sizes.length || now.sizes.some((s, k) => s !== b.sizes[k]);
-          if (now.text !== b.original || now.attrs.some((a, k) => a !== b.attrs[k]) || alignChanged || lineSpacingChanged || fontsChanged || sizesChanged) {
+          const colorsChanged = now.colors.length !== b.colors.length || now.colors.some((c, k) => c !== b.colors[k]);
+          if (now.text !== b.original || now.attrs.some((a, k) => a !== b.attrs[k]) || alignChanged || lineSpacingChanged || fontsChanged || sizesChanged || colorsChanged) {
             plan.edits.push({
               index: idx, oldText: b.original, newText: now.text, oldAttrs: b.attrs, newAttrs: now.attrs,
               oldAlign: b.align, newAlign: alignChanged ? renderedAlign(el) : b.align,
               oldFonts: b.fonts, newFonts: now.fonts, oldSizes: b.sizes, newSizes: now.sizes,
+              oldColors: b.colors, newColors: now.colors,
               oldLineSpacing: b.lineSpacing, newLineSpacing: lineSpacing,
             });
           }
         } else {
           const c = stripTrailingGuard(renderedChars(el));
-          const np: NewParagraph = { text: c.text, attrs: c.attrs, fonts: c.fonts, sizes: c.sizes, align: el.style.textAlign ? renderedAlign(el) : undefined, lineSpacing: renderedLineSpacing(el) };
+          const np: NewParagraph = {
+            text: c.text, attrs: c.attrs, fonts: c.fonts, sizes: c.sizes, colors: c.colors,
+            align: el.style.textAlign ? renderedAlign(el) : undefined, lineSpacing: renderedLineSpacing(el),
+            list: readListMarker(el, c.text),
+            inherit: defaultCharStyle(el),
+          };
           if (lastBound === -1) before.push(np);
           else {
             if (!group) {
               const a = byIndex.get(lastBound)!;
-              group = { afterIndex: lastBound, anchorIndex: lastBound, baseAttr: a.attrs[a.attrs.length - 1] ?? 0, baseFont: a.fonts[a.fonts.length - 1] ?? "", baseSize: a.sizes[a.sizes.length - 1] ?? 22, paragraphs: [] };
+              group = { afterIndex: lastBound, anchorIndex: lastBound, baseAttr: a.attrs[a.attrs.length - 1] ?? 0, baseFont: a.fonts[a.fonts.length - 1] ?? "", baseSize: a.sizes[a.sizes.length - 1] ?? 22, baseColor: a.colors[a.colors.length - 1] ?? "", paragraphs: [] };
               plan.inserts.push(group);
             }
             group.paragraphs.push(np);
@@ -908,6 +948,10 @@ const DocxDocumentView = React.forwardRef<EditorHandle, { data: ArrayBuffer; edi
           .docx-workspace .docx-wrapper { background: transparent; padding: 24px 12px; }
           .docx-workspace .docx-wrapper > section.docx { box-shadow: 0 4px 18px rgba(0,0,0,.35); margin-bottom: 24px; }
           .docx-workspace .docx-editable-p { border-radius: 2px; }
+          /* Kotak teks/bentuk (VML/DrawingML) dirender docx-preview sebagai <svg><foreignObject> berukuran tetap
+             dgn overflow:hidden; tabel/gambar di dalamnya yang lebih lebar dari kotak jadi terpotong. */
+          .docx-workspace .docx-wrapper svg, .docx-workspace .docx-wrapper foreignObject { overflow: visible !important; }
+          .docx-workspace .docx-wrapper foreignObject table { max-width: 100%; }
           .docx-workspace [contenteditable="true"] { cursor: text; outline: none; }
           .docx-workspace [data-docx-host="u"] { cursor: default; }
         `}</style>

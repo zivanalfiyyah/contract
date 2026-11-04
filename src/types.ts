@@ -602,6 +602,8 @@ export interface Contract {
   // = true (tampil, perilaku lama). Dipakai utk kop "teks doang" (nama+alamat
   // perusahaan tanpa gambar logo) tanpa harus mematikan kop surat total.
   showLetterheadLogo?: boolean;
+  // Potret nilai variabel dokumen Word saat terakhir disinkronkan dengan data sistem (kunci -> teks).
+  wordSync?: Record<string, string>;
   // Tampilkan kotak placeholder "Meterai Rp10.000" (garis putus-putus) di
   // ruang kosong tanda tangan tiap pihak. Kosong/undefined = false (tidak
   // tampil, perilaku lama) — ini FITUR OPT-IN, bukan default baru, karena
@@ -696,7 +698,9 @@ export interface ContractVersion {
   isOriginal?: boolean;
   file?: StoredDocumentRef;
   basedOnVersion?: number;
-  editMethod?: "original" | "docx-inline" | "pdf-overlay" | "pdf-text" | "revision-upload" | "converted" | "pdf-to-docx";
+  editMethod?: "original" | "docx-inline" | "pdf-overlay" | "pdf-text" | "revision-upload" | "converted" | "pdf-to-docx" | "onlyoffice" | "layout" | "sync";
+  // Id sesi editor ONLYOFFICE yang membuat versi ini; simpanan berikutnya dari sesi yang sama menimpa versi ini.
+  editSession?: string;
   // Berkas yang diunggah user bila `file` hasil konversi (mis. .doc -> .docx
   // agar bisa diedit). Berkas asli ini tetap tersimpan & bisa diunduh.
   sourceFile?: StoredDocumentRef;

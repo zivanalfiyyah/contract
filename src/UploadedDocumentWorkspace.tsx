@@ -45,7 +45,9 @@ type ConfirmFn = (body: string, opts?: { title?: string; confirmLabel?: string; 
 
 interface Props {
   contract: Contract;
-  canEdit: boolean; // kontrak Draft
+  canEdit: boolean; // kontrak Draft (atau tim Legal/Admin saat tinjauan)
+  /** Reviewer yang ditunjuk: editor penuh, tetapi semua perubahan otomatis tercatat sebagai Track Changes. */
+  reviewer?: boolean;
   canDownload: boolean; // approval matriks selesai (kebijakan unduh existing)
   onContractUpdated: (c: Contract) => void;
   showToast: ToastFn;
@@ -93,7 +95,7 @@ function nameForVersion(original: string, version: number, ext: string) {
   return `${base} (v${version})${ext}`;
 }
 
-export default function UploadedDocumentWorkspace({ contract, canEdit, canDownload, onContractUpdated, showToast, askConfirm }: Props) {
+export default function UploadedDocumentWorkspace({ contract, canEdit, reviewer, canDownload, onContractUpdated, showToast, askConfirm }: Props) {
   const [versions, setVersions] = useState<ContractVersion[]>([]);
   const [currentVersion, setCurrentVersion] = useState(0);
   const [caps, setCaps] = useState<VersionsResponse["capabilities"]>();
@@ -105,7 +107,9 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [comment, setComment] = useState("");
-  const [showHistory, setShowHistory] = useState(true);
+  const [showVersions, setShowVersions] = useState(false);
+  const [commitNote, setCommitNote] = useState("");
+  const [ooReload, setOoReload] = useState(0);
   const [pendingEdit, setPendingEdit] = useState(false);
   const [ooFailed, setOoFailed] = useState(false);
   const [showDownloadPicker, setShowDownloadPicker] = useState(false);
@@ -310,6 +314,26 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
     }
   };
 
+  const commitWorking = async () => {
+    try {
+      await postJson(`/api/contracts/${contract.id}/document-versions/commit`, { comment: commitNote });
+      setCommitNote("");
+      await refreshVersions();
+      showToast("Disimpan sebagai versi baru.", "success");
+    } catch (e: any) { showToast(e.message, "warning"); }
+  };
+  const discardWorking = async () => {
+    const ok = await askConfirm("Perubahan yang belum disimpan sebagai versi akan dibuang. Dokumen kembali ke versi tersimpan terakhir.", { title: "Buang Perubahan", confirmLabel: "Buang", danger: true });
+    if (!ok) return;
+    try {
+      const data = await postJson(`/api/contracts/${contract.id}/document-versions/discard-working`, {});
+      if (data.contract) onContractUpdated(data.contract);
+      setViewVersion(null);
+      await refreshVersions();
+      setOoReload((n) => n + 1);
+    } catch (e: any) { showToast(e.message, "warning"); }
+  };
+
   const selectVersion = async (n: number) => {
     if (n === shownVersion) return;
     if (!(await confirmDiscard())) return;
@@ -335,17 +359,6 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <select
-            value={shownVersion}
-            onChange={(e) => selectVersion(Number(e.target.value))}
-            className="bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-200 px-2 py-1.5"
-            title="Pilih versi dokumen yang ditampilkan"
-            aria-label="Versi dokumen"
-          >
-            {[...versions].reverse().map((v) => (
-              <option key={v.id} value={v.version}>{versionLabel(v, currentVersion)}</option>
-            ))}
-          </select>
           {!editMode && canEditShown && !useOO && (
             <button type="button" onClick={startEdit} disabled={saving || loading}
               className="px-3 py-1.5 text-[11px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 cursor-pointer disabled:opacity-50">
@@ -415,14 +428,43 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
               <Lock className="w-3.5 h-3.5" /> Download
             </span>
           )}
-          <button type="button" onClick={() => setShowHistory((v) => !v)}
-            className={`px-3 py-1.5 text-[11px] font-bold rounded-lg border flex items-center gap-1.5 cursor-pointer ${showHistory ? "bg-indigo-600 border-indigo-500 text-white" : "bg-slate-900 border-slate-800 text-slate-300"}`}>
-            <History className="w-3.5 h-3.5" /> Versi ({versions.length})
-          </button>
+          <div className="relative">
+            <button type="button" onClick={() => setShowVersions((v) => !v)} data-testid="versions-toggle"
+              className={`px-3 py-1.5 text-[11px] font-bold rounded-lg border flex items-center gap-1.5 cursor-pointer ${showVersions ? "bg-indigo-600 border-indigo-500 text-white" : "bg-slate-900 border-slate-800 text-slate-300"}`}>
+              <History className="w-3.5 h-3.5" /> Versi ({versions.filter((v) => !v.working).length})
+            </button>
+            {showVersions && (
+              <div className="absolute right-0 top-full mt-1 z-30 w-72 max-h-80 overflow-y-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-1.5 space-y-1" data-testid="document-versions">
+                {[...versions].reverse().map((v) => (
+                  <button key={v.id} type="button" onClick={() => { setShowVersions(false); selectVersion(v.version); }}
+                    className={`w-full text-left px-2 py-1.5 rounded-lg border cursor-pointer ${v.version === shownVersion ? "border-indigo-500/60 bg-indigo-500/10" : "border-transparent hover:bg-slate-800"}`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold text-slate-200">{v.working ? "Draf kerja (belum disimpan)" : v.isOriginal ? "Original" : `Versi ${v.version}`}</span>
+                      {v.version === currentVersion && !v.working && <span className="text-[9px] font-bold uppercase text-emerald-400">aktif</span>}
+                    </div>
+                    <p className="text-[10px] text-slate-500 truncate">{new Date(v.updatedAt).toLocaleString("id-ID")}{v.updatedBy ? ` · ${v.updatedBy}` : ""}</p>
+                    {v.comment && !v.working && <p className="text-[10px] text-slate-400 italic truncate">"{v.comment}"</p>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {!canEdit && (
+      {canEdit && versions.find((v) => v.version === currentVersion)?.working && isViewingCurrent && (
+        <div className="flex flex-wrap items-center gap-2 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2" data-testid="working-banner">
+          <span className="text-[11px] text-amber-200 flex-1 min-w-48">Ada perubahan yang belum disimpan sebagai versi. Perubahan tersimpan otomatis sebagai draf.</span>
+          <input value={commitNote} onChange={(e) => setCommitNote(e.target.value)} placeholder="Catatan versi (opsional)"
+            className="bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-200 px-2 py-1.5 w-48" />
+          <button type="button" onClick={commitWorking} className="px-3 py-1.5 text-[11px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white flex items-center gap-1.5 cursor-pointer"><Save className="w-3.5 h-3.5" /> Simpan Versi Baru</button>
+          <button type="button" onClick={discardWorking} className="px-3 py-1.5 text-[11px] font-bold rounded-lg border bg-slate-900 border-slate-800 text-slate-300 hover:border-rose-500/50 cursor-pointer">Buang perubahan</button>
+        </div>
+      )}
+      {!canEdit && reviewer && (
+        <p className="text-[11px] text-sky-300/90 flex items-center gap-1.5"><Lock className="w-3 h-3" /> Anda ditunjuk sebagai reviewer: ubah langsung di editor — semua perubahan tercatat otomatis sebagai Track Changes atas nama Anda.</p>
+      )}
+      {!canEdit && !reviewer && (
         <p className="text-[11px] text-slate-500 flex items-center gap-1.5"><Lock className="w-3 h-3" /> Status {contract.status}: dokumen terkunci dari perubahan (hanya bisa diubah saat Draft).</p>
       )}
       {!isViewingCurrent && (
@@ -435,9 +477,9 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
         <p className="text-[11px] text-sky-300/90">Berkas Word 97-2003 (.doc) ditampilkan lewat konversi ke .docx. Klik "Edit Dokumen" untuk membuat versi .docx yang bisa diedit — berkas .doc asli tetap tersimpan.</p>
       )}
 
-      <div className={`grid gap-4 ${showHistory ? "xl:grid-cols-[1fr_280px]" : "grid-cols-1"}`}>
+      <div className="grid gap-4 grid-cols-1">
         {/* Viewer / editor */}
-        <div className="bg-slate-800/60 rounded-xl border border-slate-850 overflow-auto max-h-[80vh] min-h-[320px] relative" data-testid="document-viewer">
+        <div className="bg-slate-800/60 rounded-xl border border-slate-850 overflow-auto max-h-[92vh] min-h-[320px] relative" data-testid="document-viewer">
           {loading && (
             <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {docAsDocx ? "Mengonversi & memuat dokumen…" : "Memuat dokumen…"}</div>
           )}
@@ -446,10 +488,11 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
           )}
           {useOO && !loadError && (
             <OnlyOfficeEditor
-              key={`oo-${contract.id}-${viewVersion ?? "current"}`}
+              key={`oo-${contract.id}-${viewVersion ?? "current"}-${ooReload}`}
               contractId={contract.id}
               version={viewVersion ?? "current"}
               canEdit={canEditShown}
+              configUrl={reviewer && !canEdit && isViewingCurrent ? `/api/contracts/${contract.id}/review-doc/config` : undefined}
               onSaved={() => { refreshVersions().catch(() => {}); }}
               onUnavailable={() => setOoFailed(true)}
             />
@@ -471,31 +514,6 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, canDownlo
           )}
         </div>
 
-        {/* Riwayat versi */}
-        {showHistory && (
-          <aside className="bg-slate-900 rounded-xl border border-slate-800 p-3 space-y-2 max-h-[80vh] overflow-y-auto" data-testid="document-versions">
-            <h4 className="text-[11px] font-bold text-slate-300 flex items-center gap-1.5"><History className="w-3.5 h-3.5 text-indigo-400" /> Riwayat Versi Dokumen</h4>
-            <p className="text-[10px] text-slate-500">Original tidak pernah ditimpa. Setiap Save membuat versi baru.</p>
-            {[...versions].reverse().map((v) => (
-              <div key={v.id} role="button" tabIndex={0} onClick={() => selectVersion(v.version)}
-                onKeyDown={(e) => { if (e.key === "Enter") selectVersion(v.version); }}
-                className={`w-full text-left p-2 rounded-lg border transition cursor-pointer ${v.version === shownVersion ? "border-indigo-500/60 bg-indigo-500/10" : "border-slate-800 bg-slate-950 hover:border-slate-700"}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] font-bold text-slate-200">{v.isOriginal ? "Original" : `Versi ${v.version}`}</span>
-                  {v.version === currentVersion && <span className="text-[9px] font-bold uppercase text-emerald-400 flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> aktif</span>}
-                </div>
-                <p className="text-[10px] text-slate-400 truncate">{v.file?.fileName}</p>
-                <p className="text-[10px] text-slate-500">{new Date(v.updatedAt).toLocaleString("id-ID")}{v.updatedBy ? ` · ${v.updatedBy}` : ""}</p>
-                <p className="text-[10px] text-slate-500">{METHOD_LABEL[v.editMethod || ""] || ""}{typeof v.basedOnVersion === "number" ? ` · dari ${v.basedOnVersion === 0 ? "original" : `v${v.basedOnVersion}`}` : ""}</p>
-                {v.comment && <p className="text-[10px] text-slate-400 italic mt-0.5">"{v.comment}"</p>}
-                {v.sourceFile && canDownload && (
-                  <a href={`/api/contracts/${contract.id}/document?version=${v.version}&source=1&download=1`} onClick={(e) => e.stopPropagation()}
-                    className="text-[10px] text-indigo-400 hover:text-indigo-300 underline">Unduh berkas asli ({v.sourceFile.fileName})</a>
-                )}
-              </div>
-            ))}
-          </aside>
-        )}
       </div>
 
       <DocumentDownloadModal

@@ -10,8 +10,10 @@ import JSZip from "jszip";
 import { saveAs } from "file-saver";
 import { diffWords } from "diff";
 import DOMPurify from "dompurify";
-import { ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, canReviewContract, isPermAllowed, PERMISSIONS, PERM_GROUPS, MATRIX_ROLES, R as ROLE_GROUPS } from "./roles";
+import { isFullAccessRole, ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, roleLabelOf, canBeApprover, canReviewContract, isPermAllowed, PERMISSIONS, PERM_GROUPS, MATRIX_ROLES, R as ROLE_GROUPS } from "./roles";
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
+import DashboardView from "./DashboardView";
+import ReviewTrackPanel from "./ReviewTrackPanel";
 import WordLayoutBar from "./WordLayoutBar";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
@@ -1732,6 +1734,9 @@ function ExternalChangesPanel({ previous, currentClauses, currentDoc }: {
 // previews clauses, highlights text to comment or strike, or clicks OK/Setuju.
 function ExternalReviewPage({ token }: { token: string }) {
   const [data, setData] = useState<any>(null);
+  // Tinjau dengan Track Changes (editor Word): hanya setelah tamu mengisi nama & menekan mulai.
+  const [trackStarted, setTrackStarted] = useState(false);
+  const [trackOff, setTrackOff] = useState(false);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [name, setName] = useState("");
@@ -2092,7 +2097,23 @@ function ExternalReviewPage({ token }: { token: string }) {
               </p>
               {/* Susunan sama dgn Mode Tinjau internal: dokumen di kiri, kolom
                   komentar/coret di kanan sejajar dokumen (bukan di bawahnya). */}
-              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start">
+              {c.documentMarkup && !trackOff && !data.locked && (
+                <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3 space-y-2">
+                  <p className="text-[11px] text-slate-300"><b>Tinjau dengan Track Changes</b> — ubah teks langsung di dokumen seperti di Word; setiap tambahan, penggantian, coretan & komentar Anda tercatat atas nama Anda beserta waktunya.</p>
+                  {!trackStarted ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama Anda (wajib)" className="px-2 py-1.5 bg-slate-950 border border-slate-700 rounded-lg text-xs text-slate-200 w-56" />
+                      <button type="button" disabled={!name.trim()} onClick={() => setTrackStarted(true)} className="px-3 py-1.5 text-[11px] font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white disabled:opacity-50 cursor-pointer">Mulai Tinjau</button>
+                    </div>
+                  ) : (
+                    <button type="button" onClick={() => setTrackStarted(false)} className="px-3 py-1.5 text-[11px] font-bold rounded-lg border border-slate-700 text-slate-300 cursor-pointer">Tutup editor (pakai komentar biasa)</button>
+                  )}
+                </div>
+              )}
+              {trackStarted && !trackOff && (
+                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }} height="75vh" />
+              )}
+              <div className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start ${c.documentMarkup && !trackOff && !data.locked ? "hidden" : ""}`}>
               <div className="min-w-0">
               {c.documentMarkup ? (
                 <DocxMarkupView
@@ -3586,7 +3607,7 @@ const legalJobEntityCell = (j: { companyName?: string; companyCode?: string }) =
 // Kepala halaman bergradasi + ikon samar (seragam dengan Konfigurasi).
 function LegalHero({ Icon, title, sub, right }: { Icon: any; title: string; sub: string; right?: any }) {
   return (
-    <div className="card-grad card-soft bg-slate-900 rounded-[28px] px-6 py-5 flex flex-col md:flex-row md:items-center gap-4 relative overflow-hidden">
+    <div className="card-grad card-soft bg-slate-900 rounded-2xl px-6 py-5 flex flex-col md:flex-row md:items-center gap-4 relative overflow-hidden">
       <Gavel aria-hidden className="pointer-events-none absolute -right-4 -top-8 w-40 h-40 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
       <ScrollText aria-hidden className="pointer-events-none absolute right-44 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
       <Scale aria-hidden className="pointer-events-none absolute right-96 -top-3 w-16 h-16 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
@@ -3607,7 +3628,7 @@ function LegalStatCard({ status, count, active, onClick }: { key?: any; status: 
   const Icon = LEGAL_STATUS_ICON[status] || FileText;
   return (
     <button onClick={onClick}
-      className={`text-left p-4 rounded-[22px] card-soft card-grad relative overflow-hidden transition cursor-pointer hover:brightness-[1.02] ${active ? "bg-mist ring-2 ring-soft-blue/60" : "bg-slate-900"}`}>
+      className={`text-left p-4 rounded-2xl card-soft card-grad relative overflow-hidden transition cursor-pointer hover:brightness-[1.02] ${active ? "bg-mist ring-2 ring-soft-blue/60" : "bg-slate-900"}`}>
       <span className={`w-8 h-8 rounded-full flex items-center justify-center mb-3 ${status === "PekerjaanMasuk" ? "bg-peach-strong" : "bg-peach"}`}><Icon className="w-4 h-4 text-slate-100" /></span>
       <p className="text-[26px] leading-none font-medium text-slate-100 tabular">{count}</p>
       <p className="text-[11px] text-slate-500 leading-tight mt-1.5">{LEGAL_STATUS_LABEL[status]}</p>
@@ -3618,7 +3639,7 @@ function LegalStatCard({ status, count, active, onClick }: { key?: any; status: 
 // Kartu isi: lingkaran ikon + judul + (aksi) lalu konten.
 function LegalPanel({ Icon, title, subtitle, right, tone, children }: { Icon: any; title: string; subtitle?: string; right?: any; tone?: "peach"; children: any }) {
   return (
-    <div className="card-soft bg-slate-900 rounded-[28px] p-6 space-y-4 min-w-0">
+    <div className="card-soft bg-slate-900 rounded-2xl p-6 space-y-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-3 min-w-0">
           <span className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${tone === "peach" ? "bg-peach-strong" : "bg-mist"}`}><Icon className="w-[17px] h-[17px] text-slate-100" /></span>
@@ -3638,7 +3659,7 @@ function LegalPanel({ Icon, title, subtitle, right, tone, children }: { Icon: an
 function LegalModal({ title, sub, Icon, onClose, children, footer, wide }: { title: string; sub?: string; Icon: any; onClose: () => void; children: any; footer?: any; wide?: boolean }) {
   return (
     <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className={`modal-panel relative w-full ${wide ? "max-w-md" : "max-w-sm"} max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-4`}>
+      <div onClick={(e) => e.stopPropagation()} className={`modal-panel relative w-full ${wide ? "max-w-md" : "max-w-sm"} max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl space-y-4`}>
         <button type="button" onClick={onClose} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer"><X className="w-4 h-4" /></button>
         <div className="flex items-start gap-3 pr-10">
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Icon className="w-5 h-5 text-slate-300" /></span>
@@ -4070,7 +4091,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
 // Pilihan cara menambah pekerjaan: diisi PIC pemberi (link/QR) atau diinput Staff Legal.
 function AddLegalJobChooser({ onClose, onShare, onDirect }: { onClose: () => void; onShare: () => void; onDirect: () => void }) {
   const Opt = ({ Icon, title, desc, tag, onClick }: { Icon: any; title: string; desc: string; tag: string; onClick: () => void }) => (
-    <button onClick={onClick} className="text-left p-5 rounded-[22px] card-grad card-soft bg-slate-900 hover:brightness-[1.02] hover:-translate-y-0.5 transition cursor-pointer flex flex-col gap-3 relative overflow-hidden">
+    <button onClick={onClick} className="text-left p-5 rounded-2xl card-grad card-soft bg-slate-900 hover:brightness-[1.02] hover:-translate-y-0.5 transition cursor-pointer flex flex-col gap-3 relative overflow-hidden">
       <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center"><Icon className="w-5 h-5 text-slate-300" /></span>
       <div className="space-y-1">
         <h4 className="text-[15px] font-semibold text-slate-100 leading-snug">{title}</h4>
@@ -4081,7 +4102,7 @@ function AddLegalJobChooser({ onClose, onShare, onDirect }: { onClose: () => voi
   );
   return (
     <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()} className="modal-panel relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-5">
+      <div onClick={(e) => e.stopPropagation()} className="modal-panel relative w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl space-y-5">
         <button type="button" onClick={onClose} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer"><X className="w-4 h-4" /></button>
         <div className="flex items-start gap-3 pr-10">
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Plus className="w-5 h-5 text-slate-300" /></span>
@@ -4149,7 +4170,7 @@ function DirectLegalJobModal({ onClose, notify, onSaved, asRequest, divisionLabe
 
   return (
     <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={onClose}>
-      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="modal-panel relative w-full max-w-2xl max-h-[92vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-4">
+      <form onSubmit={submit} onClick={(e) => e.stopPropagation()} className="modal-panel relative w-full max-w-2xl max-h-[92vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl space-y-4">
         <button type="button" onClick={onClose} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer"><X className="w-4 h-4" /></button>
         <div className="flex items-start gap-3 pr-10">
           <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><Pencil className="w-5 h-5 text-slate-300" /></span>
@@ -4268,7 +4289,7 @@ function ShareFormLinkModal({ onClose, notify }: { onClose: () => void; notify: 
               <Copy className="w-3.5 h-3.5" /> {copied ? "Tersalin!" : "Copy"}
             </button>
           </div>
-          <div className="flex flex-col items-center gap-2 py-4 rounded-[22px] bg-slate-950">
+          <div className="flex flex-col items-center gap-2 py-4 rounded-2xl bg-slate-950">
             <img src={data.qrDataUrl} alt="QR Code formulir" className="w-40 h-40 rounded-[18px] bg-white p-2" />
             <p className="text-[10.5px] text-slate-500 flex items-center gap-1"><QrCode className="w-3 h-3" /> Scan untuk membuka formulir</p>
           </div>
@@ -4389,7 +4410,7 @@ function LegalJobDetailDrawer({ job, currentUser, canManageSigning = true, onClo
 
         <div className="px-6 pb-6 space-y-5">
           {/* Info umum */}
-          <div className="card-grad card-soft bg-slate-900 rounded-[22px] p-4 grid grid-cols-2 gap-x-4 gap-y-3 text-[12.5px]">
+          <div className="card-grad card-soft bg-slate-900 rounded-2xl p-4 grid grid-cols-2 gap-x-4 gap-y-3 text-[12.5px]">
             {job.companyName && <div className="col-span-2"><InfoField label="Badan Hukum" value={`${job.companyName}${job.companyCode ? ` (PT ${job.companyCode})` : ""}`} /></div>}
             <InfoField label="Jenis" value={job.docType} />
             <InfoField label="Partner" value={job.partnerName} />
@@ -4415,7 +4436,7 @@ function LegalJobDetailDrawer({ job, currentUser, canManageSigning = true, onClo
               withLinkedContract di server.ts); kalau belum, statusnya cuma
               menunggu ditautkan lewat form Buat Dokumen Baru. */}
           {job.linkedContract ? (
-            <div className="p-4 bg-mist rounded-[22px] space-y-3">
+            <div className="p-4 bg-mist rounded-2xl space-y-3">
               <p className="text-[11.5px] text-slate-400 leading-relaxed">Status pekerjaan ini <b className="text-slate-100">otomatis mengikuti</b> status Kontrak yang terhubung — tidak bisa diubah manual dari sini.</p>
               <div className="flex items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -4432,7 +4453,7 @@ function LegalJobDetailDrawer({ job, currentUser, canManageSigning = true, onClo
               </button>
             </div>
           ) : (
-            <div className="p-4 bg-slate-950 rounded-[22px] space-y-3">
+            <div className="p-4 bg-slate-950 rounded-2xl space-y-3">
               <p className="text-[11.5px] text-slate-500 leading-relaxed">Pekerjaan ini <b className="text-slate-100">belum diproses</b>. Klik <b className="text-slate-100">Mulai Kerjakan</b> untuk menyusun dokumennya (kontrak, surat konfirmasi, atau dokumen lain) — pekerjaan otomatis tertaut ke dokumen itu dan statusnya berubah menjadi <b className="text-slate-100">Draft</b>, lalu mengikuti status dokumennya.</p>
               {onCreateExternalContract && job.status !== "menunggu_persetujuan" && job.status !== "ditolak" && (
                 <div className="flex justify-end">
@@ -4582,7 +4603,7 @@ function LegalSigningPanel({ job, canManage = true, onChanged, notify }: { key?:
   return (
     <div className="space-y-3">
       {/* 1. Pengiriman */}
-      <div className="p-4 bg-peach/40 rounded-[22px] space-y-3">
+      <div className="p-4 bg-peach/40 rounded-2xl space-y-3">
         {stepHead(1, "Pengiriman Dokumen Fisik", !!dispatched)}
         <div className="grid grid-cols-3 gap-2">
           <div><label className={labelCls}>Jumlah Rangkap</label>
@@ -4605,7 +4626,7 @@ function LegalSigningPanel({ job, canManage = true, onChanged, notify }: { key?:
       </div>
 
       {/* 2. Penerimaan / Dokumen Kembali */}
-      <div className={`p-4 rounded-[22px] space-y-3 ${dispatched ? "bg-peach/40" : "bg-slate-950 opacity-60"}`}>
+      <div className={`p-4 rounded-2xl space-y-3 ${dispatched ? "bg-peach/40" : "bg-slate-950 opacity-60"}`}>
         {stepHead(2, "Penerimaan Dokumen (Dokumen Kembali)", !!received)}
         {!dispatched && <p className="text-[11px] text-slate-500">Catat pengiriman dulu untuk membuka langkah ini.</p>}
         <div className="grid grid-cols-2 gap-2">
@@ -4623,7 +4644,7 @@ function LegalSigningPanel({ job, canManage = true, onChanged, notify }: { key?:
       </div>
 
       {/* 3. Bukti TTD basah → Arsip */}
-      <div className={`p-4 rounded-[22px] space-y-3 ${received ? "bg-mist" : "bg-slate-950 opacity-60"}`}>
+      <div className={`p-4 rounded-2xl space-y-3 ${received ? "bg-mist" : "bg-slate-950 opacity-60"}`}>
         {stepHead(3, "Bukti TTD Basah → Arsip", false)}
         {!received && <p className="text-[11px] text-slate-500">Catat penerimaan dokumen dulu untuk membuka langkah ini.</p>}
         <div className="flex items-center gap-2">
@@ -4967,7 +4988,7 @@ function ReleaseAnnounceModal({
       <form
         onSubmit={(e) => { e.preventDefault(); if (sel.length > 0 && !saving) onSend(sel, note); }}
         onClick={(e) => e.stopPropagation()}
-        className="modal-panel relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-5"
+        className="modal-panel relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl space-y-5"
       >
         <button type="button" onClick={onClose} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer text-lg leading-none">×</button>
         <div className="flex items-start gap-3 pr-10">
@@ -5078,7 +5099,7 @@ function ReleaseExternalModal({
       <form
         onSubmit={async (e) => { e.preventDefault(); if (saving || url) return; const u = await onCreate(note); if (u) setUrl(u); }}
         onClick={(e) => e.stopPropagation()}
-        className="modal-panel relative w-full max-w-xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-5"
+        className="modal-panel relative w-full max-w-xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl space-y-5"
       >
         <button type="button" onClick={onClose} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer text-lg leading-none">×</button>
         <div className="flex items-start gap-3 pr-10">
@@ -5167,7 +5188,7 @@ function ReleaseAnnouncementsCard({
     catch { window.prompt("Salin manual:", externalUrl); }
   };
   return (
-    <div className="card-grad card-soft bg-slate-900 rounded-[28px] p-6 relative overflow-hidden">
+    <div className="card-grad card-soft bg-slate-900 rounded-2xl p-6 relative overflow-hidden">
       <Bell aria-hidden className="pointer-events-none absolute -right-3 -top-6 w-32 h-32 text-soft-blue opacity-[0.12] rotate-12" strokeWidth={1.2} />
       <Sparkles aria-hidden className="pointer-events-none absolute right-48 -bottom-5 w-20 h-20 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
       <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-3">
@@ -5201,7 +5222,7 @@ function ReleaseAnnouncementsCard({
         ) : list.map((a) => {
           const isExternal = a.audience === "external";
           return (
-            <div key={a.id} className="rounded-[22px] bg-slate-900 card-soft p-4 space-y-2">
+            <div key={a.id} className="rounded-2xl bg-slate-900 card-soft p-4 space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
                 <span className="flex items-center gap-2">
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${isExternal ? "bg-mist text-slate-200" : "bg-soft-blue/15 text-[#3a7fa8]"}`}>{isExternal ? "Eksternal" : "Internal"}</span>
@@ -5360,7 +5381,7 @@ function MonitorFilterDrawer({ draft, setDraft, onApply, onReset, onClose, categ
     <div className="fixed inset-0 z-[60] bg-slate-950/40 backdrop-blur-[2px]" onClick={onClose}>
       <aside
         role="dialog" aria-label="Filter Kontrak"
-        className="drawer-in absolute left-3 top-3 bottom-3 w-[min(430px,calc(100vw-1.5rem))] bg-slate-900 rounded-[28px] flex flex-col overflow-hidden"
+        className="drawer-in absolute left-3 top-3 bottom-3 w-[min(430px,calc(100vw-1.5rem))] bg-slate-900 rounded-2xl flex flex-col overflow-hidden"
         style={{ boxShadow: "var(--shadow-soft)" }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -5541,7 +5562,7 @@ export default function App() {
     { id: "performa-vendor", label: "Performa Vendor" },
     { id: "ai-tools", label: "AI Tools Hukum (semua submenu)" },
   ];
-  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["it_system", "admin", "legal", "manajemen", "marketing", "business_partnership", "account_executive", "operasional", "hr_ga", "viewer"];
+  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["it_system", "admin", "legal", "manajemen", "marketing", "business_partnership", "account_executive", "operasional", "hr_ga", "direktur", "finance", "tax", "viewer"];
   // Boleh lihat menu `id` atau tidak, untuk role saat ini. super_admin SELALU
   // penuh (tidak pernah dibatasi config ini — sesuai keputusan "yang bebas
   // cuma super admin"). Role yang belum pernah diatur di rolePermissions =
@@ -7028,6 +7049,9 @@ export default function App() {
   const [pendingAnchor, setPendingAnchor] = useState<{ clauseId: string; clauseTitle: string; quote: string; start: number; end: number; kind: "comment" | "strike" } | null>(null);
   // Mode Tinjau gaya Word: dokumen penuh + kartu komentar di margin kanan.
   const [reviewModeOpen, setReviewModeOpen] = useState(false);
+  // Mode Tinjau dokumen Word: Track Changes (editor Word) atau komentar margin (cara lama).
+  const [reviewTrackMode, setReviewTrackMode] = useState(true);
+  const [reviewTrackOff, setReviewTrackOff] = useState(false);
   // Komentar umum (tanpa sorotan kalimat) di Mode Tinjau kontrak "Upload Dokumen".
   const [docCommentText, setDocCommentText] = useState("");
   // Markup dokumen upload (.docx): usulan yg sedang ditulis + pemicu muat-ulang dokumen.
@@ -8930,7 +8954,7 @@ export default function App() {
         );
         closeCreationWizard();
         // Kontrak dari template langsung menjadi dokumen Word (bila editor Word aktif).
-        if (data.contract && data.contract.documentSource !== "upload" && newContractForm.creationMode === "smart" && data.contract.documentLanguage !== "bilingual" && (data.contract.clauses || []).length > 0) {
+        if (data.contract && data.contract.documentSource !== "upload" && newContractForm.creationMode === "smart") {
           const converted = await convertContractToWord(data.contract);
           if (converted) setSelectedContract(converted);
         }
@@ -10007,11 +10031,11 @@ export default function App() {
   // tombol kategori itu yang tampil (tombol "Simpan Draft Baru" selalu
   // tampil di semua tab supaya penanda "belum disimpan" tidak tersembunyi).
   // Pilihan terakhir diingat di localStorage.
-  type ToolbarCat = "doc" | "view" | "sign" | "review";
+  type ToolbarCat = "doc" | "lang" | "view" | "sign" | "review";
   const [toolbarCat, setToolbarCatState] = useState<ToolbarCat>(() => {
     try {
       const v = localStorage.getItem("ct-toolbar-cat");
-      if (v === "doc" || v === "view" || v === "sign" || v === "review") return v;
+      if (v === "doc" || v === "lang" || v === "view" || v === "sign" || v === "review") return v;
     } catch { /* noop */ }
     return "doc";
   });
@@ -10024,7 +10048,10 @@ export default function App() {
   // upload tampil dgn kop & layout aslinya, jadi tab itu disembunyikan dan
   // pilihan tersimpan yg tidak berlaku jatuh ke "Dokumen".
   const toolbarIsUpload = !!selectedContract && isUploadedDocument(selectedContract);
-  const toolbarCatEff: ToolbarCat = toolbarIsUpload && (toolbarCat === "view" || toolbarCat === "sign") ? "doc" : toolbarCat;
+  const toolbarIsWord = toolbarIsUpload && selectedContract?.currentDocument?.format === "docx";
+  const toolbarCatEff: ToolbarCat = toolbarIsWord && toolbarCat !== "review" ? toolbarCat
+    : toolbarIsUpload && (toolbarCat === "view" || toolbarCat === "sign" || toolbarCat === "lang") ? "doc"
+    : !toolbarIsUpload && toolbarCat === "lang" ? "doc" : toolbarCat;
   const handleChangeSignatureFormat = async (format: SignatureFormat) => {
     setSignatureMenuOpen(false);
     if (!selectedContract || getSignatureFormat(selectedContract) === format) return;
@@ -13294,15 +13321,14 @@ export default function App() {
   const convertContractToWord = async (c: Contract): Promise<Contract | null> => {
     try {
       const { template, tokens } = getPreambleTemplateAndTokens(c);
-      const lang = c.documentLanguage || "id";
       const closingId = c.closingStatement || "Masing-masing pihak sepakat untuk mengikatkan diri dalam Perjanjian Kerjasama dengan ketentuan dan pasal-pasal sebagai berikut:";
-      const closingEn = c.closingStatementEn || "Each Party agrees to bind itself to this Cooperation Agreement under the terms and articles set out below:";
       const res = await fetch(`/api/contracts/${c.id}/convert-to-word`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ opening: template, closing: lang === "en" ? closingEn : closingId, tokens }),
+        body: JSON.stringify({ opening: template, closing: closingId, tokens }),
       });
       const data = await res.json().catch(() => ({}));
+      if (data?.warning) showToast(data.warning, "warning");
       return res.ok && data.success ? (data.contract as Contract) : null;
     } catch {
       return null;
@@ -14112,21 +14138,20 @@ export default function App() {
       <div className="flex-1 flex flex-col md:flex-row">
         {sidebarOpen && (
         <aside
-          className="w-auto md:w-64 px-5 py-6 shrink-0 flex flex-col gap-4 rounded-[28px] bg-slate-900 card-soft"
-          style={isDesktop ? { position: "sticky", top: 16, alignSelf: "flex-start", height: "calc(100vh / var(--ui-zoom, 1) - 2rem)", maxHeight: "calc(100vh / var(--ui-zoom, 1) - 2rem)", overflow: "hidden", margin: "16px 0 16px 16px" } : { margin: 16 }}
+          className="w-auto md:w-64 px-4 py-5 shrink-0 flex flex-col gap-4 bg-slate-900 border-r border-slate-800"
+          style={isDesktop ? { position: "sticky", top: 0, alignSelf: "flex-start", height: "calc(100vh / var(--ui-zoom, 1))", maxHeight: "calc(100vh / var(--ui-zoom, 1))", overflow: "hidden" } : {}}
         >
           <div className="flex flex-col flex-1 min-h-0 gap-2">
             <div className="flex items-center gap-2.5 px-1 pb-3 shrink-0">
-              <div className="w-9 h-9 rounded-full bg-soft-blue flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-xl bg-soft-blue flex items-center justify-center shrink-0">
                 <FileText className="text-white w-[18px] h-[18px]" strokeWidth={2.25} />
               </div>
               <div className="min-w-0">
-                <h1 className="font-medium text-[18px] leading-tight text-slate-100 truncate">Smart CLM</h1>
-                <p className="text-[10px] text-slate-500 truncate">{currentTenant?.name || "Enterprise"}</p>
+                <h1 className="font-extrabold text-[17px] leading-tight tracking-tight text-slate-100 truncate">Smart CLM</h1>
               </div>
               <button
                 onClick={() => setSidebarOpen(false)}
-                className="hidden md:flex ml-auto w-9 h-9 items-center justify-center rounded-full bg-slate-950 hover:bg-slate-850 text-slate-400 hover:text-slate-100 transition cursor-pointer shrink-0"
+                className="hidden md:flex ml-auto w-7 h-7 items-center justify-center text-slate-500 hover:text-slate-100 transition cursor-pointer shrink-0"
                 title="Ciutkan sidebar"
                 aria-label="Ciutkan sidebar"
               >
@@ -14134,9 +14159,19 @@ export default function App() {
               </button>
             </div>
 
+            <div className="flex items-center justify-between bg-slate-900 border border-slate-800 px-3 py-2 rounded-xl shrink-0 mb-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="w-6 h-6 rounded-full bg-slate-50 text-slate-900 font-bold text-[10px] flex items-center justify-center shrink-0">
+                  {(currentTenant?.name || "E").trim().charAt(0).toLowerCase()}
+                </div>
+                <span className="text-xs font-bold text-slate-100 truncate">{currentTenant?.name || "Enterprise"}</span>
+              </div>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+            </div>
+
             <FadeScroll className="space-y-4 -mx-1 pl-1 pr-2">
             <div>
-              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest px-3 mb-2">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-3 mb-2">
                 MENU UTAMA
               </p>
 
@@ -14146,10 +14181,10 @@ export default function App() {
                   setActiveTab("dashboard");
                   setSelectedContract(null);
                 }}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "dashboard"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <LayoutDashboard className="w-4 h-4" />
@@ -14157,16 +14192,16 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua (vendor/mitra) — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
+              {(["dashboard-legal","pekerjaan-legal","monitoring","clauses"].some(canSee) || (canSee("arsip") && currentUser?.role !== "hr_ga")) && (<p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Perjanjian dengan pihak kedua (vendor/mitra) — disetujui lewat matriks approval, ditandatangani manual (TTD basah) di luar sistem, meterai opsional.">
                 Eksternal
-              </p>
+              </p>)}
               {canSee("dashboard-legal") && (
               <button
                 onClick={() => { setActiveTab("dashboard-legal"); setSelectedContract(null); }}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "dashboard-legal"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <LayoutDashboard className="w-4 h-4" />
@@ -14176,10 +14211,10 @@ export default function App() {
               {canSee("pekerjaan-legal") && (
               <button
                 onClick={() => { setActiveTab("pekerjaan-legal"); setSelectedContract(null); }}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "pekerjaan-legal"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <ClipboardList className="w-4 h-4" />
@@ -14193,10 +14228,10 @@ export default function App() {
                   setActiveTab("monitoring");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "monitoring"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -14226,10 +14261,10 @@ export default function App() {
                   setActiveTab("clauses");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "clauses"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <Sliders className="w-4 h-4" />
@@ -14237,7 +14272,7 @@ export default function App() {
               </button>
               )}
 
-              {canSee("arsip") && (
+              {canSee("arsip") && currentUser?.role !== "hr_ga" && (
               <button
                 onClick={() => {
                   setActiveTab("arsip-eksternal");
@@ -14246,10 +14281,10 @@ export default function App() {
                   setArsipSubPath([]);
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "arsip-eksternal"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
                 title="Arsip folder khusus kontrak eksternal (vendor/mitra)."
               >
@@ -14258,19 +14293,19 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Dokumen karyawan dan dokumen terkontrol DCS (SOP, Instruksi Kerja, Memo, Kebijakan).">
+              {(["kontrak-karyawan","internal-docs"].some(canSee) || (canSee("arsip") && currentUser?.role !== "legal")) && (<p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Dokumen karyawan dan dokumen terkontrol DCS (SOP, Instruksi Kerja, Memo, Kebijakan).">
                 Internal
-              </p>
+              </p>)}
               {canSee("kontrak-karyawan") && (
               <button
                 onClick={() => {
                   setActiveTab("kontrak-karyawan");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "kontrak-karyawan"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <div className="flex items-center gap-3">
@@ -14293,10 +14328,10 @@ export default function App() {
                   setActiveTab("internal-docs");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "internal-docs"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <Workflow className="w-4 h-4" />
@@ -14304,7 +14339,7 @@ export default function App() {
               </button>
               )}
 
-              {canSee("arsip") && (
+              {canSee("arsip") && currentUser?.role !== "legal" && (
               <button
                 onClick={() => {
                   setActiveTab("arsip-internal");
@@ -14313,10 +14348,10 @@ export default function App() {
                   setArsipSubPath([]);
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "arsip-internal"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
                 title="Arsip folder khusus dokumen internal — kontrak karyawan & dokumen DCS yang sudah full sign."
               >
@@ -14325,9 +14360,9 @@ export default function App() {
               </button>
               )}
 
-              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Tabel gabungan semua dokumen, konfigurasi, audit, dan alat bantu lainnya.">
+              {(["all-docs","konfigurasi","audits","audit-kontrak-dcs","kalender-legal","retensi-arsip","performa-vendor","ai-tools"].some(canSee)) && (<p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider px-3 mt-5 mb-1.5" title="Tabel gabungan semua dokumen, konfigurasi, audit, dan alat bantu lainnya.">
                 Daftar &amp; Pengaturan
-              </p>
+              </p>)}
 
               {canSee("all-docs") && (
               <button
@@ -14335,10 +14370,10 @@ export default function App() {
                   setActiveTab("all-docs");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "all-docs"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
                 title="Satu tabel datar berisi semua kontrak & dokumen DCS — untuk aksi massal, penyaringan, dan ekspor CSV."
               >
@@ -14353,10 +14388,10 @@ export default function App() {
                   setActiveTab("konfigurasi");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "konfigurasi"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <Sliders className="w-4 h-4" />
@@ -14370,10 +14405,10 @@ export default function App() {
                   setActiveTab("audits");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "audits"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <Settings className="w-4 h-4" />
@@ -14387,10 +14422,10 @@ export default function App() {
                   setActiveTab("audit-kontrak-dcs");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "audit-kontrak-dcs"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
                 title="Audit Trail yang sama, disaring khusus Dokumen Eksternal, Dokumen Karyawan, dan Dokumen DCS."
               >
@@ -14405,10 +14440,10 @@ export default function App() {
                   setActiveTab("kalender-legal");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "kalender-legal"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <CalendarDays className="w-4 h-4" />
@@ -14422,10 +14457,10 @@ export default function App() {
                   setActiveTab("retensi-arsip");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "retensi-arsip"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <Archive className="w-4 h-4" />
@@ -14439,10 +14474,10 @@ export default function App() {
                   setActiveTab("performa-vendor");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "performa-vendor"
-                    ? "bg-soft-blue text-white"
-                    : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                    ? "nav-active"
+                    : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                 }`}
               >
                 <Star className="w-4 h-4" />
@@ -14471,10 +14506,10 @@ export default function App() {
                       setActiveTab("pusat-peraturan");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "pusat-peraturan"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <Scale className="w-4 h-4" />
@@ -14486,10 +14521,10 @@ export default function App() {
                       setActiveTab("putusan-pengadilan");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "putusan-pengadilan"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <FolderOpen className="w-4 h-4" />
@@ -14501,10 +14536,10 @@ export default function App() {
                       setActiveTab("opini-hukum");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "opini-hukum"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <MessageSquare className="w-4 h-4" />
@@ -14516,10 +14551,10 @@ export default function App() {
                       setActiveTab("terjemah-dokumen");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "terjemah-dokumen"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <Languages className="w-4 h-4" />
@@ -14531,10 +14566,10 @@ export default function App() {
                       setActiveTab("review-dokumen");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "review-dokumen"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <Search className="w-4 h-4" />
@@ -14546,10 +14581,10 @@ export default function App() {
                       setActiveTab("bandingkan-dokumen");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "bandingkan-dokumen"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <ArrowLeftRight className="w-4 h-4" />
@@ -14561,10 +14596,10 @@ export default function App() {
                       setActiveTab("buat-draft-ai");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "buat-draft-ai"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <Sparkles className="w-4 h-4" />
@@ -14576,10 +14611,10 @@ export default function App() {
                       setActiveTab("tabular");
                       setSelectedContract(null);
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "tabular"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <LayoutDashboard className="w-4 h-4" />
@@ -14592,10 +14627,10 @@ export default function App() {
                       setSelectedContract(null);
                       fetchAnalytics();
                     }}
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-full text-[13px] font-medium text-left transition cursor-pointer ${
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                       activeTab === "analytics"
-                        ? "bg-soft-blue text-white"
-                        : "text-slate-400 hover:bg-slate-950 hover:text-slate-100"
+                        ? "nav-active"
+                        : "text-slate-500 hover:bg-slate-750 hover:text-slate-100"
                     }`}
                   >
                     <LineChart className="w-4 h-4" />
@@ -14609,6 +14644,19 @@ export default function App() {
           </div>
 
           <div className="space-y-3 pt-3 shrink-0 border-t border-slate-800">
+            <button
+              onClick={toggleTheme}
+              className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-750 transition cursor-pointer"
+              aria-label="Ganti tema"
+            >
+              <span className="flex items-center gap-2">
+                {theme === "dark" ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
+                {theme === "dark" ? "Mode Gelap" : "Mode Terang"}
+              </span>
+              <span className={`w-8 h-[18px] rounded-full p-0.5 flex transition ${theme === "dark" ? "bg-[#635BFF] justify-end" : "bg-slate-700 justify-start"}`}>
+                <span className="w-3.5 h-3.5 rounded-full bg-white shadow-none" />
+              </span>
+            </button>
             <div className="relative group px-1">
             <button className="w-full flex items-center gap-3 py-1 transition cursor-pointer">
               <div className="w-11 h-11 rounded-full bg-indigo-600 flex items-center justify-center text-white font-semibold text-sm shrink-0">
@@ -14660,8 +14708,8 @@ export default function App() {
         {/* Sidebar tersembunyi → tersisa rel ikon sempit (logo + ikon menu), bukan hilang total. */}
         {!sidebarOpen && (
           <aside
-            className="hidden md:flex flex-col items-center w-[76px] shrink-0 rounded-[28px] bg-slate-900 card-soft py-6 gap-2"
-            style={{ position: "sticky", top: 16, alignSelf: "flex-start", height: "calc(100vh / var(--ui-zoom, 1) - 2rem)", maxHeight: "calc(100vh / var(--ui-zoom, 1) - 2rem)", overflow: "hidden", margin: "16px 0 16px 16px" }}
+            className="hidden md:flex flex-col items-center w-[76px] shrink-0 bg-slate-900 border-r border-slate-800 py-5 gap-2"
+            style={{ position: "sticky", top: 0, alignSelf: "flex-start", height: "calc(100vh / var(--ui-zoom, 1))", maxHeight: "calc(100vh / var(--ui-zoom, 1))", overflow: "hidden" }}
           >
             <div className="w-10 h-10 rounded-full bg-soft-blue flex items-center justify-center shrink-0" title="Smart CLM">
               <FileText className="text-white w-[18px] h-[18px]" strokeWidth={2.25} />
@@ -14711,11 +14759,11 @@ export default function App() {
 
         {/* Center Dynamic Content Area */}
         <div className="flex-1 min-w-0 flex flex-col">
-        <header className="px-6 md:px-8 pt-6 pb-2 flex items-start justify-between gap-4 flex-wrap md:flex-nowrap">
-          <div className="flex items-start gap-3 min-w-0">
+        <header className="sticky top-0 z-30 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-6 md:px-8 py-3 flex items-center justify-between gap-4 flex-wrap md:flex-nowrap">
+          <div className="flex items-center gap-3 min-w-0">
             <button
               onClick={() => setSidebarOpen((o) => !o)}
-              className="md:hidden w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft text-slate-400 hover:text-slate-100 transition cursor-pointer shrink-0"
+              className="md:hidden w-10 h-10 flex items-center justify-center rounded-xl bg-slate-900 card-soft text-slate-400 hover:text-slate-100 transition cursor-pointer shrink-0"
               title={sidebarOpen ? "Sembunyikan sidebar" : "Tampilkan sidebar"}
               aria-label="Tampilkan/sembunyikan sidebar"
             >
@@ -14723,10 +14771,10 @@ export default function App() {
             </button>
             {activeTab === "dashboard" && !selectedContract && (
               <div className="min-w-0">
-                <h2 className="text-[26px] leading-tight font-medium text-slate-100 truncate">
-                  Selamat datang kembali, {(currentUser.name || "").split(" ")[0]}!
+                <h2 className="text-xl leading-tight font-extrabold tracking-tight text-slate-100 truncate">
+                  Dashboard Manajemen Kontrak
                 </h2>
-                <p className="text-[11px] text-slate-500">
+                <p className="text-[11px] text-slate-500 font-medium">
                   {criticalExpiryContracts.length > 0
                     ? `Ada ${criticalExpiryContracts.length} kontrak yang segera berakhir.`
                     : "Tidak ada kontrak yang mendekati masa berakhir."}
@@ -14736,141 +14784,59 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
-          <div className="relative hidden md:block">
-            <div className="flex items-center gap-2 bg-slate-900 card-soft rounded-full pl-4 pr-5 py-3 w-56 lg:w-72 transition">
-              <button
-                onClick={submitNavbarSearch}
-                className="shrink-0 text-slate-500 hover:text-slate-100 transition cursor-pointer"
-                title="Cari"
-                aria-label="Cari"
-              >
-                <Search className="w-4 h-4" />
-              </button>
-              <input
-                type="text"
-                value={navbarSearch}
-                onChange={(e) => setNavbarSearch(e.target.value)}
-                onFocus={() => setNavbarSearchFocused(true)}
-                onBlur={() => setTimeout(() => setNavbarSearchFocused(false), 150)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") submitNavbarSearch();
-                  if (e.key === "Escape") {
-                    setNavbarSearchFocused(false);
-                    (e.target as HTMLInputElement).blur();
-                  }
-                }}
-                placeholder="Cari pekerjaan, mitra, nomor, jenis, status, arsip…"
-                className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
-              />
-            </div>
-
-            {navbarSearchFocused && navbarSearch.trim().length > 0 && (
-              <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 card-soft rounded-[20px] py-2 max-h-96 overflow-y-auto z-50">
-                {navbarFeatureResults.length > 0 && (
-                  <div className="px-2 pb-1.5">
-                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Fitur &amp; Halaman</p>
-                    {navbarFeatureResults.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => goToNavbarFeature(m.id)}
-                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-slate-200 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-                      >
-                        <LayoutDashboard className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                        {m.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {navbarJobResults.length > 0 && (
-                  <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 ? "border-t border-slate-800" : ""}`}>
-                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Pekerjaan Legal</p>
-                    {navbarJobResults.map((j) => (
-                      <button
-                        key={j.id}
-                        onClick={() => goToNavbarJob(j)}
-                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-                      >
-                        <Briefcase className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                        <span className="flex-1 min-w-0">
-                          <span className="block text-slate-200 truncate">{j.title}</span>
-                          <span className="block text-[10px] text-slate-500 truncate">
-                            {[j.partnerName, j.docType, j.linkedContract?.contractNumber].filter(Boolean).join(" · ")}
-                          </span>
-                        </span>
-                        <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[legalJobDisplayStatus(j)] || "bg-slate-800 text-slate-400"}`}>
-                          {UNIFIED_STATUS_LABEL[legalJobDisplayStatus(j)] || legalJobDisplayStatus(j)}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {navbarDocResults.length > 0 && (
-                  <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 || navbarJobResults.length > 0 ? "border-t border-slate-800" : ""}`}>
-                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kontrak &amp; Dokumen</p>
-                    {navbarDocResults.map((c) => (
-                      <button
-                        key={c.id}
-                        onClick={() => goToNavbarDoc(c)}
-                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
-                      >
-                        <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                        <span className="flex-1 min-w-0">
-                          <span className="block text-slate-200 truncate">{c.title || "Tanpa judul"}</span>
-                          <span className="block text-[10px] text-slate-500 truncate">{[c.contractNumber, c.party2Name, c.docType].filter(Boolean).join(" · ")}</span>
-                        </span>
-                        <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-full font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[unifiedContractStatusOf(c)] || "bg-slate-800 text-slate-400"}`}>
-                          {CONTRACT_STATUS_LABEL_ID[unifiedContractStatusOf(c)] || contractStatusLabel(c.status)}
-                        </span>
-                      </button>
-                    ))}
-                    <button
-                      onClick={submitNavbarSearch}
-                      className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
-                    >
-                      Lihat semua hasil di Tabel Semua Dokumen →
-                    </button>
-                  </div>
-                )}
-
-                {navbarFeatureResults.length === 0 && navbarDocResults.length === 0 && navbarJobResults.length === 0 && (
-                  <div className="px-2">
-                    <p className="px-2.5 py-2 text-xs text-slate-500">Tidak ada fitur, pekerjaan, atau kontrak yang cocok dengan "{navbarSearch}".</p>
-                    <button
-                      onClick={submitNavbarSearch}
-                      className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
-                    >
-                      Cari tetap di Tabel Semua Dokumen →
-                    </button>
-                  </div>
-                )}
-              </div>
+            {activeTab === "dashboard" && !selectedContract && (
+              <>
+                <button
+                  onClick={() => { setActiveTab("analytics"); fetchAnalytics(); }}
+                  className="w-10 h-10 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-100 hover:bg-slate-750 transition cursor-pointer text-slate-300"
+                  title="Analytics & Risk"
+                  aria-label="Analytics & Risk"
+                >
+                  <LineChart className="w-[18px] h-[18px]" />
+                </button>
+                {(canEditContracts && currentUser?.role !== "hr_ga") || isDivisionRole(currentUser?.role) ? (
+                <button
+                  onClick={() => { if (isDivisionRole(currentUser?.role)) { setActiveTab("pekerjaan-legal"); return; } setIsCreating(true); setActiveTab("monitoring"); }}
+                  className="hidden sm:flex items-center gap-2 px-5 h-10 bg-soft-blue hover:opacity-90 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  Request dokumen baru
+                </button>
+                ) : null}
+              </>
             )}
-          </div>
-
-          {/* Mode terang/gelap — tombol bulat, sama bentuknya dengan lonceng. */}
-          <button
-            onClick={toggleTheme}
-            className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft hover:bg-slate-850 transition cursor-pointer shrink-0"
-            title={theme === "dark" ? "Ganti ke mode terang" : "Ganti ke mode gelap"}
-            aria-label="Ganti tema"
-          >
-            {theme === "dark" ? <Sun className="w-[18px] h-[18px] text-amber-400" /> : <Moon className="w-[18px] h-[18px] text-slate-400" />}
-          </button>
-
+            {activeTab === "clauses" && (
+                  <button
+                    onClick={() => {
+                      setIsAddingClause(true);
+                      setEditingClauseId(null);
+                      setNewClauseForm({
+                        title: "",
+                        content: "",
+                        category: "General",
+                        tags: "",
+                        isMandatory: false,
+                        isProtected: false,
+                      });
+                    }}
+                    className="flex items-center gap-2 px-5 h-10 bg-soft-blue hover:opacity-90 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Tambah Klausul Master
+                  </button>
+            )}
           {/* Notifikasi — klik lonceng membuka popup (bukan lagi kartu di dashboard). */}
           <div className="relative">
             <button
               onClick={() => setNotifOpen((o) => !o)}
-              className="relative w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft hover:bg-slate-850 transition cursor-pointer"
+              className="relative w-10 h-10 flex items-center justify-center rounded-xl text-slate-500 hover:text-slate-100 hover:bg-slate-750 transition cursor-pointer"
               title="Notifikasi"
               aria-label="Notifikasi"
               aria-expanded={notifOpen}
             >
               <Bell className="w-[18px] h-[18px] text-slate-300" />
               {notifications.filter((n) => !n.read).length > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 bg-brand-orange text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full font-bold">
+                <span className="absolute -top-0.5 -right-0.5 bg-rose-500 text-white text-[9px] min-w-[16px] h-4 px-1 flex items-center justify-center rounded-xl font-bold">
                   {notifications.filter((n) => !n.read).length}
                 </span>
               )}
@@ -14921,15 +14887,15 @@ export default function App() {
               return (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setNotifOpen(false)} />
-                  <div className="absolute right-0 top-[calc(100%+12px)] w-[400px] max-w-[92vw] bg-slate-900 card-soft rounded-[28px] overflow-hidden z-50 animate-fadeIn">
+                  <div className="absolute right-0 top-[calc(100%+12px)] w-[400px] max-w-[92vw] bg-slate-900 card-soft rounded-2xl overflow-hidden z-50 animate-fadeIn">
                     <div className="flex items-center justify-between gap-3 px-6 pt-5 pb-4">
                       <h3 className="text-[17px] font-semibold text-slate-100">Notifikasi</h3>
-                      <div className="flex items-center gap-1 p-1 rounded-full bg-slate-950">
+                      <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-950">
                         {([["all", "Semua"], ["unread", `Belum dibaca${unreadCount ? ` (${unreadCount})` : ""}`]] as const).map(([k, label]) => (
                           <button
                             key={k}
                             onClick={() => setNotifTab(k)}
-                            className={`px-3 py-1.5 rounded-full text-xs font-medium transition cursor-pointer ${notifTab === k ? "bg-slate-900 card-soft text-slate-100" : "text-slate-500 hover:text-slate-100"}`}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-medium transition cursor-pointer ${notifTab === k ? "bg-slate-900 card-soft text-slate-100" : "text-slate-500 hover:text-slate-100"}`}
                           >
                             {label}
                           </button>
@@ -14953,10 +14919,10 @@ export default function App() {
                               className="w-full text-left flex items-start gap-3.5 px-6 py-4 border-b border-slate-800 last:border-0 hover:bg-slate-950 transition cursor-pointer"
                             >
                               <span className="relative shrink-0">
-                                <span className={`w-11 h-11 rounded-full flex items-center justify-center ${tone}`}>
+                                <span className={`w-10 h-10 rounded-xl flex items-center justify-center ${tone}`}>
                                   <Bell className="w-[18px] h-[18px] text-slate-100" />
                                 </span>
-                                <span className={`absolute -bottom-0.5 -right-0.5 w-[18px] h-[18px] rounded-full flex items-center justify-center ring-2 ring-slate-900 ${badgeTone}`}>
+                                <span className={`absolute -bottom-0.5 -right-0.5 w-[18px] h-[18px] rounded-xl flex items-center justify-center ring-2 ring-slate-900 ${badgeTone}`}>
                                   <BadgeIcon className="w-2.5 h-2.5 text-white" />
                                 </span>
                               </span>
@@ -14967,7 +14933,7 @@ export default function App() {
                                 </span>
                                 <span className="block text-[12px] text-slate-500 leading-snug mt-0.5 line-clamp-2">{n.message}</span>
                               </span>
-                              {!n.read && <span className="w-2 h-2 rounded-full bg-soft-blue shrink-0 mt-2" />}
+                              {!n.read && <span className="w-2 h-2 rounded-xl bg-soft-blue shrink-0 mt-2" />}
                             </button>
                           );
                         })
@@ -14978,7 +14944,7 @@ export default function App() {
                       <button
                         onClick={handleMarkNotificationsRead}
                         disabled={unreadCount === 0}
-                        className="px-4 py-2 rounded-full bg-slate-950 hover:bg-slate-850 text-xs font-medium text-slate-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                        className="px-4 py-2 rounded-xl bg-slate-950 hover:bg-slate-850 text-xs font-medium text-slate-200 transition cursor-pointer disabled:opacity-40 disabled:cursor-default"
                       >
                         Tandai semua dibaca
                       </button>
@@ -14988,52 +14954,126 @@ export default function App() {
               );
             })()}
           </div>
+          <div className="relative hidden md:block">
+            <div className="flex items-center gap-2 bg-slate-750 rounded-xl pl-3.5 pr-4 py-2 w-56 lg:w-72 transition">
+              <button
+                onClick={submitNavbarSearch}
+                className="shrink-0 text-slate-500 hover:text-slate-100 transition cursor-pointer"
+                title="Cari"
+                aria-label="Cari"
+              >
+                <Search className="w-4 h-4" />
+              </button>
+              <input
+                type="text"
+                value={navbarSearch}
+                onChange={(e) => setNavbarSearch(e.target.value)}
+                onFocus={() => setNavbarSearchFocused(true)}
+                onBlur={() => setTimeout(() => setNavbarSearchFocused(false), 150)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") submitNavbarSearch();
+                  if (e.key === "Escape") {
+                    setNavbarSearchFocused(false);
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+                placeholder="Cari pekerjaan, mitra, nomor, jenis, status, arsip…"
+                className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
+              />
+              <span className="text-[10px] text-slate-500 font-bold bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800 shrink-0">⌘K</span>
+            </div>
 
-            {activeTab === "dashboard" && !selectedContract && (
-              <>
-                <button
-                  onClick={() => { setActiveTab("analytics"); fetchAnalytics(); }}
-                  className="w-11 h-11 flex items-center justify-center rounded-full bg-slate-900 card-soft hover:bg-slate-850 transition cursor-pointer text-slate-300"
-                  title="Analytics & Risk"
-                  aria-label="Analytics & Risk"
-                >
-                  <LineChart className="w-[18px] h-[18px]" />
-                </button>
-                {(canEditContracts && currentUser?.role !== "hr_ga") || isDivisionRole(currentUser?.role) ? (
-                <button
-                  onClick={() => { if (isDivisionRole(currentUser?.role)) { setActiveTab("pekerjaan-legal"); return; } setIsCreating(true); setActiveTab("monitoring"); }}
-                  className="hidden sm:flex items-center gap-2 px-5 h-11 bg-soft-blue hover:opacity-90 text-white rounded-full text-[13px] font-medium transition cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  Request dokumen baru
-                </button>
-                ) : null}
-              </>
+            {navbarSearchFocused && navbarSearch.trim().length > 0 && (
+              <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 card-soft rounded-[20px] py-2 max-h-96 overflow-y-auto z-50">
+                {navbarFeatureResults.length > 0 && (
+                  <div className="px-2 pb-1.5">
+                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Fitur &amp; Halaman</p>
+                    {navbarFeatureResults.map((m) => (
+                      <button
+                        key={m.id}
+                        onClick={() => goToNavbarFeature(m.id)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs text-slate-200 hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <LayoutDashboard className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {navbarJobResults.length > 0 && (
+                  <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 ? "border-t border-slate-800" : ""}`}>
+                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Pekerjaan Legal</p>
+                    {navbarJobResults.map((j) => (
+                      <button
+                        key={j.id}
+                        onClick={() => goToNavbarJob(j)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <Briefcase className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-slate-200 truncate">{j.title}</span>
+                          <span className="block text-[10px] text-slate-500 truncate">
+                            {[j.partnerName, j.docType, j.linkedContract?.contractNumber].filter(Boolean).join(" · ")}
+                          </span>
+                        </span>
+                        <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-xl font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[legalJobDisplayStatus(j)] || "bg-slate-800 text-slate-400"}`}>
+                          {UNIFIED_STATUS_LABEL[legalJobDisplayStatus(j)] || legalJobDisplayStatus(j)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {navbarDocResults.length > 0 && (
+                  <div className={`px-2 pt-1.5 ${navbarFeatureResults.length > 0 || navbarJobResults.length > 0 ? "border-t border-slate-800" : ""}`}>
+                    <p className="px-2.5 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wide">Kontrak &amp; Dokumen</p>
+                    {navbarDocResults.map((c) => (
+                      <button
+                        key={c.id}
+                        onClick={() => goToNavbarDoc(c)}
+                        className="w-full text-left px-2.5 py-2 rounded-lg text-xs hover:bg-slate-900 transition flex items-center gap-2 cursor-pointer"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-slate-200 truncate">{c.title || "Tanpa judul"}</span>
+                          <span className="block text-[10px] text-slate-500 truncate">{[c.contractNumber, c.party2Name, c.docType].filter(Boolean).join(" · ")}</span>
+                        </span>
+                        <span className={`shrink-0 text-[9.5px] px-2 py-0.5 rounded-xl font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[unifiedContractStatusOf(c)] || "bg-slate-800 text-slate-400"}`}>
+                          {CONTRACT_STATUS_LABEL_ID[unifiedContractStatusOf(c)] || contractStatusLabel(c.status)}
+                        </span>
+                      </button>
+                    ))}
+                    <button
+                      onClick={submitNavbarSearch}
+                      className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
+                    >
+                      Lihat semua hasil di Tabel Semua Dokumen →
+                    </button>
+                  </div>
+                )}
+
+                {navbarFeatureResults.length === 0 && navbarDocResults.length === 0 && navbarJobResults.length === 0 && (
+                  <div className="px-2">
+                    <p className="px-2.5 py-2 text-xs text-slate-500">Tidak ada fitur, pekerjaan, atau kontrak yang cocok dengan "{navbarSearch}".</p>
+                    <button
+                      onClick={submitNavbarSearch}
+                      className="w-full text-left px-2.5 py-2 rounded-lg text-[11px] text-indigo-400 hover:bg-slate-900 transition cursor-pointer font-semibold"
+                    >
+                      Cari tetap di Tabel Semua Dokumen →
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
-            {activeTab === "clauses" && (
-                  <button
-                    onClick={() => {
-                      setIsAddingClause(true);
-                      setEditingClauseId(null);
-                      setNewClauseForm({
-                        title: "",
-                        content: "",
-                        category: "General",
-                        tags: "",
-                        isMandatory: false,
-                        isProtected: false,
-                      });
-                    }}
-                    className="flex items-center gap-2 px-5 h-11 bg-soft-blue hover:opacity-90 text-white rounded-full text-[13px] font-medium transition cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Tambah Klausul Master
-                  </button>
-            )}
+          </div>
+          <div className="w-8 h-8 rounded-full bg-slate-750 border border-slate-800 text-slate-300 text-xs font-bold flex items-center justify-center shrink-0" title={currentUser?.name}>
+            {(currentUser?.name || "U").trim().charAt(0).toUpperCase()}
+          </div>
           </div>
         </header>
 
-        <main className="flex-1 px-6 md:px-8 pb-8 pt-4 overflow-y-auto">
+        <main className="flex-1 px-6 md:px-8 pb-8 pt-6 overflow-y-auto">
           {/* VIEW: PUSAT PERATURAN */}
           {activeTab === "pusat-peraturan" && !selectedContract && (
             <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs">
@@ -16613,414 +16653,24 @@ export default function App() {
               : totalValueActive >= 1e6
                 ? `Rp ${Math.round(totalValueActive / 1e6).toLocaleString("id-ID")} jt`
                 : valueFull;
-          const CARD = "rounded-[28px] bg-slate-900 card-soft p-5";
-
-
-          const hasAppr = myApprovalQueue.length > 0;
-          const catLabel = (cat: string) => cat === "Employment" ? "Karyawan / PKWT" : cat === "Vendor" ? "Vendor / Supplier Jasa" : cat;
-          const PAGE = 10;
-          const apprPages = Math.max(1, Math.ceil(myApprovalQueue.length / PAGE));
-          const apprPg = Math.min(apprPage, apprPages);
-          const apprItems = myApprovalQueue.slice((apprPg - 1) * PAGE, apprPg * PAGE);
-          const expPages = Math.max(1, Math.ceil(criticalExpiryContracts.length / PAGE));
-          const expPg = Math.min(expPage, expPages);
-          const expItems = criticalExpiryContracts.slice((expPg - 1) * PAGE, expPg * PAGE);
-
-          const apprCard = (
-            <div className={`${CARD} flex flex-col gap-3`} style={{ height: 340, overflow: "hidden" }}>
-              <DashCardHeader
-                Icon={UserCheck}
-                title="Perlu Persetujuan Saya"
-                subtitle="Berjalan berurutan — hanya giliran teratas yang bisa diputuskan."
-                right={myApprovalCount > 0 ? <span className="text-[11px] font-semibold px-3 py-1 rounded-full bg-peach text-brand-orange tabular-nums">{myApprovalCount}</span> : null}
-              />
-              {slaBreachCount > 0 && (
-                <p className="text-[11px] text-rose-500 font-medium">{slaBreachCount} sudah lewat batas {slaDays} hari.</p>
-              )}
-              {apprItems.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center border-t border-slate-800 text-center">
-                  <CheckCircle className="w-6 h-6 text-indigo-400 mb-2" />
-                  <p className="text-[13px] text-slate-500">Tidak ada dokumen yang menunggu persetujuan Anda.</p>
-                </div>
-              ) : (
-              <FadeScroll className="border-t border-slate-800 pr-1">
-                {apprItems.map(({ contract: c, step, isMine, asDelegate, totalSteps, waitingSince }) => {
-                  const hari = Math.max(0, Math.floor((Date.now() - new Date(waitingSince).getTime()) / 86400000));
-                  const lama = Number.isFinite(hari) ? (hari === 0 ? "hari ini" : `${hari} hari`) : "—";
-                  const lewatSla = slaDays > 0 && hari >= slaDays;
-                  return (
-                    <button
-                      key={c.id}
-                      onClick={() => handleOpenWorkspace(c)}
-                      className="w-full text-left flex items-center gap-3 py-3 border-b border-slate-800 last:border-0 hover:bg-slate-950 transition cursor-pointer"
-                    >
-                      <span className="w-9 h-9 rounded-full bg-mist flex items-center justify-center shrink-0">
-                        <UserCheck className="w-4 h-4 text-slate-100" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[13px] font-medium text-slate-100 truncate">{c.title}</p>
-                        <p className="text-[11px] text-slate-500 truncate">
-                          <span className="font-mono">{c.contractNumber}</span>
-                          {" · "}langkah {step.order} dari {totalSteps}
-                          {c.approvalSubmittedByName ? ` · diajukan ${c.approvalSubmittedByName}` : ""}
-                        </p>
-                      </div>
-                      <div className="shrink-0 text-right">
-                        {isMine ? (
-                          <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-peach text-brand-orange uppercase">Giliran Anda</span>
-                        ) : asDelegate ? (
-                          <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-violet-500/25 text-violet-800 uppercase" title={`${step.approverName} sedang berhalangan dan menunjuk Anda sebagai pengganti. Keputusan tetap tercatat atas nama ${step.approverName}.`}>
-                            Pengganti · {step.approverName}
-                          </span>
-                        ) : (
-                          <span className="text-[9px] font-bold px-2.5 py-0.5 rounded-full bg-slate-700/40 text-slate-300 uppercase" title={`Giliran ${step.approverName} — Anda bisa memutuskan sebagai override admin.`}>
-                            Override · {step.approverName}
-                          </span>
-                        )}
-                        <p className={`text-[10px] mt-1 tabular-nums ${lewatSla ? "text-rose-500 font-semibold" : "text-slate-500"}`}
-                           title={slaDays > 0 ? `Batas wajar ${slaDays} hari per langkah (diatur di Konfigurasi).` : undefined}>
-                          {hari === 0 ? "masuk hari ini" : `menunggu ${lama}`}
-                          {lewatSla ? ` · lewat batas ${slaDays}h` : ""}
-                        </p>
-                      </div>
-                    </button>
-                  );
-                })}
-              </FadeScroll>
-              )}
-              <DashPager page={apprPg} total={myApprovalQueue.length} pageSize={PAGE} onChange={setApprPage} />
-              {myApprovalQueue.length > PAGE && (
-                <button onClick={() => { setActiveTab("monitoring"); setMonitorStatus("ReviewInternal"); }} className="text-[11px] text-indigo-400 hover:underline font-medium cursor-pointer text-left">
-                  Buka semua di Monitoring →
-                </button>
-              )}
-            </div>
-          );
-
-          const expiryCard = (
-            <div className={`${CARD} flex flex-col gap-3`} style={{ height: 400, overflow: "hidden" }}>
-              <DashCardHeader
-                Icon={ShieldAlert}
-                title="Peringatan Kadaluwarsa Kontrak & Mesin Perpanjangan"
-                subtitle="Kontrak aktif yang mendekati masa berakhir"
-                right={<span className="text-[11px] font-semibold px-3 py-1 rounded-full bg-peach text-brand-orange tabular-nums whitespace-nowrap">{criticalExpiryContracts.length} kontrak</span>}
-              />
-              {criticalExpiryContracts.length === 0 ? (
-                <div className="flex-1 flex flex-col items-center justify-center border-t border-slate-800 text-center">
-                  <CheckCircle className="w-6 h-6 text-indigo-400 mb-2" />
-                  <p className="text-[13px] text-slate-500">Tidak ada kontrak yang akan kedaluwarsa dalam waktu dekat.</p>
-                </div>
-              ) : (
-                <FadeScroll className="border-t border-slate-800 pr-1">
-                  {expItems.map((c) => {
-                    const daysLeft = getDaysRemaining(c.endDate);
-                    return (
-                      <div key={c.id} className="flex items-center gap-3 py-3 border-b border-slate-800 last:border-0">
-                        <span className="w-9 h-9 rounded-full bg-peach flex items-center justify-center shrink-0">
-                          <Calendar className="w-4 h-4 text-brand-orange" />
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-[13px] font-medium text-slate-100 truncate">{c.title}</p>
-                          <p className="text-[11px] text-slate-500 truncate">
-                            <span className="font-mono">{c.contractNumber}</span> · {c.category} · {c.party2Name}
-                          </p>
-                          <p className="text-[11px] text-brand-orange font-medium">Berakhir {c.endDate} ({daysLeft} hari lagi)</p>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <button onClick={() => handleOpenWorkspace(c)} className="px-3.5 py-1.5 rounded-full bg-slate-950 hover:bg-slate-850 text-xs font-medium text-slate-200 transition cursor-pointer">Tinjau</button>
-                          <button onClick={() => handleOpenRenewModal(c)} className="px-3.5 py-1.5 rounded-full bg-soft-blue hover:opacity-90 text-xs font-medium text-white transition cursor-pointer flex items-center gap-1">
-                            <RefreshCw className="w-3 h-3" /> Perpanjang
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </FadeScroll>
-              )}
-              <DashPager page={expPg} total={criticalExpiryContracts.length} pageSize={PAGE} onChange={setExpPage} />
-            </div>
-          );
-
-          const nominalByMonth = perMonth(aktifList, (c: any) =>
-            (c.sharingFeeItems || []).filter((it: any) => it.feeType === "nominal").reduce((sm: number, it: any) => sm + (Number(it.value) || 0), 0));
-          const pctShare = aktifList.length ? Math.round((sharingFeeStats.pctContracts / aktifList.length) * 100) : 0;
-          const shareCard = sharingFeeStats.hasAny ? (
-            <div className={`${CARD} flex flex-col gap-4`} style={{ height: 400, overflow: "hidden" }}>
-              <DashCardHeader
-                Icon={Percent}
-                title="Sharing Fee Kontrak Aktif"
-                subtitle="Nominal & persentase dipisah — satuannya berbeda"
-              />
-              <div className="border-t border-slate-800 pt-4 flex-1 min-h-0 flex flex-col">
-                <p className="text-[12px] text-slate-500">Nominal (pasti)</p>
-                <p className="text-[26px] leading-tight font-medium text-slate-100 tabular mt-0.5">Rp {sharingFeeStats.nominalSum.toLocaleString("id-ID")}</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  {sharingFeeStats.nominalContracts > 0 ? `dari ${sharingFeeStats.nominalContracts} kontrak · per bulan mulai kontrak` : "belum ada fee nominal"}
-                </p>
-                <div className="mt-auto pt-3">
-                  <WideBars values={nominalByMonth} labels={monthLabels} />
-                </div>
-              </div>
-              <div className="border-t border-slate-800 pt-4 shrink-0">
-                <div className="flex items-end justify-between gap-3">
-                  <div>
-                    <p className="text-[12px] text-slate-500">Berbasis Persentase (terpisah)</p>
-                    <p className="text-[26px] leading-tight font-medium text-slate-100 tabular mt-0.5">
-                      {sharingFeeStats.pctContracts} <span className="text-sm font-normal text-slate-500">kontrak</span>
-                    </p>
-                  </div>
-                  <span className="text-[11px] font-semibold px-3 py-1 rounded-full bg-peach text-brand-orange tabular-nums">{pctShare}% kontrak aktif</span>
-                </div>
-                <div className="mt-3 h-2.5 rounded-full bg-slate-950 overflow-hidden">
-                  <div className="h-full rounded-full bg-peach-strong" style={{ width: `${pctShare}%` }} />
-                </div>
-                <p className="text-[11px] text-slate-500 mt-2 flex items-start gap-1.5">
-                  <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
-                  Persentase tidak dijumlahkan ke total rupiah — hanya jumlah kontrak.
-                </p>
-              </div>
-            </div>
-          ) : null;
-
-          const catCard = (
-            <div className={`${CARD} h-full flex flex-col gap-4`}>
-              <DashCardHeader Icon={Layers} title="Distribusi Kontrak Berdasarkan Kategori" subtitle={`${contracts.length} kontrak total`} />
-              <div className="flex-1 flex flex-col justify-around gap-3">
-                {["Employment", "Vendor", "NDA", "MOU", "Rental"].map((cat) => {
-                  const count = contracts.filter((c) => c.category === cat).length;
-                  const percentage = contracts.length ? Math.round((count / contracts.length) * 100) : 0;
-                  return (
-                    <div key={cat} className="space-y-1.5">
-                      <div className="flex justify-between text-xs">
-                        <span className="text-slate-300 font-medium">{catLabel(cat)}</span>
-                        <span className="text-slate-500 tabular">{count} kontrak · {percentage}%</span>
-                      </div>
-                      <div className="w-full bg-slate-950 rounded-full h-2.5">
-                        <div
-                          className={`h-2.5 rounded-full ${cat === "Employment" ? "bg-soft-blue" : cat === "Vendor" ? "bg-peach-strong" : cat === "NDA" ? "bg-mist-strong" : "bg-slate-650"}`}
-                          style={{ width: `${percentage}%` }}
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-
-          const auditCard = (
-            <div className={`${CARD} flex flex-col gap-3`} style={{ height: 340, overflow: "hidden" }}>
-              <DashCardHeader Icon={History} title="Produktivitas Pengguna & Log Audit Aktivitas" subtitle="10 aktivitas terbaru" />
-              <FadeScroll className="border-t border-slate-800 pr-1">
-                {audits.length === 0 && <p className="text-[13px] text-slate-500 text-center py-6">Belum ada aktivitas.</p>}
-                {audits.slice(0, 10).map((audit) => (
-                  <div key={audit.id} className="flex items-start gap-3 py-3 border-b border-slate-800 last:border-0">
-                    <span className="w-9 h-9 rounded-full bg-mist flex items-center justify-center text-xs font-semibold text-slate-100 shrink-0">
-                      {(audit.userName || "?").trim().charAt(0).toUpperCase()}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline justify-between gap-2">
-                        <p className="text-[13px] font-semibold text-slate-100 truncate">{audit.userName} <span className="text-[10px] font-normal text-indigo-400">{roleLabel(audit.userRole)}</span></p>
-                        <span className="text-[10px] text-slate-500 shrink-0">{new Date(audit.timestamp).toLocaleDateString()}</span>
-                      </div>
-                      <p className="text-[12px] text-slate-500 leading-snug line-clamp-2">
-                        {audit.action} • {audit.details}
-                        {audit.contractNumber ? <span className="font-mono text-[10px]"> · {audit.contractNumber}</span> : null}
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </FadeScroll>
-              <button
-                onClick={() => setActiveTab("audits")}
-                className="w-full py-2.5 bg-slate-950 hover:bg-slate-850 rounded-full text-xs font-medium flex items-center justify-center gap-1 text-indigo-400 transition cursor-pointer"
-              >
-                Buka Seluruh Audit Trail <ChevronRight className="w-3 h-3" />
-              </button>
-            </div>
-          );
-
-          // Modal "Lihat semua" — semua kontrak, paling baru di atas, bisa dicari.
-          const recentQ = recentQuery.trim().toLowerCase();
-          const recentModalList = recentQ
-            ? byNewest.filter((c: any) => [c.title, c.contractNumber, c.party1Name, c.party2Name].some((v) => String(v || "").toLowerCase().includes(recentQ)))
-            : byNewest;
-          const recentModal = recentModalOpen ? (
-            <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={() => setRecentModalOpen(false)}>
-              <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Semua kontrak terbaru" className="modal-panel relative w-full max-w-2xl max-h-[85vh] flex flex-col bg-slate-900 rounded-[28px] overflow-hidden">
-                <div className="p-6 pb-4 space-y-4 border-b border-slate-800">
-                  <button type="button" onClick={() => setRecentModalOpen(false)} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 flex items-center justify-center cursor-pointer"><X className="w-4 h-4" /></button>
-                  <div className="flex items-start gap-3 pr-10">
-                    <span className="w-11 h-11 rounded-full bg-peach flex items-center justify-center shrink-0"><FileText className="w-5 h-5 text-slate-300" /></span>
-                    <div className="min-w-0">
-                      <h3 className="text-[18px] font-semibold text-slate-100 leading-tight">Semua Kontrak Terbaru</h3>
-                      <p className="text-xs text-slate-500 mt-0.5">{byNewest.length} kontrak · diurutkan dari yang paling baru dibuat</p>
-                    </div>
-                  </div>
-                  <div className="relative">
-                    <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-                    <input
-                      autoFocus
-                      value={recentQuery}
-                      onChange={(e) => setRecentQuery(e.target.value)}
-                      placeholder="Cari judul, nomor, atau pihak…"
-                      aria-label="Cari kontrak"
-                      className="w-full h-10 pl-10 pr-4 rounded-full bg-slate-950 border border-slate-800 text-[13px] text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
-                    />
-                  </div>
-                </div>
-                <div className="flex-1 overflow-y-auto px-3 py-2">
-                  {recentModalList.length === 0 ? (
-                    <p className="text-[13px] text-slate-500 text-center py-10">Tidak ada kontrak yang cocok.</p>
-                  ) : recentModalList.map((c: any) => (
-                    <button
-                      key={c.id}
-                      onClick={() => { setRecentModalOpen(false); handleOpenWorkspace(c); }}
-                      className="w-full flex items-center gap-3 px-3 py-3 rounded-2xl text-left hover:bg-slate-950 transition cursor-pointer"
-                    >
-                      <span className="w-9 h-9 rounded-full bg-mist flex items-center justify-center shrink-0"><FileText className="w-4 h-4 text-slate-100" /></span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-[13px] font-medium text-slate-100 truncate">{c.title || "(tanpa judul)"}</span>
-                        <span className="block text-[11px] text-slate-500 truncate">
-                          <span className="font-mono">{c.contractNumber || "Belum bernomor"}</span>
-                          {c.party2Name ? ` · ${c.party2Name}` : ""}
-                        </span>
-                      </span>
-                      {statusPill(c, true)}
-                      <span className="text-[11px] text-slate-500 tabular shrink-0 w-[84px] text-right">{fmtTanggal(c.createdAt || c.updatedAt)}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : null;
-
           return (
-            <div className="space-y-5">
-              {recentModal}
-              {/* Kartu statistik + grafik mini */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-                {[
-                  { label: "Kontrak Aktif", value: `${aktifList.length}`, unit: "kontrak", Icon: CheckCircle, chart: <MiniBars values={perMonth(aktifList, () => 1)} labels={monthLabels} mixed /> },
-                  { label: "Draft Kontrak", value: `${draftContractsCount}`, unit: "draft", Icon: Clock, chart: <MiniBars values={perMonth(draftList, () => 1)} labels={monthLabels} /> },
-                  { label: "Segera Berakhir · 30 hari", value: `${criticalExpiryContracts.length}`, unit: "kontrak", Icon: ShieldAlert, chart: <MiniLine values={weeklyExpiry} labels={["M1", "M2", "M3", "M4"]} /> },
-                  { label: "Portfolio Value (GA)", value: valueText, full: valueFull, unit: "", Icon: Building2, chart: <MiniLine values={perMonth(aktifList, (c) => Number(c.contractValue) || 0)} labels={monthLabels} /> },
-                ].map((sc, i) => (
-                  <div key={i} className={CARD}>
-                    <p className="text-[15px] text-slate-100">{sc.label}</p>
-                    <div className="flex items-end justify-between gap-3 mt-4">
-                      <div className="flex items-center gap-3">
-                        <span className="w-11 h-11 rounded-full bg-peach-strong flex items-center justify-center shrink-0">
-                          <sc.Icon className="w-[18px] h-[18px] text-slate-100" />
-                        </span>
-                        <div className="min-w-0">
-                          <p className={`${sc.value.length > 6 ? "text-[20px]" : "text-[34px]"} leading-none font-medium tabular text-slate-100 whitespace-nowrap`} title={(sc as any).full}>{sc.value}</p>
-                          {sc.unit && <p className="text-[11px] text-slate-500 mt-1">{sc.unit}</p>}
-                        </div>
-                      </div>
-                      {sc.chart}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Baris 1: status · info · kategori (tinggi sama) */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
-                <div className="lg:col-span-3">
-                  <div className={`${CARD} h-full flex flex-col`} style={{ minHeight: 300 }}>
-                    <DashCardHeader Icon={PieChart} title="Status Kontrak" subtitle={`${contracts.length} kontrak total`} />
-                    <div className="flex items-center justify-center py-3 flex-1">
-                      <StatusRing
-                        segments={[
-                          { value: aktifList.length, color: "var(--color-soft-blue)" },
-                          { value: draftList.length, color: "var(--color-peach-strong)" },
-                          { value: otherCount, color: "var(--color-slate-700)" },
-                        ]}
-                        center={`${aktifPct}%`}
-                        sub="kontrak aktif"
-                      />
-                    </div>
-                    <div className="flex items-center justify-center gap-4 text-[11px] text-slate-500 flex-wrap">
-                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-soft-blue" />Aktif {aktifList.length}</span>
-                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-peach-strong" />Draft {draftList.length}</span>
-                      <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-full bg-slate-700" />Lainnya {otherCount}</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="lg:col-span-5">
-                  <div className="rounded-[28px] card-sky card-soft p-5 h-full flex flex-col gap-4">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-[20px] font-medium text-slate-100">Info Kontrak</h3>
-                      <button onClick={() => { setRecentQuery(""); setRecentModalOpen(true); }} className="text-[12px] text-slate-500 hover:text-slate-100 cursor-pointer">Lihat semua &gt;</button>
-                    </div>
-                    {!latest ? (
-                      <div className="flex-1 flex flex-col items-center justify-center rounded-[22px] bg-slate-900/70 p-6 text-center">
-                        <FileText className="w-8 h-8 text-slate-500 mb-2" strokeWidth={1.5} />
-                        <p className="text-[13px] text-slate-500">Belum ada kontrak.</p>
-                      </div>
-                    ) : (
-                    <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {/* Kiri: SATU kontrak paling baru */}
-                      <button
-                        type="button"
-                        onClick={() => handleOpenWorkspace(latest)}
-                        className="rounded-[22px] bg-mist-strong p-4 flex flex-col gap-3 text-left cursor-pointer hover:brightness-[1.02] transition min-h-[190px]"
-                        title="Buka kontrak"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-300">Paling baru</span>
-                          {statusPill(latest)}
-                        </div>
-                        <div className="min-w-0 space-y-1">
-                          <p className="text-[15px] font-semibold text-slate-100 leading-snug line-clamp-2">{latest.title || "(tanpa judul)"}</p>
-                          <p className="text-[11px] font-mono text-slate-400 truncate">{latest.contractNumber || "Belum bernomor"}</p>
-                        </div>
-                        <div className="mt-auto space-y-1.5">
-                          <p className="text-[12px] text-slate-200 truncate" title={`${latest.party1Name || "Pihak 1"} ↔ ${latest.party2Name || "Pihak 2"}`}>
-                            {latest.party1Name || "Pihak 1"} <span className="text-slate-400">↔</span> {latest.party2Name || "Pihak 2"}
-                          </p>
-                          <p className="text-[11px] text-slate-400">Dibuat {fmtTanggal(latest.createdAt || latest.updatedAt)}</p>
-                        </div>
-                      </button>
-                      {/* Kanan: kontrak terbaru berikutnya */}
-                      <div className="rounded-[22px] bg-slate-900/70 p-4 flex flex-col gap-2.5 min-w-0">
-                        <p className="text-[15px] font-medium text-slate-100">Kontrak Terbaru</p>
-                        {recentRest.length === 0 ? (
-                          <p className="text-[12px] text-slate-500">Belum ada kontrak lain.</p>
-                        ) : recentRest.map((c) => (
-                          <button key={c.id} onClick={() => handleOpenWorkspace(c)} className="w-full flex items-start gap-2 text-left cursor-pointer group min-w-0">
-                            <span className="w-2 h-2 mt-[5px] rounded-full shrink-0 border border-slate-650 group-hover:bg-soft-blue group-hover:border-transparent" />
-                            <span className="flex-1 min-w-0">
-                              <span className="block text-[12px] truncate text-slate-200 group-hover:text-slate-100" title={c.title}>{c.title || "(tanpa judul)"}</span>
-                              <span className="flex items-center gap-1.5 mt-0.5">
-                                {statusPill(c, true)}
-                                <span className="text-[10px] text-slate-500 tabular">{fmtTanggal(c.createdAt || c.updatedAt, false)}</span>
-                              </span>
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    )}
-                  </div>
-                </div>
-                <div className="lg:col-span-4">
-                  {catCard}
-                </div>
-              </div>
-
-              {/* Baris 2: persetujuan · audit (dibagi rata, tinggi tetap) */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-                {apprCard}
-                {auditCard}
-              </div>
-
-              {/* Baris 3: kadaluwarsa · sharing fee (tinggi tetap) */}
-              <div className={`grid grid-cols-1 gap-5 items-start ${shareCard ? "lg:grid-cols-2" : ""}`}>
-                {expiryCard}
-                {shareCard}
-              </div>
-            </div>
+            <DashboardView
+              contracts={contracts}
+              activeContracts={aktifList}
+              draftCount={draftContractsCount}
+              expiring={criticalExpiryContracts}
+              valueText={valueText}
+              valueFull={valueFull}
+              sharingStats={sharingFeeStats}
+              approvals={myApprovalQueue as any}
+              slaDays={slaDays}
+              audits={audits}
+              roleLabel={roleLabel}
+              daysRemaining={getDaysRemaining}
+              onOpenContract={handleOpenWorkspace}
+              onRenew={handleOpenRenewModal}
+              onOpenAudits={() => setActiveTab("audits")}
+            />
           );
         })()}
 
@@ -17028,7 +16678,7 @@ export default function App() {
           {activeTab === "konfigurasi" && !selectedContract && (
             <div className="space-y-6">
               {/* Header halaman */}
-              <div className="card-grad card-soft bg-slate-900 rounded-[28px] px-6 py-5 flex items-center gap-4 relative overflow-hidden">
+              <div className="card-grad card-soft bg-slate-900 rounded-2xl px-6 py-5 flex items-center gap-4 relative overflow-hidden">
                 <Settings aria-hidden className="pointer-events-none absolute -right-4 -top-8 w-40 h-40 text-soft-blue opacity-[0.12]" strokeWidth={1.2} />
                 <Sliders aria-hidden className="pointer-events-none absolute right-40 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
                 <FileCheck aria-hidden className="pointer-events-none absolute right-80 -top-3 w-16 h-16 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
@@ -17098,7 +16748,7 @@ export default function App() {
                 };
                 return (
                   <>
-                    <nav aria-label="Kategori konfigurasi" className="card-soft bg-slate-900 rounded-[22px] p-1.5 grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                    <nav aria-label="Kategori konfigurasi" className="card-soft bg-slate-900 rounded-2xl p-1.5 grid grid-cols-2 md:grid-cols-4 gap-1.5">
                       {tabBtn("beranda", "Beranda", () => setConfigTab("beranda"))}
                       {CATS.map((c) => tabBtn(c.id, c.label, () => goConfig(c.sections[0].items[0].k, c.sections[0].items[0].main)))}
                     </nav>
@@ -17131,7 +16781,7 @@ export default function App() {
                 );
               })()}
 
-              <div className="cfg-content min-w-0 space-y-5 rounded-[28px] bg-slate-900/50 border border-white/70 p-5">
+              <div className="cfg-content min-w-0 space-y-5 rounded-2xl bg-slate-900/50 border border-white/70 p-5">
               {configTab !== "beranda" && (() => {
                 const META: Record<string, [string, string]> = {
                   dcsdoctypes: ["Jenis Dokumen (Semua Modul)", "Satu tempat untuk jenis dokumen DCS, Dokumen Eksternal, dan Dokumen Karyawan."],
@@ -17226,7 +16876,7 @@ export default function App() {
                             <button
                               key={i}
                               onClick={() => goConfig(s.tab, s.main)}
-                              className="text-left p-4 card-grad card-soft bg-slate-900 hover:brightness-[1.02] rounded-[22px] transition cursor-pointer flex items-start gap-3 group relative overflow-hidden"
+                              className="text-left p-4 card-grad card-soft bg-slate-900 hover:brightness-[1.02] rounded-2xl transition cursor-pointer flex items-start gap-3 group relative overflow-hidden"
                             >
                               {(() => { const OI = ({ app: Building2, dcsdoctypes: FileText, clauses: Scale, folder: Briefcase, vendor: Users } as Record<string, any>)[s.tab] || Gavel; return <OI aria-hidden className="pointer-events-none absolute -right-2 -bottom-3 w-16 h-16 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />; })()}
                               {s.done ? (
@@ -17293,7 +16943,7 @@ export default function App() {
                     {clauseCategories.filter((cat) => cat !== "Employment").map((cat) => {
                       const count = contracts.filter((c) => c.category === cat).length;
                       return (
-                        <div key={cat} className="p-4 bg-slate-900 card-soft rounded-[22px] flex items-center justify-between">
+                        <div key={cat} className="p-4 bg-slate-900 card-soft rounded-2xl flex items-center justify-between">
                           {renameFolder?.old === cat ? (
                             <div className="flex-1 flex gap-2">
                               <input
@@ -17362,7 +17012,7 @@ export default function App() {
                     {masterData.employmentTypes.map((et) => {
                       const count = contracts.filter((c) => c.employmentType === et).length;
                       return (
-                        <div key={et} className="p-4 bg-slate-900 card-soft rounded-[22px] flex items-center justify-between">
+                        <div key={et} className="p-4 bg-slate-900 card-soft rounded-2xl flex items-center justify-between">
                           {renameEmploymentType?.old === et ? (
                             <div className="flex-1 flex gap-2">
                               <input
@@ -17427,7 +17077,7 @@ export default function App() {
                     {/* Mitra/Operator — pilihan di form klasifikasi dokumen eksternal
                         (menjadi level folder ke-4 Arsip Eksternal). Tiap grup terikat ke PT tertentu
                         dan, opsional, ke platform tertentu. */}
-                    <div className="p-4 bg-slate-900 card-soft rounded-[22px] space-y-3 ">
+                    <div className="p-4 bg-slate-900 card-soft rounded-2xl space-y-3 ">
                       <div className="flex items-start justify-between gap-3 flex-wrap">
                         <div>
                           <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
@@ -17527,7 +17177,7 @@ export default function App() {
 
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {/* Jenis Kontrak / Dokumen — kini dikelola di tab "Jenis Dokumen" (hub terpadu) */}
-                    <div className="p-4 bg-slate-900 card-soft rounded-[22px] space-y-2 lg:col-span-2">
+                    <div className="p-4 bg-slate-900 card-soft rounded-2xl space-y-2 lg:col-span-2">
                       <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                         <ClipboardList className="w-4 h-4 text-indigo-400" /> Jenis Kontrak / Dokumen
                       </h4>
@@ -17840,7 +17490,7 @@ export default function App() {
                         lewat tombol "Simpan Margin" di kartu ini — tidak ada
                         perbedaan mekanisme simpan seperti pada kartu Format
                         Nomor di atas. */}
-                    <div className="p-4 bg-slate-900 card-soft rounded-[22px] space-y-3 lg:col-span-2">
+                    <div className="p-4 bg-slate-900 card-soft rounded-2xl space-y-3 lg:col-span-2">
                       <div className="flex items-center justify-between flex-wrap gap-2">
                         <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                           <FileText className="w-4 h-4 text-violet-400" /> Margin Halaman Dokumen (mm)
@@ -17901,7 +17551,7 @@ export default function App() {
                       { key: "copyStatuses", label: "Status Rangkap Fisik", icon: <Layers className="w-4 h-4 text-amber-400" /> },
                       { key: "departments", label: "Departemen", icon: <Building2 className="w-4 h-4 text-rose-400" /> },
                     ] as const).map((cfg) => (
-                      <div key={cfg.key} id={cfg.key === "departments" ? "cfg-departments" : undefined} className="p-4 bg-slate-900 card-soft rounded-[22px] space-y-3 transition">
+                      <div key={cfg.key} id={cfg.key === "departments" ? "cfg-departments" : undefined} className="p-4 bg-slate-900 card-soft rounded-2xl space-y-3 transition">
                         <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                           {cfg.icon} {cfg.label}
                         </h4>
@@ -17983,7 +17633,7 @@ export default function App() {
                     </div>
 
                     {/* Opsi hari reminder */}
-                    <div className="p-4 bg-slate-900 card-soft rounded-[22px] space-y-3 lg:col-span-2">
+                    <div className="p-4 bg-slate-900 card-soft rounded-2xl space-y-3 lg:col-span-2">
                       <h4 className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
                         <Bell className="w-4 h-4 text-amber-400" /> Opsi "Ingatkan Sebelum Berakhir" (hari)
                       </h4>
@@ -18589,7 +18239,7 @@ export default function App() {
                   </button>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {vendors.map((v) => (
-                      <div key={v.id} className="p-4 card-grad bg-slate-900 card-soft rounded-[22px] space-y-1 relative overflow-hidden">
+                      <div key={v.id} className="p-4 card-grad bg-slate-900 card-soft rounded-2xl space-y-1 relative overflow-hidden">
                         <Building2 aria-hidden className="pointer-events-none absolute -right-2 -bottom-3 w-16 h-16 text-peach-strong opacity-25 -rotate-12" strokeWidth={1.2} />
                         <div className="flex items-start justify-between">
                           <p className="font-bold text-slate-200 text-sm">{v.name}</p>
@@ -18618,7 +18268,7 @@ export default function App() {
                   </button>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {employees.map((emp) => (
-                      <div key={emp.id} className="p-4 card-grad bg-slate-900 card-soft rounded-[22px] space-y-1 relative overflow-hidden">
+                      <div key={emp.id} className="p-4 card-grad bg-slate-900 card-soft rounded-2xl space-y-1 relative overflow-hidden">
                         <Users aria-hidden className="pointer-events-none absolute -right-2 -bottom-3 w-16 h-16 text-peach-strong opacity-25 -rotate-12" strokeWidth={1.2} />
                         <div className="flex items-start justify-between">
                           <p className="font-bold text-slate-200 text-sm">{emp.name}</p>
@@ -19641,7 +19291,7 @@ export default function App() {
                             key={card.key}
                             onClick={() => { setMonitorHealth(on ? "" : card.key); setMonitorPage(1); }}
                             title={on ? "Klik lagi untuk lepas filter" : "Klik untuk saring tabel ke kontrak ini"}
-                            className={`card-soft text-left p-5 rounded-[28px] bg-slate-900 transition cursor-pointer hover:-translate-y-0.5 ${on ? (card.orange ? "ring-2 ring-peach-strong" : "ring-2 ring-soft-blue") : ""}`}
+                            className={`card-soft text-left p-5 rounded-2xl bg-slate-900 transition cursor-pointer hover:-translate-y-0.5 ${on ? (card.orange ? "ring-2 ring-peach-strong" : "ring-2 ring-soft-blue") : ""}`}
                           >
                             <div className="flex items-center justify-between gap-2">
                               <span className={`w-10 h-10 rounded-full flex items-center justify-center bg-${card.tone}`}>
@@ -21131,7 +20781,7 @@ export default function App() {
           {selectedContract && (
             <div className="space-y-6">
               {/* Workspace Header */}
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px] flex flex-col gap-4 relative overflow-hidden">
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl flex flex-col gap-4 relative overflow-hidden">
                 <FileText aria-hidden className="pointer-events-none absolute -right-3 -top-7 w-36 h-36 text-soft-blue opacity-[0.12] rotate-12" strokeWidth={1.2} />
                 <Scale aria-hidden className="pointer-events-none absolute right-52 -top-5 w-20 h-20 text-peach-strong opacity-25 -rotate-12" strokeWidth={1.2} />
                 <div className="space-y-1.5 relative">
@@ -21199,10 +20849,11 @@ export default function App() {
                 <div role="tablist" aria-label="Kategori fitur dokumen" className="flex flex-wrap items-center gap-1 pt-4 border-t border-slate-800/70">
                   {([
                     { k: "doc" as const, label: "Dokumen", Icon: FileText },
+                    { k: "lang" as const, label: "Bahasa", Icon: Languages },
                     { k: "view" as const, label: "Tampilan", Icon: Building2 },
                     { k: "sign" as const, label: "Tanda Tangan", Icon: PenTool },
                     { k: "review" as const, label: "Tinjau & Kirim", Icon: MessageSquare },
-                  ]).filter((c) => !toolbarIsUpload || (c.k !== "view" && c.k !== "sign")).map(({ k, label, Icon }) => {
+                  ]).filter((c) => c.k === "lang" ? toolbarIsWord : (!toolbarIsUpload || toolbarIsWord || (c.k !== "view" && c.k !== "sign"))).map(({ k, label, Icon }) => {
                     const active = toolbarCatEff === k;
                     return (
                       <button
@@ -21233,10 +20884,12 @@ export default function App() {
                       Edit Data Pihak &amp; Kontrak
                     </button>
                   )}
-                  {toolbarCatEff === "doc" && toolbarIsUpload && selectedContract.currentDocument?.format === "docx" && (
+                  {(toolbarCatEff === "lang" || toolbarCatEff === "view" || toolbarCatEff === "sign") && toolbarIsWord && (
                     <WordLayoutBar
+                      cat={toolbarCatEff}
                       contract={selectedContract}
                       showToast={showToast}
+                      askConfirm={askConfirm}
                       onChanged={(c) => {
                         setSelectedContract(c);
                         setDraftSavedSnapshot(JSON.stringify(c));
@@ -21254,7 +20907,7 @@ export default function App() {
                   {toolbarCatEff === "doc" && (
                   <button
                     onClick={handleComparePreviousContract}
-                    title={`Mengadu kontrak ini dengan kontrak TERAKHIR dari ${selectedContract.party2Name || "pihak kedua yang sama"}. Untuk membandingkan antar versi dokumen ini, pakai panel Riwayat Versi.`}
+                    title={`Mengadu kontrak ini dengan kontrak TERAKHIR dari ${selectedContract.party2Name || "pihak kedua yang sama"}. Untuk membandingkan antar versi dokumen ini, pakai menu Versi.`}
                     className="px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-400 text-xs font-semibold rounded-xl border border-amber-500/30 transition flex items-center gap-1"
                   >
                     <ArrowLeftRight className="w-3.5 h-3.5" />
@@ -21552,7 +21205,8 @@ export default function App() {
                   <React.Fragment key={docReloadKey}>
                   <UploadedDocumentWorkspace
                     contract={selectedContract}
-                    canEdit={isContractEditable(selectedContract)}
+                    canEdit={isContractEditable(selectedContract) || (isFullAccessRole(currentUser?.role) && ["OnReview", "ApprovedInternal", "ReviewEksternal", "FinalReview"].includes(selectedContract.status))}
+                    reviewer={!isContractEditable(selectedContract) && !isFullAccessRole(currentUser?.role) && (selectedContract.status === "OnReview" || selectedContract.status === "FinalReview") && !!currentUser && canReviewContract({ id: currentUser.id, role: currentUser.role, actingForIds: (currentUser as any).actingForIds }, selectedContract, appSettings?.actionPermissions)}
                     canDownload={isContractDownloadable(selectedContract)}
                     onContractUpdated={(c) => {
                       setSelectedContract(c);
@@ -22952,7 +22606,7 @@ export default function App() {
                 const fmtMoney = (v: number | undefined, cur?: string) =>
                   v ? `${cur || "IDR"} ${Number(v).toLocaleString("id-ID")}` : "—";
                 return (
-                  <div className="table-card card-soft bg-slate-900 rounded-[28px] p-5">
+                  <div className="table-card card-soft bg-slate-900 rounded-2xl p-5">
                     <div className="flex items-center justify-between gap-3 flex-wrap px-2 pb-3">
                       <div className="flex items-center gap-2.5">
                         <span className="w-9 h-9 rounded-full bg-violet-500/15 flex items-center justify-center shrink-0">
@@ -23083,7 +22737,7 @@ export default function App() {
                   kanan sebelahan preview; sekarang di bawah grid preview+
                   editor. Isi/logic blok ini TIDAK diubah sama sekali, cuma
                   dipindah posisi & jadi lebar penuh (bukan 5/12 kolom lagi). */}
-              <div className="card-soft bg-slate-900 rounded-[28px] p-6">
+              <div className="card-soft bg-slate-900 rounded-2xl p-6">
                 <div className="space-y-6">
                     {/* SECTION 3: STATUS & SIKLUS KONTRAK (Draft → OnReview →
                         FullyApproved → Aktif → Archived/Terminated) */}
@@ -23560,7 +23214,7 @@ export default function App() {
           {activeTab === "clauses" && (
             <div className="space-y-6 animate-fadeIn">
               {/* Header */}
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px] flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden">
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden">
                 {/* Ornamen ikon hukum samar (dekoratif) */}
                 <Scale aria-hidden className="pointer-events-none absolute -right-2 -top-5 w-36 h-36 text-soft-blue opacity-[0.13]" strokeWidth={1.2} />
                 <Gavel aria-hidden className="pointer-events-none absolute right-44 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
@@ -23599,7 +23253,7 @@ export default function App() {
 
               {/* Category Management */}
               {isManagingCategories && (
-                <div className="card-grad card-soft p-6 rounded-[28px] space-y-4">
+                <div className="card-grad card-soft p-6 rounded-2xl space-y-4">
                   <h3 className="font-bold text-sm text-slate-200">
                     Rumah / Kategori Klausul (Clause Configuration Center)
                   </h3>
@@ -23854,7 +23508,7 @@ export default function App() {
                 <form
                   onSubmit={handleSaveClause}
                   onClick={(e) => e.stopPropagation()}
-                  className="modal-panel relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] grid grid-cols-1 md:grid-cols-2 gap-4"
+                  className="modal-panel relative w-full max-w-3xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl grid grid-cols-1 md:grid-cols-2 gap-4"
                 >
                   <button type="button" onClick={() => setIsAddingClause(false)} aria-label="Tutup" className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-950 text-slate-400 hover:text-slate-100 text-lg leading-none cursor-pointer z-10">×</button>
                   <div className="md:col-span-2 border-b border-slate-800 pb-3 pr-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -24017,7 +23671,7 @@ export default function App() {
                 {clauses.map((c) => (
                   <div
                     key={c.id}
-                    className="card-grad card-soft bg-slate-900 p-5 rounded-[28px] flex flex-col justify-between space-y-3"
+                    className="card-grad card-soft bg-slate-900 p-5 rounded-2xl flex flex-col justify-between space-y-3"
                   >
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
@@ -24116,7 +23770,7 @@ export default function App() {
                   <form
                     onSubmit={handleSaveTemplate}
                     onClick={(e) => e.stopPropagation()}
-                    className="modal-panel relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-[28px] space-y-4"
+                    className="modal-panel relative w-full max-w-4xl max-h-[90vh] overflow-y-auto bg-slate-900 p-7 rounded-2xl space-y-4"
                   >
                     <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                       <h3 className="font-bold text-sm text-indigo-400">
@@ -24461,7 +24115,7 @@ export default function App() {
                   {templates.map((tpl) => (
                     <div
                       key={tpl.id}
-                      className="card-grad card-soft bg-slate-900 p-5 rounded-[28px] space-y-3 relative group"
+                      className="card-grad card-soft bg-slate-900 p-5 rounded-2xl space-y-3 relative group"
                     >
                       <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5">
                         <button
@@ -25142,7 +24796,7 @@ export default function App() {
 
           {activeTab === "audits" && (
             <div className="space-y-6 animate-fadeIn text-xs">
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px]">
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl">
                 <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3 mb-1">
                   <span className="w-10 h-10 rounded-full bg-mist flex items-center justify-center shrink-0"><History className="text-indigo-400 w-5 h-5" /></span>
                   Audit Trail & Integrasi HRIS/ERP
@@ -25156,7 +24810,7 @@ export default function App() {
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 {/* Audit Logs Table (8 cols) */}
-                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-[28px] p-6 space-y-4">
+                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <h3 className="font-bold text-sm">
                       Log Forensik Aktivitas Sistem
@@ -25274,7 +24928,7 @@ export default function App() {
                 </div>
 
                 {/* Database Integration Simulation (4 cols) */}
-                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-[28px] p-6 space-y-5">
+                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-2xl p-6 space-y-5">
                   <div className="border-b border-slate-800 pb-2">
                     <h3 className="font-bold text-sm">
                       Sinkronisasi Database Eksternal
@@ -25405,7 +25059,7 @@ export default function App() {
             };
             return (
             <div className="space-y-6 animate-fadeIn text-xs">
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-[28px]">
+              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl">
                 <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3 mb-1">
                   <span className="w-10 h-10 rounded-full bg-mist flex items-center justify-center shrink-0"><Layers className="text-indigo-400 w-5 h-5" /></span>
                   Audit Trail Kontrak &amp; DCS
@@ -25420,7 +25074,7 @@ export default function App() {
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
                 {/* Log Kontrak & DCS (8 cols) */}
-                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-[28px] p-6 space-y-4">
+                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <h3 className="font-bold text-sm">
                       Log Aktivitas Kontrak &amp; DCS
@@ -25538,7 +25192,7 @@ export default function App() {
                 </div>
 
                 {/* Ringkasan per Modul (4 cols) */}
-                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-[28px] p-6 space-y-4">
+                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
                   <div className="border-b border-slate-800 pb-2">
                     <h3 className="font-bold text-sm">
                       Ringkasan per Modul
@@ -28708,6 +28362,7 @@ export default function App() {
         // Kontrak "Upload Dokumen": Mode Tinjau menampilkan BERKAS asli versi aktif
         // (bukan narasi/pasal template — clauses-nya memang kosong).
         const isUploadReview = isUploadedDocument(selectedContract);
+        const trackOn = isUploadReview && selectedContract.currentDocument?.format === "docx" && reviewTrackMode && !reviewTrackOff;
         // Menerima usulan = membuat versi dokumen baru: hanya Draft & peran yg boleh ubah dokumen.
         const canEditRole = canEditContracts && isDocumentOwnerSide(selectedContract);
         const canApplyMarkup = selectedContract.status === "Draft" && canEditRole;
@@ -28948,6 +28603,7 @@ export default function App() {
 
             {/* DUA JALUR DISKUSI — tab menentukan kartu yang tampil & siapa
                 yang bisa membaca komentar/balasan baru. */}
+            {!(isUploadReview && trackOn) && (
             <div className="shrink-0 px-5 pt-2 border-b border-slate-800 bg-slate-900/50 flex items-end gap-1 flex-wrap">
               {([
                 { ch: "internal" as const, label: "💬 Diskusi Internal", hint: "Hanya tim internal (kamu ↔ approver). Tidak pernah terlihat pihak eksternal." },
@@ -28975,10 +28631,16 @@ export default function App() {
                   : "Komentar & balasan di tab ini hanya untuk tim internal."}
               </span>
             </div>
+            )}
 
             {isUploadReview ? (
               <div className="shrink-0 px-5 py-2 border-b border-slate-800/60 bg-slate-900/30 text-[10px] text-slate-500">
-                Dokumen ditampilkan <b className="text-slate-300">apa adanya</b>. Pada dokumen Word, <b className="text-slate-300">sorot teks</b> → ✎ Komentar / ✂ Coret / ⇄ Ganti; usulan baru mengubah dokumen setelah <b className="text-slate-300">Diterima</b>. Komentar umum ada di kolom kanan.
+                {selectedContract.currentDocument?.format === "docx" && !reviewTrackOff && (
+                  <button type="button" onClick={() => setReviewTrackMode((v) => !v)} className="mr-3 px-2 py-1 rounded-lg border border-indigo-500/40 text-indigo-300 font-bold cursor-pointer">
+                    {reviewTrackMode ? "Pakai komentar margin (cara lama)" : "Pakai Track Changes (editor Word)"}
+                  </button>
+                )}
+                {trackOn ? <>Edit langsung di dokumen: setiap perubahan <b className="text-slate-300">tercatat dengan nama & waktu</b> (Track Changes), komentar lewat menu Komentar. Riwayat perubahan dilihat langsung di editor (tab Review).</> : <>Dokumen ditampilkan <b className="text-slate-300">apa adanya</b>. Pada dokumen Word, <b className="text-slate-300">sorot teks</b> → ✎ Komentar / ✂ Coret / ⇄ Ganti; usulan baru mengubah dokumen setelah <b className="text-slate-300">Diterima</b>. Komentar umum ada di kolom kanan.</>}
               </div>
             ) : reAnchoringCommentId ? (
               <div className="shrink-0 px-5 py-2 border-b border-indigo-500/30 bg-indigo-500/10 text-[11px] text-indigo-300 flex items-center gap-3 flex-wrap">
@@ -29004,7 +28666,19 @@ export default function App() {
               </div>
             )}
 
-            <div className="flex-1 overflow-y-auto px-4 sm:px-8 py-8">
+            {isUploadReview && trackOn && (
+              <ReviewTrackPanel
+                contractId={selectedContract.id}
+                mode="internal"
+                canApply={canApplyMarkup}
+                showToast={showToast}
+                askConfirm={askConfirm}
+                onApplied={() => { setDocReloadKey((k) => k + 1); fetchInitialData(); }}
+                onUnavailable={() => setReviewTrackOff(true)}
+                height="calc(100vh - 230px)"
+              />
+            )}
+            <div className={`flex-1 overflow-y-auto px-4 sm:px-8 py-8 ${isUploadReview && trackOn ? "hidden" : ""}`}>
               <div className={`${isUploadReview ? "max-w-7xl" : "max-w-6xl"} mx-auto bg-slate-900/40 border border-slate-800 rounded-2xl p-5 sm:p-10`}>
                 <div className="text-center pb-5 mb-6 border-b border-slate-800">
                   <h4 className="font-bold text-slate-100 uppercase tracking-wide text-sm">

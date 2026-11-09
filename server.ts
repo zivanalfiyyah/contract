@@ -12,7 +12,7 @@ import {
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
   SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
 } from "./src/types";
-import { isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
+import { isFullAccessRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
@@ -26,9 +26,11 @@ import {
   legacyDocumentRef, documentVersionsOf, readStoredDocument, contentDisposition, DOCX_MIME,
 } from "./contract-documents.js";
 import {
-  onlyOfficeSettings, signLink, verifyLink, verifyDsRequest, isAllowedDsDownloadUrl, rewriteDsUrlToInternal, buildEditorConfig,
+  onlyOfficeSettings, signLink, verifyLink, verifyDsRequest, signDsPayload, isAllowedDsDownloadUrl, rewriteDsUrlToInternal, buildEditorConfig,
 } from "./onlyoffice.js";
-import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap } from "./template-docx.js";
+import { clauseToPluginBlocks, extractImageSrcs } from "./clause-html.js";
+import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap, type LetterheadInput, type SignatureInput, type SignatureOptions, type DigitalSignatureInput, readLayout, patchLayout, type LayoutPatch, listVariables, setVariables, listTranslatable, applyTranslations, setLanguageMode, readLanguage, refreshEnglishVars, refreshRangkapTail, signaturePageText, hasTwoCopies, type DocLanguage, type BilingualLayoutMode, type LangStash, unhideLegacyLanguage } from "./template-docx.js";
+import { readChangeHistory, acceptAllChanges, hasTrackedChanges, originalTextOf } from "./review-changes.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
@@ -48,7 +50,7 @@ import { renderMask, validateMask, suggestDocTypeCode } from "./numbering-utils.
 import { DEFAULT_OPERATOR_GROUPS, sanitizeOperatorGroups } from "./operatorDefaults.js";
 import {
   requireAuth, requireRole, requirePerm, hasPerm, actionOverridesFor, tenantOf, AuthedRequest,
-  hashPassword, verifyPassword, signToken, setAuthCookie, clearAuthCookie, stripUser,
+  hashPassword, verifyPassword, signToken, AUTH_COOKIE, setAuthCookie, clearAuthCookie, stripUser,
   generateResetToken, hashResetToken, signTotpChallenge, verifyTotpChallenge,
 } from "./auth.js";
 import { generateTotpSecret, verifyTotp, totpAuthUrl, generateBackupCodes, hashBackupCode } from "./totp.js";
@@ -196,6 +198,30 @@ const aiLimiter = rateLimit({
   message: { error: "Terlalu banyak permintaan AI. Coba lagi dalam beberapa menit." },
 });
 app.use("/api/ai/", aiLimiter);
+
+// Plugin editor Word (ONLYOFFICE) "Sisipkan Pasal": berkas statis, dimuat browser dari halaman Document Server (lintas asal) -> perlu CORS.
+const ooPluginDir = path.join(process.cwd(), "onlyoffice-plugin");
+// Plugin dimuat dalam iframe di halaman Document Server (asal berbeda): helmet tidak boleh melarang framing/lintas asal untuk jalur ini.
+const ooPluginBase = (req: express.Request) => (process.env.ONLYOFFICE_PLUGIN_BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/+$/, "");
+app.use("/onlyoffice-plugins", (_req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.removeHeader("X-Frame-Options");
+  next();
+});
+// index.html plugin: alamat Document Server disisipkan agar skrip editor diambil dari sana (tanpa bergantung internet luar).
+app.get("/onlyoffice-plugins/:name(sisipkan-pasal|panel-clm)/index.html", (req, res, next) => {
+  try {
+    const html = fs.readFileSync(path.join(ooPluginDir, String(req.params.name), "index.html"), "utf8");
+    res.setHeader("Cache-Control", "no-store");
+    res.type("html").send(html.replace("__DS_URL__", onlyOfficeSettings().publicUrl.replace(/"/g, "")));
+  } catch { next(); }
+});
+app.use("/onlyoffice-plugins", express.static(ooPluginDir, { index: false }));
+// Berkas plugin tidak ada: jangan jatuh ke halaman utama aplikasi (SPA), tampilkan pesan yang jelas.
+app.use("/onlyoffice-plugins", (req, res) => {
+  res.status(404).type("html").send(`<p style="font-family:Arial;font-size:12px;padding:8px;color:#991b1b">Berkas plugin tidak ditemukan: ${String(req.path).replace(/[<>&"]/g, "")}<br>Periksa folder <b>onlyoffice-plugin/sisipkan-pasal/</b> di server (harus berisi index.html, plugin.js, config.json).</p>`);
+});
 
 // Serve public/ folder untuk service worker dan assets statis lainnya
 // (harus sebelum Vite middleware agar sw.js diakses di path root /)
@@ -673,7 +699,7 @@ app.post("/api/auth/reset-password", loginLimiter, (req, res) => {
 // Peran yang boleh dipilih sendiri saat mendaftar.
 const SELF_REGISTER_ROLES: UserRole[] = ["viewer", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga"];
 // Peran yang bisa diberikan lewat Kelola Pengguna (super_admin tidak).
-const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "admin", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "viewer"];
+const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "admin", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "direktur", "finance", "tax", "viewer"];
 const OTP_TTL_MS = 10 * 60 * 1000;     // kode berlaku 10 menit
 const OTP_MAX_ATTEMPTS = 5;            // lebih dari ini → kode hangus, minta baru
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -1938,6 +1964,7 @@ export async function initFirebaseDB() {
 
 // 1. CLAUSE LIBRARY
 app.get("/api/clauses", requireAuth, (req: AuthedRequest, res) => {
+  if (!isFullAccessRole(req.user!.role) && req.user!.role !== "hr_ga") return res.json([]); // Library Klausul: Legal/Admin/Super Admin (+ HR untuk kontrak karyawan)
   const db = loadDB();
   res.json(scoped(db.clauses as Clause[], tenantOf(req)));
 });
@@ -2288,6 +2315,7 @@ app.delete("/api/clauses/:id", requireAuth, requirePerm("templates.manage"), (re
 
 // 2. TEMPLATES
 app.get("/api/templates", requireAuth, (req: AuthedRequest, res) => {
+  if (!isFullAccessRole(req.user!.role) && req.user!.role !== "hr_ga") return res.json([]);
   const db = loadDB();
   res.json(scoped(db.templates as Template[], tenantOf(req)));
 });
@@ -5706,10 +5734,256 @@ function clausePolicyMap(db: any, tenantId: string): PolicyMap {
 
 const OO_FILE_TTL = 60 * 60 * 12; // 12 jam: tautan berkas & callback hidup selama sesi edit
 
+// ---- Sinkron data sistem <-> variabel di dokumen Word (gabungan tiga arah dgn potret terakhir) ----
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const formatShortDateId = (iso: string) => {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? iso : d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+};
+const ID_MONTHS: Record<string, string> = { januari: "01", februari: "02", maret: "03", april: "04", mei: "05", juni: "06", juli: "07", agustus: "08", september: "09", oktober: "10", november: "11", desember: "12" };
+/** "Rabu, 1 Juli 2026" / "31 Desember 2026" -> "2026-07-01"; null bila tidak terbaca. */
+function parseIdDate(text: string): string | null {
+  const m = /(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec(text || "");
+  if (!m) return null;
+  const mm = ID_MONTHS[m[2].toLowerCase()];
+  const d = Number(m[1]);
+  if (!mm || d < 1 || d > 31) return null;
+  return `${m[3]}-${mm}-${String(d).padStart(2, "0")}`;
+}
+/** Nilai yang SEHARUSNYA tampil di variabel dokumen, menurut data sistem saat ini. */
+function desiredWordValues(db: any, c: Contract): Record<string, string> {
+  const st = withSettingsDefaults(rawSettingsFor(db, c.tenantId));
+  const vals: Record<string, string> = {};
+  for (const [k, v] of Object.entries(c.variables || {})) {
+    if (typeof v === "string") vals[k] = ISO_DATE.test(v) ? formatShortDateId(v) : v;
+  }
+  Object.assign(vals, {
+    StartDate: c.startDate ? new Date(c.startDate).toLocaleDateString("id-ID", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }) : "",
+    Party1Name: st.companyName || "[Nama perusahaan belum diisi]",
+    Party1Address: c.party1Address || st.companyAddress || "[Alamat perusahaan belum diisi]",
+    Party1Representative: st.companyRepresentative || "[Nama perwakilan belum diisi]",
+    Party1RepTitle: st.companyRepresentativeTitle || "[Jabatan perwakilan belum diisi]",
+    Party2Name: c.party2Name,
+    Party2Address: c.party2Address || (c.variables as any)?.Address || "[Alamat belum diisi]",
+  });
+  if (c.endDate) vals.EndDate = formatShortDateId(c.endDate);
+  return vals;
+}
+
+/**
+ * Gabungkan data sistem dan isi dokumen. Potret terakhir (contract.wordSync) menentukan siapa yang berubah:
+ *  - data sistem berubah  -> tulis ke dokumen;
+ *  - isi dokumen berubah  -> bila variabel biasa (bukan tanggal/identitas), tulis balik ke data sistem.
+ * Dikembalikan dokumen baru bila ada yang perlu ditulis ke dokumen.
+ */
+async function reconcileWordValues(db: any, c: Contract, docx: Buffer): Promise<{ docx?: Buffer; pushed: string[]; pulled: string[] }> {
+  const inDoc = await listVariables(docx);
+  const want = desiredWordValues(db, c);
+  const snap: Record<string, string> = { ...(c.wordSync || {}) };
+  const push: Record<string, string> = {};
+  const pushed: string[] = [], pulled: string[] = [];
+  for (const [key, docVal] of Object.entries(inDoc)) {
+    const sys = want[key];
+    if (sys === undefined) continue;
+    if (snap[key] === undefined) { snap[key] = docVal; continue; } // pertama kali: catat saja
+    if (sys !== snap[key]) {
+      if (sys !== docVal) { push[key] = sys; pushed.push(key); }
+      snap[key] = sys;
+    } else if (docVal !== snap[key]) {
+      // Isi dokumen berubah, data sistem tidak: salin balik bila bisa dibaca dengan aman.
+      const identity: Record<string, () => void> = {
+        Party2Name: () => { if (docVal.trim()) c.party2Name = docVal.trim(); },
+        Party2Address: () => { if (docVal.trim() && !docVal.startsWith("[")) c.party2Address = docVal.trim(); },
+      };
+      const iso = parseIdDate(docVal);
+      if (key === "StartDate" && iso) { c.startDate = iso; pulled.push(key); snap[key] = docVal; }
+      else if (key === "EndDate" && iso) { c.endDate = iso; if (typeof c.variables?.EndDate === "string") (c.variables as any).EndDate = iso; pulled.push(key); snap[key] = docVal; }
+      else if (identity[key]) { identity[key](); pulled.push(key); snap[key] = docVal; }
+      else if (typeof c.variables?.[key] === "string" && ISO_DATE.test(c.variables[key] as string)) {
+        if (iso) { (c.variables as any)[key] = iso; pulled.push(key); }
+        snap[key] = docVal;
+      } else if (typeof c.variables?.[key] === "string" && !(key in { StartDate: 1, EndDate: 1, Party1Name: 1, Party1Address: 1, Party1Representative: 1, Party1RepTitle: 1 })) {
+        (c.variables as any)[key] = docVal; pulled.push(key); snap[key] = docVal;
+      } else snap[key] = docVal; // tidak bisa dibaca aman (mis. identitas Pihak Pertama dari pengaturan): dibiarkan
+    }
+  }
+  c.wordSync = snap;
+  if (!pushed.length) return { pushed, pulled };
+  const out = await setVariables(docx, push);
+  return { docx: out.changed ? out.docx : undefined, pushed, pulled };
+}
+
+/** Pada draft Word: selaraskan sebelum editor dibuka. Mengembalikan true bila ada versi baru. */
+async function syncWordDocument(req: AuthedRequest, contractId: string): Promise<boolean> {
+  const pre = loadDB();
+  const c0 = findOwnedContract(pre, req, contractId);
+  if (!c0 || c0.status !== "Draft") return false;
+  const vers = uploadedDocumentVersions(pre, c0);
+  const curNum = currentDocumentVersionNumber(c0, vers);
+  const curVer = vers.find((v) => v.version === curNum);
+  if (!curVer?.file || curVer.file.format !== "docx") return false;
+  const buf = await readStoredDocument(curVer.file, uploadDir);
+  const work = JSON.parse(JSON.stringify(c0)) as Contract;
+  const r = await reconcileWordValues(pre, work, buf);
+  // Variabel di paragraf Inggris ("@en") mengikuti nilai Indonesianya (tanggal diterjemahkan).
+  let outDocx = r.docx;
+  const enSync = await refreshEnglishVars(outDocx ?? buf, desiredWordValues(pre, work));
+  if (enSync.changed) outDocx = enSync.docx;
+  let stored: Awaited<ReturnType<typeof storeFile>> | undefined;
+  if (outDocx) stored = await storeFile(outDocx, `contractdoc-${c0.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`, DOCX_MIME);
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, contractId);
+  if (!contract || contract.status !== "Draft") return false;
+  if (currentDocumentVersionNumber(contract, uploadedDocumentVersions(db, contract)) !== curNum) return false;
+  contract.wordSync = work.wordSync;
+  if (r.pulled.length) {
+    contract.variables = { ...(contract.variables || {}), ...(work.variables || {}) };
+    contract.startDate = work.startDate; contract.endDate = work.endDate;
+    contract.party2Name = work.party2Name; contract.party2Address = work.party2Address;
+  }
+  let made = false;
+  if (outDocx && stored) {
+    const file = buildDocumentRef(outDocx, stored, curVer.file.fileName, "docx", req.user!.name);
+    pushDocumentVersion(db, req, contract, file, { comment: `Disinkronkan dengan data sistem (${[...r.pushed, ...(enSync.changed ? ["terjemahan Inggris"] : [])].join(", ")})`, basedOnVersion: curNum, editMethod: "sync" });
+    made = true;
+  }
+  if (made || r.pulled.length || JSON.stringify(c0.wordSync || {}) !== JSON.stringify(work.wordSync || {})) {
+    if (r.pulled.length) pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Word Sync", details: `Variabel diubah di dokumen Word dan disalin ke data sistem: ${r.pulled.join(", ")}.` });
+    saveDB(db);
+  }
+  return made;
+}
+
+
+
+// ---- Ukur halaman tanda tangan dengan render sungguhan (ONLYOFFICE -> PDF) ------------------------------------
+// Salinan "tulisan sehalaman dengan TTD" pada rangkap 2 butuh tahu teks apa saja yang jatuh di halaman TTD.
+// Perkiraan dari panjang teks bisa meleset, jadi dokumen dirender oleh Document Server lalu teks halaman TTD dibaca.
+// Gagal/tak tersedia -> diam-diam memakai perkiraan.
+const tmpDocs = new Map<string, { buf: Buffer; exp: number }>();
+app.get("/api/onlyoffice/tmp/:token", (req, res) => {
+  const hit = tmpDocs.get(req.params.token);
+  if (!hit || hit.exp < Date.now()) return res.status(404).end();
+  res.setHeader("Content-Type", DOCX_MIME);
+  res.setHeader("Cache-Control", "no-store");
+  res.send(hit.buf);
+});
+
+async function dsConvertToPdf(buf: Buffer): Promise<Buffer | null> {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return null;
+  const token = randomBytes(24).toString("hex");
+  tmpDocs.set(token, { buf, exp: Date.now() + 120_000 });
+  try {
+    const payload = { async: false, filetype: "docx", key: `m${Date.now()}${randomBytes(4).toString("hex")}`, outputtype: "pdf", title: "ukur.docx", url: `${oo.appUrl}/api/onlyoffice/tmp/${token}` };
+    const jwtTok = signDsPayload(oo, payload);
+    const r = await fetch(`${oo.internalUrl}/converter`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${jwtTok}` },
+      body: JSON.stringify({ ...payload, token: jwtTok }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const j: any = await r.json().catch(() => ({}));
+    if (!j?.fileUrl || j.error || !isAllowedDsDownloadUrl(oo, j.fileUrl)) { logger.warn({ resp: j }, "Konversi ONLYOFFICE ke PDF tidak berhasil"); return null; }
+    const pdf = await fetch(rewriteDsUrlToInternal(oo, j.fileUrl), { signal: AbortSignal.timeout(45_000) });
+    return pdf.ok ? Buffer.from(await pdf.arrayBuffer()) : null;
+  } catch (err) {
+    logger.warn({ err }, "Tidak bisa merender dokumen lewat ONLYOFFICE");
+    return null;
+  } finally {
+    tmpDocs.delete(token);
+    for (const [k, v] of tmpDocs) if (v.exp < Date.now()) tmpDocs.delete(k);
+  }
+}
+
+async function pdfPageTexts(pdf: Buffer): Promise<string[]> {
+  const { PDFParse } = await import("pdf-parse");
+  const parser = new PDFParse({ data: pdf });
+  try {
+    const r: any = await parser.getText();
+    if (Array.isArray(r?.pages) && r.pages.length) return r.pages.map((p: any) => String(p?.text || ""));
+    return String(r?.text || "").split(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gim);
+  } finally { await parser.destroy().catch(() => {}); }
+}
+
+/** Dokumen dua rangkap: segarkan salinan halaman TTD dari hasil render sungguhan (perkiraan tetap dipakai bila gagal). */
+async function refreshTailExact(buf: Buffer): Promise<Buffer> {
+  try {
+    if (!(await hasTwoCopies(buf))) return buf;
+    const pdf = await dsConvertToPdf(buf);
+    if (!pdf) return buf;
+    const text = signaturePageText(await pdfPageTexts(pdf));
+    if (text === null) return buf;
+    return await refreshRangkapTail(buf, text);
+  } catch (err) {
+    logger.warn({ err }, "Salinan rangkap 2 memakai perkiraan (render tidak tersedia)");
+    return buf;
+  }
+}
+
+// Plugin "Sisipkan Pasal": daftar pasal Library Klausul (bentuk ringkas) + nilai variabel kontrak. Token tautan, bukan cookie.
+const OO_PLUGIN_GUID = "asc.{9F4C7A52-3E1B-4B7D-8C6A-2D5E7A1B0C33}";
+app.options("/api/onlyoffice/plugin/clauses/:id", (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Headers", "content-type"); res.status(204).end();
+});
+app.get("/api/onlyoffice/plugin/clauses/:id", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(404).end();
+  const claims = verifyLink(oo, req.query.t, "plugin", req.params.id);
+  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
+  const db = loadDB();
+  const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+  if (!contract) return res.status(404).end();
+  const clauses = scoped(db.clauses as Clause[], claims.tenantId).map((c) => ({
+    id: c.id, title: c.title, category: c.category, mandatory: !!c.isMandatory, protected: !!c.isProtected,
+    blocks: clauseToPluginBlocks(c.content),
+  }));
+  res.json({ clauses, values: desiredWordValues(db, contract) });
+});
+
+// Plugin "Panel CLM": data/bahasa/tata letak dari dalam editor. Tautan bertoken (kind "plugin"); aksi diteruskan ke
+// endpoint yang sama dengan UI utama (word-layout / word-language) atas nama pengguna pembuka editor.
+const OO_PANEL_GUID = "asc.{5B2E8C41-7D3A-4F96-A1C8-3E9D0B6F2A57}";
+app.options("/api/onlyoffice/plugin/panel/:id/:action?", (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Headers", "content-type"); res.status(204).end();
+});
+async function panelProxy(req: express.Request, res: express.Response) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(404).end();
+  const claims = verifyLink(oo, req.query.t, "plugin", req.params.id);
+  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
+  const db = loadDB();
+  const user = (db.users as any[]).find((u) => u.id === claims.userId && u.tenantId === claims.tenantId);
+  if (!user) return res.status(401).json({ error: "Pengguna tidak ditemukan." });
+  const action = req.params.action || "";
+  if (action && !["layout", "language"].includes(action)) return res.status(404).json({ error: "Aksi tidak dikenal." });
+  const target = `http://127.0.0.1:${PORT}/api/contracts/${encodeURIComponent(claims.contractId)}/${action === "language" ? "word-language" : "word-layout"}`;
+  const isPost = req.method === "POST";
+  try {
+    const r = await fetch(target, {
+      method: isPost ? "POST" : "GET",
+      headers: { "Content-Type": "application/json", Cookie: `${AUTH_COOKIE}=${signToken(user)}` },
+      body: isPost ? JSON.stringify(req.body || {}) : undefined,
+    });
+    const text = await r.text();
+    res.status(r.status).type("application/json").send(text);
+  } catch (err: any) {
+    logger.warn({ err }, "Panel CLM: gagal meneruskan permintaan");
+    res.status(502).json({ error: "Gagal menghubungi server." });
+  }
+}
+app.get("/api/onlyoffice/plugin/panel/:id/:action?", panelProxy);
+app.post("/api/onlyoffice/plugin/panel/:id/:action?", panelProxy);
+
 // Konfigurasi editor utk satu versi dokumen. enabled:false => frontend memakai editor lama.
 app.get("/api/contracts/:id/onlyoffice/config", requireAuth, async (req: AuthedRequest, res) => {
   const oo = onlyOfficeSettings();
   if (!oo.enabled) return res.json({ enabled: false });
+  if (req.query.mode !== "view" && req.query.version === "current" && hasPerm(req, "contract.edit")) {
+    try { await syncWordDocument(req, req.params.id); } catch (err) { logger.warn({ err, contractId: req.params.id }, "Sinkron data ke dokumen Word dilewati"); }
+  }
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
   if (!contract) return res.status(404).json({ error: "Contract not found" });
@@ -5723,7 +5997,9 @@ app.get("/api/contracts/:id/onlyoffice/config", requireAuth, async (req: AuthedR
   if (!ver?.file) return res.status(404).json({ error: `Versi dokumen ${q} tidak ditemukan.` });
   if (ver.file.format !== "docx") return res.json({ enabled: false });
   // Boleh mengedit hanya: versi aktif, kontrak Draft, punya izin edit, dan diminta mode edit.
-  const canEdit = req.query.mode !== "view" && wanted === current && contract.status === "Draft" && hasPerm(req, "contract.edit");
+  const canEdit = req.query.mode !== "view" && wanted === current && (
+    (contract.status === "Draft" && hasPerm(req, "contract.edit")) ||
+    (isFullAccessRole(req.user!.role) && REVIEW_DOC_STATUSES.includes(contract.status))); // tim Legal/Admin: tetap bisa mengedit selama tinjauan
   // Sesi baru per pembukaan editor; sesi yang sama menimpa versi yang dibuatnya sendiri.
   const session = randomUUID();
   const claims = { contractId: contract.id, version: wanted, userId: req.user!.id, tenantId: contract.tenantId, session };
@@ -5732,6 +6008,21 @@ app.get("/api/contracts/:id/onlyoffice/config", requireAuth, async (req: AuthedR
   const editorConfig = buildEditorConfig(oo, {
     contractId: contract.id, fileName: ver.file.fileName, version: wanted, sha256: ver.file.sha256,
     canEdit, keyVariant: CLAUSE_OVERRIDE_ROLES.includes(req.user!.role) ? "u" : "l", user: { id: req.user!.id, name: req.user!.name }, fileUrl, callbackUrl,
+    panel: {
+      configUrl: `${ooPluginBase(req)}/onlyoffice-plugins/panel-clm/config.json`,
+      guid: OO_PANEL_GUID,
+      options: {
+        panelUrl: `${ooPluginBase(req)}/api/onlyoffice/plugin/panel/${contract.id}`,
+        token: signLink(oo, { ...claims, kind: "plugin" }, OO_FILE_TTL),
+      },
+    },
+    plugin: {
+      configUrl: `${ooPluginBase(req)}/onlyoffice-plugins/sisipkan-pasal/config.json`,
+      guid: OO_PLUGIN_GUID,
+      options: {
+        listUrl: `${(process.env.ONLYOFFICE_PLUGIN_BASE_URL || `${req.protocol}://${req.get("host")}`).replace(/\/+$/, "")}/api/onlyoffice/plugin/clauses/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "plugin" }, OO_FILE_TTL))}`,
+      },
+    },
   });
   res.json({ enabled: true, documentServerUrl: oo.publicUrl, config: editorConfig, canEdit, version: wanted });
 });
@@ -5749,6 +6040,7 @@ app.get("/api/onlyoffice/file/:id", async (req, res) => {
   if (!ver?.file) return res.status(404).end();
   try {
     let buf = await readStoredDocument(ver.file, uploadDir);
+    buf = await unhideLegacyLanguage(buf);
     // Kunci pasal mengikuti peran pembuka: legal/admin boleh mengubah pasal terlindungi, staf lain terkunci.
     const opener = (db.users as User[]).find((u) => u.id === claims.userId);
     const policy = clausePolicyMap(db, contract.tenantId);
@@ -5768,13 +6060,14 @@ app.get("/api/onlyoffice/file/:id", async (req, res) => {
 // DS mengirim hasil edit. status 2 = siap disimpan (editor ditutup), 6 = simpan paksa (Ctrl+S / autosave).
 app.post("/api/onlyoffice/callback/:id", async (req, res) => {
   const oo = onlyOfficeSettings();
-  const fail = (msg: string, code = 1) => res.json({ error: code, message: msg });
+  const fail = (msg: string, code = 1) => { logger.warn({ contractId: req.params.id, msg }, "ONLYOFFICE callback: simpan ditolak"); return res.json({ error: code, message: msg }); };
   if (!oo.enabled) return fail("ONLYOFFICE tidak aktif");
   const claims = verifyLink(oo, req.query.t, "callback", req.params.id);
   if (!claims) return res.status(401).json({ error: 1, message: "Tautan tidak valid atau kedaluwarsa." });
   const ds = verifyDsRequest(oo, req.headers, req.body);
   if (!ds) return res.status(403).json({ error: 1, message: "Tanda tangan Document Server tidak valid." });
   const status = Number(ds.status);
+  logger.info({ contractId: req.params.id, status }, "ONLYOFFICE callback diterima");
   if (status !== 2 && status !== 6) {
     if (status === 3 || status === 7) logger.error({ contractId: claims.contractId, status }, "ONLYOFFICE: DS gagal menyimpan dokumen");
     return res.json({ error: 0 });
@@ -5790,10 +6083,13 @@ app.post("/api/onlyoffice/callback/:id", async (req, res) => {
     const pre = loadDB();
     const c0 = (pre.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
     if (!c0) return fail("Kontrak tidak ditemukan");
-    if (c0.status !== "Draft") return fail("Dokumen hanya bisa diubah selagi kontrak berstatus Draft.");
     // Penjaga pasal wajib/terlindungi (lapis penentu — kunci di editor hanya lapis pertama).
     const saver = (pre.users as User[]).find((u) => u.id === claims.userId && u.active);
     if (!saver) return fail("Pengguna tidak aktif");
+    // Draft: sesuai izin biasa. Tahap tinjauan (review internal/eksternal/final): Legal, Admin & Super Admin tetap boleh mengedit.
+    if (c0.status !== "Draft" && !(isFullAccessRole(saver.role) && REVIEW_DOC_STATUSES.includes(c0.status))) {
+      return fail("Dokumen hanya bisa diubah selagi kontrak berstatus Draft (atau oleh tim Legal/Admin saat tinjauan).");
+    }
     const policy0 = clausePolicyMap(pre, c0.tenantId);
     if (Object.keys(policy0).length) {
       const vers0 = uploadedDocumentVersions(pre, c0);
@@ -5825,22 +6121,22 @@ app.post("/api/onlyoffice/callback/:id", async (req, res) => {
     const file = buildDocumentRef(buf, stored, fileName, "docx", user.name);
     if (currentVer?.file && currentVer.file.sha256 === file.sha256) return res.json({ error: 0 }); // tidak ada perubahan isi
 
-    if (currentVer && currentVer.editSession === claims.session) {
-      // Simpanan berikutnya di sesi yang sama: perbarui versi yang dibuat sesi ini, bukan menumpuk versi baru.
+    if (currentVer && (currentVer.working || currentVer.editSession === claims.session)) {
+      // Draf kerja: simpan-otomatis menimpa draf yang sama, tidak menumpuk versi. Versi resmi dibuat user lewat "Simpan Versi Baru".
       currentVer.file = file;
+      currentVer.working = true;
+      currentVer.editSession = claims.session;
       currentVer.updatedAt = new Date().toISOString();
+      currentVer.updatedBy = user.name;
       contract.currentDocument = file;
       contract.updatedAt = currentVer.updatedAt;
     } else {
       if (current !== claims.version) return fail(`Dokumen sudah diperbarui ke versi ${current} oleh pengguna lain.`);
       const ver = pushDocumentVersion(db, actor, contract, file, {
-        comment: "Diedit di editor Word (ONLYOFFICE)", basedOnVersion: claims.version, editMethod: "onlyoffice",
+        comment: "Draf kerja (belum disimpan sebagai versi)", basedOnVersion: claims.version, editMethod: "onlyoffice",
       });
       ver.editSession = claims.session;
-      pushAudit(db, actor, {
-        contractId: contract.id, contractNumber: contract.contractNumber, action: "Save Document Version",
-        details: `Menyimpan dokumen versi ${ver.version} (dari versi ${claims.version}, metode onlyoffice): "${file.fileName}" · SHA-256 ${file.sha256.slice(0, 16)}… — original tetap utuh.`,
-      });
+      ver.working = true;
     }
     saveDB(db);
     res.json({ error: 0 });
@@ -5854,6 +6150,73 @@ app.post("/api/onlyoffice/callback/:id", async (req, res) => {
 // Searah: setelah ini kontrak bersumber "upload" (berkas .docx = dokumen utama); data pasal/variabel
 // di kontrak tetap tersimpan, tetapi tidak lagi dipakai untuk tampilan. Narasi pembuka & kalimat
 // penutup pembuka dirakit klien (butuh pengaturan perusahaan, kategori, dst) lalu dikirim ke sini.
+// data:image/png;base64,... -> byte (PNG/JPEG saja); selain itu undefined.
+function decodeDataUrl(u: unknown): Buffer | undefined {
+  if (typeof u !== "string") return undefined;
+  const m = /^data:image\/(png|jpe?g);base64,([A-Za-z0-9+/=\s]+)$/i.exec(u);
+  if (!m) return undefined;
+  const buf = Buffer.from(m[2].replace(/\s+/g, ""), "base64");
+  return buf.length && buf.length <= 5 * 1024 * 1024 ? buf : undefined;
+}
+
+// Gambar di dalam isi pasal: muat yang bisa dimuat (data URL & /uploads/ milik server); sisanya dilewati.
+function loadClauseImages(contents: string[]): Record<string, Buffer> {
+  const out: Record<string, Buffer> = {};
+  for (const html of contents) {
+    for (const src of extractImageSrcs(html || "")) {
+      if (out[src]) continue;
+      if (src.startsWith("data:")) { const b = decodeDataUrl(src); if (b) out[src] = b; continue; }
+      const m = /^(?:https?:\/\/[^/]+)?\/uploads\/([\w.\-]+)$/.exec(src);
+      if (m) {
+        const fp = path.join(uploadDir, path.basename(m[1]));
+        try { if (fs.existsSync(fp)) { const b = fs.readFileSync(fp); if (b.length <= 5 * 1024 * 1024) out[src] = b; } } catch { /* dilewati */ }
+      }
+    }
+  }
+  return out;
+}
+
+// Jumlah rangkap & status meterai kontrak, dibaca dari contract.copies (default: 2 rangkap, bermeterai).
+function copyStateOf(c: Contract): { copies: 1 | 2; meterai: boolean } {
+  const list = c.copies || [];
+  return { copies: list.length === 1 ? 1 : 2, meterai: list.length ? list.some((x: any) => !!x.materaiOn) : true };
+}
+
+// Bahan kop surat & kolom tanda tangan dari pengaturan perusahaan + kontrak (sama dengan preview template).
+// `want` menimpa pengaturan kontrak: kop/logo/ttd = false mematikan bagian itu.
+async function layoutInputsFor(
+  db: any, c: Contract, want: { kop?: boolean; logo?: boolean; ttd?: boolean; meterai?: boolean; copies?: 1 | 2; digital?: boolean },
+): Promise<{ letterhead?: LetterheadInput; signatures?: SignatureInput[]; signatureOptions: SignatureOptions; digital?: DigitalSignatureInput }> {
+  const st = rawSettingsFor(db, c.tenantId);
+  let letterhead: LetterheadInput | undefined;
+  if (st.companyName && (want.kop ?? (c.showLetterhead ?? true))) {
+    let logo: LetterheadInput["logo"];
+    if ((want.logo ?? (c.showLetterheadLogo ?? true)) && st.companyLogoKey) {
+      try { logo = { bytes: await fetchFile(st.companyLogoKey), mimeType: st.companyLogoMimeType || "" }; } catch { /* kop tanpa logo */ }
+    }
+    letterhead = {
+      name: st.companyName, address: st.companyAddress || undefined,
+      contact: [st.companyPhone && `Telp. ${st.companyPhone}`, st.companyFax && `Fax. ${st.companyFax}`, st.companyMobile && `Mobile. ${st.companyMobile}`].filter(Boolean).join("  ") || undefined,
+      web: [st.companyWebsite && `Website: ${st.companyWebsite}`, st.companyEmail && `Email: ${st.companyEmail}`].filter(Boolean).join("  ") || undefined,
+      registration: st.companyRegistrationNumber || undefined,
+      logo,
+    };
+  }
+  const signatures: SignatureInput[] | undefined = (want.ttd ?? true)
+    ? (c.parties?.length
+        ? (c.parties as any[]).map((p, i) => ({ role: p.role, name: i === 0 ? (st.companyName || c.party1Name || p.name) : i === 1 ? (c.party2Name || p.name) : p.name }))
+        : [{ role: "PIHAK PERTAMA", name: st.companyName || c.party1Name || "" }, { role: "PIHAK KEDUA", name: c.party2Name || "" }]
+      ).map((p: any) => ({ role: String(p.role || ""), name: String(p.name || "") }))
+    : undefined;
+  const st0 = copyStateOf(c);
+  let digital: DigitalSignatureInput | undefined;
+  if (signatures && (want.digital ?? !!c.useDigitalSignature)) {
+    const bytes = decodeDataUrl(rawSettingsFor(db, c.tenantId).ttdDigital?.dataUrl);
+    if (bytes) digital = { bytes };
+  }
+  return { letterhead, signatures, digital, signatureOptions: { copies: want.copies ?? st0.copies, meterai: want.meterai ?? st0.meterai } };
+}
+
 app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
   const oo = onlyOfficeSettings();
   if (!oo.enabled) return res.status(409).json({ error: "Editor Word (ONLYOFFICE) belum diaktifkan di server ini." });
@@ -5871,25 +6234,52 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
   if (!c0) return res.status(404).json({ error: "Contract not found" });
   if (resolveDocumentSource(c0) !== "template") return res.status(409).json({ error: "Kontrak ini sudah berupa dokumen Word/upload." });
   if (c0.status !== "Draft") return res.status(400).json({ error: "Hanya kontrak berstatus Draft yang bisa diubah ke editor Word." });
-  if (c0.documentLanguage === "bilingual") return res.status(409).json({ error: "Dokumen dua bahasa (bilingual) belum didukung di editor Word." });
-  const en = c0.documentLanguage === "en";
+  // Dokumen Word selalu disusun dalam Bahasa Indonesia dulu; bila kontrak memilih EN / ID+EN, isinya
+  // diterjemahkan AI sesudahnya (satu jalur yang sama dengan tombol bahasa di toolbar).
+  const wantLang: DocLanguage = c0.documentLanguage === "en" || c0.documentLanguage === "bilingual" ? c0.documentLanguage : "id";
+  const wantLayout: BilingualLayoutMode = c0.bilingualLayout === "stacked" ? "stacked" : "side";
   const policy = clausePolicyMap(pre, c0.tenantId);
   const clauses = [...(c0.clauses || [])].sort((a, b) => a.order - b.order).map((cl) => ({
     id: cl.id,
-    title: (en && cl.titleEn) || cl.title,
-    content: (en && cl.contentEn) || cl.content,
+    title: cl.title,
+    content: cl.content,
     isMandatory: !!policy[cl.id]?.isMandatory,
     isProtected: !!policy[cl.id]?.isProtected,
   }));
+  const { letterhead, signatures, signatureOptions, digital } = await layoutInputsFor(pre, c0, {});
+  const images = loadClauseImages(clauses.flatMap((c) => [c.content]));
   try {
-    const buf = await buildTemplateDocx({
-      title: (en && c0.titleEn) || c0.title,
-      docType: String((en && c0.docTypeEn) || c0.docType || (en ? "Cooperation Agreement Letter" : "Surat Perjanjian Kerjasama")).toUpperCase(),
-      numberLine: `${en ? "NUMBER" : "NOMOR"}: ${c0.contractNumber}`,
+    let buf = await buildTemplateDocx({
+      title: c0.title,
+      docType: String(c0.docType || "Surat Perjanjian Kerjasama").toUpperCase(),
+      numberLine: `NOMOR: ${c0.contractNumber}`,
+      letterhead,
+      signatures,
+      signatureOptions,
+      digitalSignature: digital,
+      images,
       opening, closing, clauses,
-      values: { ...(c0.variables || {}), ...tokens },
+      values: { ...(c0.variables || {}), ...tokens, ...desiredWordValues(pre, c0) },
     });
-    const fileName = cleanFileName(((en && c0.titleEn) || c0.title) + ".docx", "dokumen.docx");
+    let langNote = "";
+    let finalLang: DocLanguage = "id";
+    let convStash: LangStash = {};
+    if (wantLang !== "id") {
+      try {
+        if (!isGeminiConfigured()) throw new Error("GEMINI_API_KEY belum diisi");
+        const vals = { ...(c0.variables || {}), ...tokens, ...desiredWordValues(pre, c0) };
+        const src = await listTranslatable(buf);
+        buf = await applyTranslations(buf, await translateParagraphs(src, "English"), { values: vals });
+        const r = await setLanguageMode(buf, wantLang, wantLayout, {}, vals);
+        buf = r.docx; convStash = r.stash;
+        finalLang = wantLang;
+      } catch (e: any) {
+        logger.warn({ err: e, contractId: c0.id }, "Terjemahan dokumen Word gagal saat konversi");
+        langNote = `Dokumen dibuat dalam Bahasa Indonesia; terjemahan otomatis gagal (${e?.message || "AI tidak tersedia"}). Pilih bahasa lagi lewat tombol ID / EN / ID+EN di toolbar.`;
+      }
+    }
+    buf = await refreshTailExact(buf);
+    const fileName = cleanFileName(c0.title + ".docx", "dokumen.docx");
     const key = `contractdoc-${c0.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
     const stored = await storeFile(buf, key, DOCX_MIME);
     const db = loadDB();
@@ -5904,17 +6294,199 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
       contractId: contract.id, contractNumber: contract.contractNumber, action: "Convert To Word",
       details: `${req.user!.name} mengubah kontrak template menjadi dokumen Word (${clauses.length} pasal) · SHA-256 ${file.sha256.slice(0, 16)}…`,
     });
+    contract.documentLanguage = finalLang;
+    await saveLangStash(contract, convStash);
     saveDB(db);
-    res.json({ success: true, contract, version: ver });
+    res.json({ success: true, contract, version: ver, ...(langNote ? { warning: langNote } : {}) });
   } catch (err: any) {
     logger.error({ err, contractId: req.params.id }, "Gagal mengubah kontrak template ke Word");
     res.status(500).json({ error: err?.message || "Gagal membuat dokumen Word." });
   }
 });
 
+// Tata letak dokumen Word: nyala/mati kop surat, logo, tanda tangan, meterai & jumlah rangkap — kapan saja.
+// Hanya blok kop/tanda tangan yang disentuh; isi dokumen hasil ketikan tidak berubah.
+app.get("/api/contracts/:id/word-layout", requireAuth, async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const c = findOwnedContract(db, req, req.params.id);
+  if (!c) return res.status(404).json({ error: "Contract not found" });
+  const ver = uploadedDocumentVersions(db, c).find((v) => v.version === currentDocumentVersionNumber(c, uploadedDocumentVersions(db, c)));
+  if (!ver?.file || ver.file.format !== "docx") return res.json({ available: false });
+  try {
+    const fileBuf = await readStoredDocument(ver.file, uploadDir);
+    const lay = await readLayout(fileBuf);
+    const lang = await readLanguage(fileBuf, await loadLangStash(c));
+    res.json({ available: true, ...lay, lang: lang.mode, hasNew: lang.hasNew, layout: lang.mode === "bilingual" ? lang.layout : (c.bilingualLayout === "stacked" ? "stacked" : "side"), translated: lang.translated, geminiReady: isGeminiConfigured(), digitalAvailable: !!rawSettingsFor(db, c.tenantId).ttdDigital?.dataUrl, ...copyStateOf(c), editable: c.status === "Draft" });
+  } catch {
+    res.json({ available: false });
+  }
+});
+
+app.post("/api/contracts/:id/word-layout", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
+  const b = req.body || {};
+  const bool = (v: unknown) => (typeof v === "boolean" ? v : undefined);
+  const want = { kop: bool(b.kop), logo: bool(b.logo), ttd: bool(b.ttd), digital: bool(b.digital), meterai: bool(b.meterai), copies: b.copies === 1 ? 1 as const : b.copies === 2 ? 2 as const : undefined, refreshTail: b.refreshTail === true };
+  const pre = loadDB();
+  const c0 = findOwnedContract(pre, req, req.params.id);
+  if (!c0) return res.status(404).json({ error: "Contract not found" });
+  if (c0.status !== "Draft") return res.status(400).json({ error: "Tata letak hanya bisa diubah selagi dokumen Draft." });
+  const versions = uploadedDocumentVersions(pre, c0);
+  const curNum = currentDocumentVersionNumber(c0, versions);
+  const curVer = versions.find((v) => v.version === curNum);
+  if (!curVer?.file || curVer.file.format !== "docx") return res.status(409).json({ error: "Dokumen ini bukan dokumen Word." });
+  try {
+    const buf = await readStoredDocument(curVer.file, uploadDir);
+    const state = await readLayout(buf);
+    const patch: LayoutPatch = {};
+    const kopOn = want.kop ?? state.kop;
+    const logoOn = want.logo ?? (want.kop === true ? (c0.showLetterheadLogo ?? true) : state.logo);
+    const ttdOn = want.ttd ?? state.ttd;
+    const ttdChanged = want.ttd !== undefined || want.meterai !== undefined || want.copies !== undefined || want.digital !== undefined;
+    if (want.kop !== undefined || want.logo !== undefined) {
+      const lay = await layoutInputsFor(pre, c0, { kop: kopOn, logo: logoOn, ttd: false });
+      patch.kop = kopOn && lay.letterhead ? { letterhead: lay.letterhead } : null;
+      if (kopOn && !lay.letterhead) return res.status(409).json({ error: "Nama perusahaan belum diisi di pengaturan, jadi kop surat belum bisa dibuat." });
+    }
+    if (ttdChanged) {
+      const lay = await layoutInputsFor(pre, c0, { ttd: true, meterai: want.meterai, copies: want.copies, digital: want.digital });
+      if (want.digital === true && !lay.digital) return res.status(409).json({ error: "TTD Digital belum diatur oleh Super Admin di Konfigurasi." });
+      patch.ttd = ttdOn && lay.signatures ? { signatures: lay.signatures, options: lay.signatureOptions, digital: lay.digital } : null;
+    }
+    const out = await refreshTailExact(await patchLayout(buf, patch));
+    const key = `contractdoc-${c0.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
+    const stored = await storeFile(out, key, DOCX_MIME);
+    const db = loadDB();
+    const contract = findOwnedContract(db, req, req.params.id);
+    if (!contract || contract.status !== "Draft") return res.status(409).json({ error: "Status kontrak berubah; muat ulang halaman." });
+    const nowVers = uploadedDocumentVersions(db, contract);
+    if (currentDocumentVersionNumber(contract, nowVers) !== curNum) return res.status(409).json({ error: "Dokumen baru saja diperbarui; muat ulang lalu coba lagi." });
+    const file = buildDocumentRef(out, stored, curVer.file.fileName, "docx", req.user!.name);
+    const parts = [
+      want.kop !== undefined ? `kop ${kopOn ? "nyala" : "mati"}` : "", want.logo !== undefined ? `logo ${logoOn ? "nyala" : "mati"}` : "",
+      want.ttd !== undefined ? `tanda tangan ${ttdOn ? "nyala" : "mati"}` : "", want.meterai !== undefined ? `meterai ${want.meterai ? "ya" : "tidak"}` : "",
+      want.copies ? `${want.copies} rangkap` : "", want.digital !== undefined ? `TTD digital ${want.digital ? "nyala" : "mati"}` : "",
+      want.refreshTail ? "salinan rangkap 2 diperbarui" : "",
+    ].filter(Boolean).join(", ");
+    const ver = pushDocumentVersion(db, req, contract, file, { comment: `Tata letak: ${parts}`, basedOnVersion: curNum, editMethod: "layout" });
+    if (want.kop !== undefined) contract.showLetterhead = kopOn;
+    if (want.logo !== undefined) contract.showLetterheadLogo = logoOn;
+    if (want.digital !== undefined) contract.useDigitalSignature = want.digital;
+    if (want.meterai !== undefined || want.copies !== undefined) {
+      const cur = copyStateOf(contract);
+      contract.copies = buildContractCopies(want.copies ?? cur.copies, want.meterai ?? cur.meterai);
+    }
+    pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Word Layout", details: `${req.user!.name} mengubah tata letak dokumen Word (${parts}).` });
+    saveDB(db);
+    res.json({ success: true, contract, version: ver });
+  } catch (err: any) {
+    logger.error({ err, contractId: req.params.id }, "Gagal mengubah tata letak dokumen Word");
+    res.status(500).json({ error: err?.message || "Gagal mengubah tata letak." });
+  }
+});
+
+// Terjemahkan isi dokumen Word dengan AI (paragraf demi paragraf) & ganti bahasa tampilan (id / bilingual / en).
+// Tidak ada teks yang dihapus: paragraf Inggris disisipkan di bawah paragraf Indonesia, bahasa lain disembunyikan.
+// Bahasa yang sedang tidak tampil di dokumen Word disimpan di storage (bukan di dokumen: ONLYOFFICE membuang bagian yang tak dikenal).
+async function loadLangStash(c: Contract): Promise<LangStash> {
+  if (!c.langStashKey) return {};
+  try { return JSON.parse((await fetchFile(c.langStashKey)).toString("utf8")) as LangStash; } catch { return {}; }
+}
+async function saveLangStash(c: Contract, stash: LangStash): Promise<void> {
+  if (!Object.keys(stash).length) { c.langStashKey = undefined; return; }
+  const key = `langstash-${c.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.json`;
+  await storeFile(Buffer.from(JSON.stringify(stash), "utf8"), key, "application/json");
+  c.langStashKey = key;
+}
+
+async function translateParagraphs(texts: string[], to: "English" | "Bahasa Indonesia"): Promise<string[]> {
+  const uniq = Array.from(new Set(texts));
+  const out = new Map<string, string>();
+  const chunks: string[][] = [];
+  let cur: string[] = [], size = 0;
+  for (const t of uniq) {
+    if (cur.length && (cur.length >= 40 || size + t.length > 6000)) { chunks.push(cur); cur = []; size = 0; }
+    cur.push(t); size += t.length;
+  }
+  if (cur.length) chunks.push(cur);
+  const run = async (items: string[]): Promise<string[]> => {
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Anda Penerjemah Tersumpah spesialis kontrak. Terjemahkan SETIAP elemen array JSON berikut ke ${to}, formal dan presisi.
+Aturan: kembalikan HANYA array JSON berisi string dengan jumlah elemen PERSIS ${items.length} dan urutan sama; pertahankan angka, nama orang/perusahaan, dan teks dalam kurung siku; jangan menambah penjelasan, jangan menggabung/memecah elemen.
+Penanda format: teks dapat memuat tag seperti <f1>...</f1> (huruf tebal/miring/dll) dan token {{NamaVariabel}}. Salin tag dan token itu PERSIS (jangan diterjemahkan, jangan dihapus, jangan ditambah); tag membungkus kata-kata terjemahan yang padanannya, token variabel ditaruh di tempat yang sesuai dalam kalimat terjemahan.
+${JSON.stringify(items)}`,
+      config: { responseMimeType: "application/json" },
+    });
+    const r = parseAiJson(response.text);
+    if (!Array.isArray(r) || r.length !== items.length) throw new Error("Hasil terjemahan AI tidak sesuai jumlah paragraf.");
+    return r.map((x: unknown) => String(x ?? ""));
+  };
+  for (let i = 0; i < chunks.length; i += 3) {
+    await Promise.all(chunks.slice(i, i + 3).map(async (c) => {
+      let res: string[];
+      try { res = await run(c); } catch { res = await run(c); }
+      c.forEach((t, k) => out.set(t, res[k]));
+    }));
+  }
+  return texts.map((t) => out.get(t) || "");
+}
+
+app.post("/api/contracts/:id/word-language", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
+  const mode: DocLanguage | null = ["id", "bilingual", "en"].includes(req.body?.mode) ? req.body.mode : null;
+  if (!mode) return res.status(400).json({ error: "Bahasa tidak dikenal." });
+  const retranslate = req.body?.retranslate === true;
+  const pre = loadDB();
+  const c0 = findOwnedContract(pre, req, req.params.id);
+  if (!c0) return res.status(404).json({ error: "Contract not found" });
+  const layout: BilingualLayoutMode = req.body?.layout === "stacked" ? "stacked" : req.body?.layout === "side" ? "side" : (c0.bilingualLayout === "stacked" ? "stacked" : "side");
+  if (c0.status !== "Draft") return res.status(400).json({ error: "Bahasa dokumen hanya bisa diubah selagi Draft." });
+  const versions = uploadedDocumentVersions(pre, c0);
+  const curNum = currentDocumentVersionNumber(c0, versions);
+  const curVer = versions.find((v) => v.version === curNum);
+  if (!curVer?.file || curVer.file.format !== "docx") return res.status(409).json({ error: "Dokumen ini bukan dokumen Word." });
+  try {
+    let buf = await readStoredDocument(curVer.file, uploadDir);
+    // Ada coretan (Track Changes)? Versi bercoretan tetap tersimpan utuh di Riwayat Versi; penggantian bahasa
+    // dikerjakan di salinan yang perubahannya sudah diterapkan, lalu disimpan sebagai versi berikutnya. Tanpa tombol tambahan.
+    const hadMarks = await hasTrackedChanges(buf);
+    if (hadMarks) buf = await acceptAllChanges(buf);
+    let stash = await loadLangStash(c0);
+    const state = await readLanguage(buf, stash);
+    const vals = desiredWordValues(pre, c0);
+    const needsAi = mode !== "id" && (!state.translated || retranslate || state.hasNew);
+    if (needsAi) {
+      if (!isGeminiConfigured()) return res.status(503).json({ error: "Terjemahan otomatis butuh GEMINI_API_KEY yang aktif. Isi API key di .env lalu coba lagi." });
+      // pasang dulu semua bahasa yang tersimpan, supaya terjemahan menyentuh dokumen utuh
+      if (state.translated) ({ docx: buf, stash } = await setLanguageMode(buf, "bilingual", "stacked", stash, vals));
+      const onlyNew = state.translated && !retranslate;
+      const src = await listTranslatable(buf, { onlyNew });
+      if (!src.length && !state.translated) return res.status(409).json({ error: "Tidak ada teks yang bisa diterjemahkan." });
+      if (src.length) buf = await applyTranslations(buf, await translateParagraphs(src, "English"), { onlyNew, values: vals });
+    }
+    if (state.translated || needsAi || mode !== "id") { ({ docx: buf, stash } = await setLanguageMode(buf, mode, layout, stash, vals)); buf = await refreshTailExact(buf); }
+    const stored = await storeFile(buf, `contractdoc-${c0.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`, DOCX_MIME);
+    const db = loadDB();
+    const contract = findOwnedContract(db, req, req.params.id);
+    if (!contract || contract.status !== "Draft") return res.status(409).json({ error: "Status kontrak berubah; muat ulang halaman." });
+    if (currentDocumentVersionNumber(contract, uploadedDocumentVersions(db, contract)) !== curNum) return res.status(409).json({ error: "Dokumen baru saja diperbarui; muat ulang lalu coba lagi." });
+    const file = buildDocumentRef(buf, stored, curVer.file.fileName, "docx", req.user!.name);
+    const label = { id: "Indonesia", bilingual: `Indonesia + English (${layout === "side" ? "kiri-kanan" : "atas-bawah"})`, en: "English" }[mode];
+    const ver = pushDocumentVersion(db, req, contract, file, { comment: `Bahasa dokumen: ${label}${retranslate ? " (terjemahan diperbarui)" : ""}${hadMarks ? ` — coretan sebelumnya tetap tersimpan di Versi ${curNum}` : ""}`, basedOnVersion: curNum, editMethod: hadMarks ? "review" : "layout", forceNew: hadMarks });
+    contract.documentLanguage = mode;
+    contract.bilingualLayout = layout;
+    await saveLangStash(contract, stash);
+    pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Word Language", details: `${req.user!.name} mengubah bahasa dokumen Word menjadi ${label}${retranslate ? " dan memperbarui terjemahan" : ""}.` });
+    saveDB(db);
+    res.json({ success: true, contract, version: ver });
+  } catch (err: any) {
+    logger.error({ err, contractId: req.params.id }, "Gagal mengubah bahasa dokumen Word");
+    aiErrorResponse(res, err, err?.message || "Gagal mengubah bahasa dokumen.");
+  }
+});
+
 function pushDocumentVersion(
   db: any, req: AuthedRequest, contract: Contract, file: StoredDocumentRef,
-  opts: { comment: string; basedOnVersion: number; editMethod: ContractVersion["editMethod"]; sourceFile?: StoredDocumentRef },
+  opts: { comment: string; basedOnVersion: number; editMethod: ContractVersion["editMethod"]; sourceFile?: StoredDocumentRef; /** true = selalu jadikan versi permanen baru (draf kerja dikukuhkan dulu). */ forceNew?: boolean },
 ): ContractVersion {
   const versions = uploadedDocumentVersions(db, contract);
   // Kontrak upload lama: materialisasi dulu versi 0 (original) supaya
@@ -5923,6 +6495,24 @@ function pushDocumentVersion(
     const orig = { ...versions[0], id: "ver-" + Date.now() + "-orig" };
     db.versions.push(orig);
     if (!contract.originalDocument) contract.originalDocument = orig.file;
+  }
+  // Ada draf kerja? Aksi tata letak/bahasa/sinkron melebur ke draf itu; aksi lain menjadikannya versi permanen dulu.
+  const curNumber = currentDocumentVersionNumber(contract, versions);
+  const working = versions.find((v) => v.version === curNumber && v.working);
+  // Aksi OTOMATIS (sinkron data, tata letak, simpan-otomatis editor, tinjauan) tidak pernah menaikkan nomor versi sendiri:
+  // hasilnya masuk ke draf kerja. Versi resmi baru dibuat user lewat "Simpan Versi Baru".
+  const auto = !opts.forceNew && (opts.editMethod === "layout" || opts.editMethod === "sync" || opts.editMethod === "onlyoffice" || opts.editMethod === "review");
+  if (working) {
+    if (auto) {
+      working.file = file;
+      working.updatedAt = new Date().toISOString();
+      working.updatedBy = req.user!.name;
+      contract.currentDocument = file;
+      contract.updatedAt = working.updatedAt;
+      return working;
+    }
+    working.working = false;
+    working.comment = working.comment.startsWith("Draf kerja") ? "Perubahan di editor Word" : working.comment;
   }
   const nextNum = versions.length ? Math.max(...versions.map((v) => v.version)) + 1 : 1;
   const ver: ContractVersion = {
@@ -5935,11 +6525,12 @@ function pushDocumentVersion(
     clauses: [],
     updatedAt: new Date().toISOString(),
     updatedBy: req.user!.name,
-    comment: opts.comment,
+    comment: auto ? `Draf kerja — ${opts.comment}` : opts.comment,
     kind: "document",
     file,
     basedOnVersion: opts.basedOnVersion,
     editMethod: opts.editMethod,
+    ...(auto ? { working: true } : {}),
     ...(opts.sourceFile ? { sourceFile: opts.sourceFile } : {}),
   };
   db.versions.push(ver);
@@ -6236,6 +6827,214 @@ app.post("/api/contracts/:id/document-versions/pdf-edit", requireAuth, requirePe
 
 // Kembalikan ke versi lama = buat versi BARU yang menunjuk berkas versi itu
 // (riwayat tidak pernah ditulis ulang/dihapus).
+// ---------------------------------------------------------------------------
+// TINJAUAN DENGAN TRACK CHANGES (internal & eksternal) — SATU DOKUMEN, seperti Word.
+// Peninjau membuka dokumen utama di editor Word dalam mode tinjau (Lacak Perubahan dipaksa menyala): semua
+// tambah/ganti/coret & komentar tercatat dengan nama + waktu di DALAM berkas itu sendiri. Versi bersih/versi
+// coretan = cara melihat (Mode Tampilan: Final / Markup), bukan berkas terpisah. Terima/Tolak tidak wajib;
+// selama tidak ditekan, semua jejak tetap ada.
+// ---------------------------------------------------------------------------
+const REVIEW_DOC_STATUSES = ["Draft", "OnReview", "ApprovedInternal", "ReviewEksternal", "FinalReview"];
+
+async function reviewBaseBuffer(db: any, contract: Contract): Promise<{ buf: Buffer; file: StoredDocumentRef; version: number } | null> {
+  const versions = uploadedDocumentVersions(db, contract);
+  const cur = currentDocumentVersionNumber(contract, versions);
+  const ver = versions.find((v) => v.version === cur);
+  const file = ver?.file;
+  if (!file || file.format !== "docx") return null;
+  let buf = await readStoredDocument(file, uploadDir);
+  buf = await unhideLegacyLanguage(buf);
+  return { buf, file, version: cur };
+}
+
+function reviewEditorConfig(oo: ReturnType<typeof onlyOfficeSettings>, contract: Contract, base: { file: StoredDocumentRef; version: number }, who: { id: string; name: string }) {
+  const session = randomUUID();
+  const claims = { contractId: contract.id, version: base.version, userId: who.id, tenantId: contract.tenantId, session, reviewer: who.name };
+  const fileUrl = `${oo.appUrl}/api/onlyoffice/review-file/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "rfile" }, OO_FILE_TTL))}`;
+  const callbackUrl = `${oo.appUrl}/api/onlyoffice/review-callback/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "rcallback" }, OO_FILE_TTL))}`;
+  return buildEditorConfig(oo, {
+    contractId: contract.id, fileName: base.file.fileName, version: base.version, sha256: base.file.sha256,
+    canEdit: false, review: true, keyVariant: "rv", user: who, fileUrl, callbackUrl,
+  });
+}
+
+app.get("/api/contracts/:id/review-doc/config", requireAuth, async (req: AuthedRequest, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.json({ enabled: false });
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (resolveDocumentSource(contract) !== "upload") return res.json({ enabled: false });
+  if (!REVIEW_DOC_STATUSES.includes(contract.status)) return res.status(403).json({ error: "Dokumen tidak sedang dalam tahap tinjauan." });
+  if (!canReviewContract(viewerOf(db, req), contract, actionOverridesFor(db, contract.tenantId))) return res.status(403).json({ error: "Anda belum ditunjuk untuk meninjau dokumen ini." });
+  const base = await reviewBaseBuffer(db, contract);
+  if (!base) return res.json({ enabled: false });
+  const config = reviewEditorConfig(oo, contract, base, { id: req.user!.id, name: req.user!.name });
+  res.json({ enabled: true, documentServerUrl: oo.publicUrl, config });
+});
+
+app.get("/api/onlyoffice/review-file/:id", async (req, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(404).end();
+  const claims = verifyLink(oo, req.query.t, "rfile", req.params.id);
+  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
+  const db = loadDB();
+  const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+  if (!contract) return res.status(404).end();
+  try {
+    const base = await reviewBaseBuffer(db, contract);
+    if (!base) return res.status(404).end();
+    res.setHeader("Content-Type", DOCX_MIME);
+    res.setHeader("Content-Length", base.buf.length);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(base.buf);
+  } catch (err) {
+    logger.error({ err, contractId: contract.id }, "ONLYOFFICE: gagal membaca berkas tinjauan");
+    res.status(500).end();
+  }
+});
+
+app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
+  const oo = onlyOfficeSettings();
+  const fail = (msg: string) => { logger.warn({ contractId: req.params.id, msg }, "ONLYOFFICE review-callback: simpan ditolak"); return res.json({ error: 1, message: msg }); };
+  if (!oo.enabled) return fail("ONLYOFFICE tidak aktif");
+  const claims = verifyLink(oo, req.query.t, "rcallback", req.params.id);
+  if (!claims) return res.status(401).json({ error: 1, message: "Tautan tidak valid atau kedaluwarsa." });
+  const ds = verifyDsRequest(oo, req.headers, req.body);
+  if (!ds) return res.status(403).json({ error: 1, message: "Tanda tangan Document Server tidak valid." });
+  const status = Number(ds.status);
+  logger.info({ contractId: req.params.id, status }, "ONLYOFFICE review-callback diterima");
+  if (status !== 2 && status !== 6) return res.json({ error: 0 });
+  if (!isAllowedDsDownloadUrl(oo, ds.url)) return fail("Alamat hasil edit tidak diizinkan");
+  try {
+    const dl = await fetch(rewriteDsUrlToInternal(oo, ds.url));
+    if (!dl.ok) return fail(`Gagal mengunduh hasil tinjauan (${dl.status})`);
+    const buf = Buffer.from(await dl.arrayBuffer());
+    if (buf.length > 40 * 1024 * 1024) return fail("Berkas terlalu besar");
+    if (sniffFormat(buf, "x.docx") !== "docx") return fail("Hasil tinjauan bukan berkas Word yang valid");
+    const db = loadDB();
+    const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+    if (!contract) return fail("Kontrak tidak ditemukan");
+    if (!REVIEW_DOC_STATUSES.includes(contract.status)) return fail("Dokumen tidak sedang dalam tahap tinjauan.");
+    const base = await reviewBaseBuffer(db, contract);
+    if (!base) return fail("Dokumen utama tidak ditemukan");
+    // Penjaga: peninjau hanya boleh menambah jejak (Track Changes/komentar). Tampilan "Original" (semua perubahan
+    // ditolak) harus sama persis dengan dokumen sebelum ditinjau — tidak boleh ada ubahan diam-diam di luar jejak.
+    if ((await originalTextOf(buf)) !== (await originalTextOf(base.buf))) {
+      return fail("Ada perubahan di luar Track Changes. Aktifkan Lacak Perubahan lalu ulangi.");
+    }
+    const key = `contractdoc-${contract.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
+    const stored = await storeFile(buf, key, DOCX_MIME);
+    const file = buildDocumentRef(buf, stored, base.file.fileName, "docx", claims.reviewer || "Peninjau");
+    if (base.file.sha256 === file.sha256) return res.json({ error: 0 });
+    const versions = uploadedDocumentVersions(db, contract);
+    const curVer = versions.find((v) => v.version === base.version);
+    if (curVer && (curVer.working || curVer.editMethod === "review")) {
+      // Jejak peninjau menumpuk di satu versi tinjauan; siapa mengubah apa tercatat di dalam berkas.
+      curVer.file = file;
+      curVer.updatedAt = new Date().toISOString();
+      curVer.updatedBy = claims.reviewer || "Peninjau";
+      contract.currentDocument = file;
+      contract.updatedAt = curVer.updatedAt;
+    } else {
+      const actor = { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: claims.userId === "external" ? "External" : "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest;
+      pushDocumentVersion(db, actor, contract, file, { comment: "Tinjauan (Track Changes)", basedOnVersion: base.version, editMethod: "review" });
+    }
+    pushAudit(db, { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: claims.userId === "external" ? "External" : "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest, {
+      contractId: contract.id, contractNumber: contract.contractNumber, action: "Review Track Changes",
+      details: `${claims.reviewer || "Peninjau"} menyimpan perubahan tinjauan (Track Changes) · SHA-256 ${file.sha256.slice(0, 16)}…`,
+    });
+    saveDB(db);
+    res.json({ error: 0 });
+  } catch (err: any) {
+    logger.error({ err, contractId: claims.contractId }, "ONLYOFFICE: gagal menyimpan hasil tinjauan");
+    fail(err?.message || "Gagal menyimpan");
+  }
+});
+
+async function changeHistoryOf(contract: Contract) {
+  const db = loadDB();
+  const base = await reviewBaseBuffer(db, contract);
+  if (!base) return { hasReview: false, changes: [], comments: [] };
+  const hist = await readChangeHistory(base.buf);
+  return { hasReview: hist.changes.length + hist.comments.length > 0, updatedAt: base.file.uploadedAt, ...hist };
+}
+
+// Riwayat perubahan (siapa mengubah apa, kapan) — dibaca dari dokumen utama.
+app.get("/api/contracts/:id/review-changes", requireAuth, async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  try { res.json(await changeHistoryOf(contract)); }
+  catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
+});
+
+// Unduh: marked = berkas apa adanya (penuh coretan), clean = salinan dengan semua perubahan diterima.
+app.get("/api/contracts/:id/review-doc/file", requireAuth, async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  try {
+    const base = await reviewBaseBuffer(db, contract);
+    if (!base) return res.status(404).json({ error: "Dokumen Word tidak ditemukan." });
+    const clean = req.query.kind === "clean";
+    const buf = clean ? await acceptAllChanges(base.buf) : base.buf;
+    const name = base.file.fileName.replace(/\.docx$/i, "") + (clean ? " (versi bersih).docx" : " (versi coretan).docx");
+    res.setHeader("Content-Type", DOCX_MIME);
+    res.setHeader("Content-Disposition", contentDisposition("attachment", name));
+    res.send(buf);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || "Gagal membuka berkas." });
+  }
+});
+
+// Jadikan draf kerja sebagai versi permanen (user yang memutuskan kapan).
+app.post("/api/contracts/:id/document-versions/commit", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status !== "Draft") return res.status(400).json({ error: "Dokumen hanya bisa diubah selagi kontrak berstatus Draft." });
+  const versions = uploadedDocumentVersions(db, contract);
+  const cur = currentDocumentVersionNumber(contract, versions);
+  const ver = versions.find((v) => v.version === cur);
+  if (!ver?.working) return res.status(400).json({ error: "Belum ada perubahan baru untuk disimpan sebagai versi." });
+  const note = String(req.body?.comment || "").trim().slice(0, 300);
+  ver.working = false;
+  ver.comment = note || "Disimpan sebagai versi";
+  ver.updatedBy = req.user!.name;
+  ver.updatedAt = new Date().toISOString();
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber, action: "Save Document Version",
+    details: `Menyimpan dokumen sebagai versi ${ver.version}${note ? `: "${note}"` : ""}.`,
+  });
+  saveDB(db);
+  res.json({ success: true, contract, version: ver });
+});
+
+// Buang draf kerja: kembali ke versi permanen terakhir.
+app.post("/api/contracts/:id/document-versions/discard-working", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status !== "Draft") return res.status(400).json({ error: "Dokumen hanya bisa diubah selagi kontrak berstatus Draft." });
+  const versions = uploadedDocumentVersions(db, contract);
+  const cur = currentDocumentVersionNumber(contract, versions);
+  const ver = versions.find((v) => v.version === cur);
+  if (!ver?.working) return res.status(400).json({ error: "Tidak ada perubahan yang bisa dibuang." });
+  const prev = [...versions].filter((v) => v.version < cur && v.file).sort((a, b) => b.version - a.version)[0];
+  if (!prev?.file) return res.status(400).json({ error: "Tidak ada versi sebelumnya." });
+  db.versions = (db.versions as ContractVersion[]).filter((v) => v.id !== ver.id);
+  contract.currentDocument = prev.file;
+  contract.currentDocumentVersion = prev.version;
+  contract.updatedAt = new Date().toISOString();
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber, action: "Discard Document Draft",
+    details: `Membuang perubahan yang belum disimpan; kembali ke versi ${prev.version}.`,
+  });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
 app.post("/api/contracts/:id/document-versions/:version/restore", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
@@ -8467,6 +9266,30 @@ app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => 
   }
 });
 
+app.get("/api/external-review/:token/review-doc/config", apiLimiter, async (req, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.json({ enabled: false });
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
+  if (contract.externalReviewLocked || contract.status !== "ReviewEksternal") return res.status(403).json({ error: "Review eksternal sedang tidak dibuka." });
+  const name = String(req.query.name || "").replace(/[<>"]/g, "").trim().slice(0, 60);
+  if (!name) return res.status(400).json({ error: "Isi nama Anda dulu supaya perubahan Anda tercatat." });
+  const db = loadDB();
+  const base = await reviewBaseBuffer(db, contract);
+  if (!base) return res.json({ enabled: false });
+  const config = reviewEditorConfig(oo, contract, base, { id: "external", name: `${name} (Pihak Eksternal)` });
+  res.json({ enabled: true, documentServerUrl: oo.publicUrl, config });
+});
+
+app.get("/api/external-review/:token/review-changes", apiLimiter, async (req, res) => {
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
+  try { res.json(await changeHistoryOf(contract)); }
+  catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
+});
+
 // PUBLIK — tamu eksternal klik "OK / Setuju" (klausul sudah sesuai). Sekali
 // disetujui, sesi ini TERKUNCI (tak bisa komentar/setuju lagi lewat token yang
 // sama) sampai pemilik dokumen membuka akses kembali (endpoint /unlock di atas).
@@ -8679,6 +9502,7 @@ function findVisibleLegalJob(db: any, req: AuthedRequest, id: string): LegalJob 
 }
 
 app.get("/api/legal-jobs", requireAuth, (req: AuthedRequest, res) => {
+  if (!isFullAccessRole(req.user!.role)) return res.json([]); // Pekerjaan Legal: hanya Legal/Admin/Super Admin
   const db = loadDB();
   const list = legalJobTenantList(db, tenantOf(req)).filter((j) => canViewLegalJob(req.user!, j)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   res.json(list.map((j) => withLinkedContract(db, j)));
@@ -9082,6 +9906,7 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
 // ----- Dashboard Legal: agregasi ringkasan real-time -----
 
 app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
+  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Dashboard Legal hanya untuk tim Legal, Admin, dan Super Admin." });
   const db = loadDB();
   const tid = tenantOf(req);
   const jobs = legalJobTenantList(db, tid);

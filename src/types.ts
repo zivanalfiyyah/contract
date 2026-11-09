@@ -31,6 +31,9 @@ export type UserRole =
   | "account_executive"    // divisi bisnis
   | "operasional"          // divisi bisnis
   | "hr_ga"                // kontrak karyawan & DCS
+  | "direktur"             // internal — hanya dokumen yang ditunjuk
+  | "finance"              // internal — hanya dokumen yang ditunjuk
+  | "tax"                  // internal — hanya dokumen yang ditunjuk
   | "manager"              // LAMA → dimigrasikan ke "manajemen"
   | "staff"                // LAMA → hanya lihat sampai diatur ulang
   | "viewer";              // hanya baca
@@ -604,6 +607,8 @@ export interface Contract {
   showLetterheadLogo?: boolean;
   // Potret nilai variabel dokumen Word saat terakhir disinkronkan dengan data sistem (kunci -> teks).
   wordSync?: Record<string, string>;
+  // Kunci berkas di storage berisi teks bahasa yang sedang tidak tampil di dokumen Word (lihat template-docx LangStash).
+  langStashKey?: string;
   // Tampilkan kotak placeholder "Meterai Rp10.000" (garis putus-putus) di
   // ruang kosong tanda tangan tiap pihak. Kosong/undefined = false (tidak
   // tampil, perilaku lama) — ini FITUR OPT-IN, bukan default baru, karena
@@ -698,9 +703,12 @@ export interface ContractVersion {
   isOriginal?: boolean;
   file?: StoredDocumentRef;
   basedOnVersion?: number;
-  editMethod?: "original" | "docx-inline" | "pdf-overlay" | "pdf-text" | "revision-upload" | "converted" | "pdf-to-docx" | "onlyoffice" | "layout" | "sync";
+  editMethod?: "original" | "docx-inline" | "pdf-overlay" | "pdf-text" | "revision-upload" | "converted" | "pdf-to-docx" | "onlyoffice" | "layout" | "sync" | "review";
   // Id sesi editor ONLYOFFICE yang membuat versi ini; simpanan berikutnya dari sesi yang sama menimpa versi ini.
   editSession?: string;
+  // Draf kerja: hasil simpan-otomatis editor yang BELUM dijadikan versi resmi. Tiap simpan otomatis menimpa
+  // draf ini; baru menjadi versi permanen saat user menekan "Simpan Versi Baru".
+  working?: boolean;
   // Berkas yang diunggah user bila `file` hasil konversi (mis. .doc -> .docx
   // agar bisa diedit). Berkas asli ini tetap tersimpan & bisa diunduh.
   sourceFile?: StoredDocumentRef;

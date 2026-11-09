@@ -35,13 +35,17 @@ interface Props {
   version: number | "current";
   /** false => mode lihat saja. Server tetap memutuskan hak edit sebenarnya. */
   canEdit: boolean;
+  /** Alamat endpoint konfigurasi khusus (mis. mode tinjau). Bila diisi, version/canEdit diabaikan untuk URL. */
+  configUrl?: string;
+  /** Tinggi editor (CSS), bawaan 88vh. */
+  height?: string;
   /** Dipanggil (sekali per perubahan) setelah editor melaporkan dokumen sudah tersimpan. */
   onSaved?: () => void;
   /** Dipanggil bila editor tidak bisa dimuat — pemanggil beralih ke editor cadangan. */
   onUnavailable?: (reason: string) => void;
 }
 
-export default function OnlyOfficeEditor({ contractId, version, canEdit, onSaved, onUnavailable }: Props) {
+export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onUnavailable }: Props) {
   const holderId = useRef(`oo-${Math.random().toString(36).slice(2, 10)}`).current;
   const editorRef = useRef<any>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -50,6 +54,13 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, onSaved
   const onUnavailableRef = useRef(onUnavailable);
   onSavedRef.current = onSaved;
   onUnavailableRef.current = onUnavailable;
+  // Plugin "Panel CLM" (di dalam editor) meminta muat ulang setelah mengubah tata letak/bahasa di server.
+  const [reloadTick, setReloadTick] = useState(0);
+  useEffect(() => {
+    const onMsg = (e: MessageEvent) => { if (e.data && (e.data as any).clm === "reload") setReloadTick((n) => n + 1); };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,7 +68,7 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, onSaved
     setState("loading");
     (async () => {
       try {
-        const r = await fetch(`/api/contracts/${contractId}/onlyoffice/config?version=${version}${canEdit ? "" : "&mode=view"}`);
+        const r = await fetch(configUrl || `/api/contracts/${contractId}/onlyoffice/config?version=${version}${canEdit ? "" : "&mode=view"}`);
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || `Gagal menyiapkan editor (HTTP ${r.status})`);
         if (!data.enabled) throw new Error("Editor Word belum diaktifkan di server");
@@ -92,10 +103,10 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, onSaved
       try { editorRef.current?.destroyEditor?.(); } catch { /* noop */ }
       editorRef.current = null;
     };
-  }, [contractId, version, canEdit, holderId]);
+  }, [contractId, version, canEdit, configUrl, holderId, reloadTick]);
 
   return (
-    <div className="relative bg-white" style={{ height: "78vh", minHeight: 480 }} data-testid="onlyoffice-editor">
+    <div className="relative bg-white" style={{ height: height || "88vh", minHeight: 560 }} data-testid="onlyoffice-editor">
       {state === "loading" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center text-slate-500 text-xs gap-2 bg-white/80 pointer-events-none">
           <Loader2 className="w-4 h-4 animate-spin" /> Memuat editor Word…

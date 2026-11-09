@@ -3,11 +3,20 @@
 <head>
 <meta charset="utf-8">
 <title>Sisipkan Pasal</title>
-<script src="https://onlyoffice.github.io/sdkjs-plugins/v1/plugins.js"></script>
-<script src="plugin.js"></script>
+<script>
+  // plugins.js diambil dari Document Server sendiri (alamat diisi server); bila gagal, dari onlyoffice.github.io.
+  (function () {
+    var ds = "__DS_URL__";
+    function load(src, ok, fail) { var s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = fail; document.head.appendChild(s); }
+    function main() { load("plugin.js"); }
+    function cdn() { load("https://onlyoffice.github.io/sdkjs-plugins/v1/plugins.js", main, function () { document.body.innerHTML = '<p style="padding:8px;color:#991b1b">Skrip editor tidak dapat dimuat.</p>'; }); }
+    if (ds && ds.indexOf("__") !== 0) load(ds + "/sdkjs-plugins/v1/plugins.js", main, cdn); else cdn();
+  })();
+</script>
 <style>
-  html,body{margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#222;background:#fff}
-  #wrap{padding:8px}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#222;background:#fff}
+  #wrap{box-sizing:border-box;height:100%;padding:8px;display:flex;flex-direction:column}
+  #list{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding-right:4px}
   input,select{width:100%;box-sizing:border-box;padding:6px;margin-bottom:6px;border:1px solid #c7c7c7;border-radius:4px;font-size:12px}
   .item{border:1px solid #e0e0e0;border-radius:6px;padding:8px;margin-bottom:6px}
   .item b{display:block;margin-bottom:4px;font-size:12px}

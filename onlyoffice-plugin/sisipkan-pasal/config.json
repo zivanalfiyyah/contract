@@ -8,7 +8,7 @@
       "description": "Sisipkan pasal dari Library Klausul ke dokumen",
       "descriptionLocale": { "id": "Sisipkan pasal dari Library Klausul ke dokumen" },
       "url": "index.html",
-      "icons": ["icon.png", "icon@2x.png"],
+      "icons": ["icon.png", "icon2x.png"],
       "isViewer": false,
       "EditorsSupport": ["word"],
       "isVisual": true,

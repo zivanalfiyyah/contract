@@ -43,7 +43,7 @@ export function onlyOfficeSettings(env: NodeJS.ProcessEnv = process.env): OnlyOf
 
 // ---- Token tautan (file & callback) ---------------------------------------
 export interface LinkClaims {
-  kind: "file" | "callback" | "plugin";
+  kind: "file" | "callback" | "plugin" | "rfile" | "rcallback";
   contractId: string;
   /** Nomor versi berkas yang dibuka. */
   version: number;
@@ -51,6 +51,10 @@ export interface LinkClaims {
   tenantId: string;
   /** Id sesi edit (satu sesi editor = satu versi baru, simpanan berikutnya menimpa versi itu). */
   session: string;
+  /** Tinjauan (track changes): nama pengubah yang dicatat di dokumen; userId "external" untuk tamu. */
+  reviewer?: string;
+  /** Pemilik (Draft) boleh Terima/Tolak langsung di berkas tinjauan. */
+  owner?: boolean;
 }
 
 export function signLink(s: OnlyOfficeSettings, claims: LinkClaims, ttlSeconds: number): string {
@@ -118,6 +122,12 @@ export interface EditorConfigInput {
   version: number;
   sha256: string;
   canEdit: boolean;
+  /** Mode tinjau: tidak boleh mengubah langsung; semua perubahan tercatat sebagai Track Changes + komentar. */
+  review?: boolean;
+  /** Lihat saja hasil tinjauan: coretan & komentar tampil, tidak bisa diubah. */
+  reviewView?: boolean;
+  /** Pemilik dokumen (Draft) membuka hasil tinjauan: boleh edit & Terima/Tolak seperti di Word. */
+  reviewOwner?: boolean;
   /** Dokumen yang dikirim ke editor berbeda per kelompok pengguna (mis. kunci pasal) -> kunci DS dibedakan agar cache tidak tertukar. */
   keyVariant?: string;
   user: { id: string; name: string };
@@ -126,6 +136,8 @@ export interface EditorConfigInput {
   lang?: string;
   /** Plugin "Sisipkan Pasal": URL config.json (harus terjangkau BROWSER) + opsi untuk plugin. */
   plugin?: { configUrl: string; guid: string; options: Record<string, unknown> };
+  /** Plugin "Panel CLM" (data, bahasa, tata letak). */
+  panel?: { configUrl: string; guid: string; options: Record<string, unknown> };
 }
 
 /** Kunci dokumen DS: berubah setiap isi berkas berubah (DS menyimpan cache per key). */
@@ -142,17 +154,17 @@ export function buildEditorConfig(s: OnlyOfficeSettings, i: EditorConfigInput) {
       title: i.fileName,
       url: i.fileUrl,
       permissions: {
-        edit: i.canEdit,
+        edit: i.reviewView ? false : i.review ? !!i.reviewOwner : i.canEdit,
         download: true,
         print: true,
-        review: i.canEdit,
-        comment: i.canEdit,
+        review: i.reviewView ? false : i.review ? true : i.canEdit,
+        comment: i.reviewView ? false : i.review ? true : i.canEdit,
         copy: true,
         chat: false,
       },
     },
     editorConfig: {
-      mode: i.canEdit ? "edit" : "view",
+      mode: (i.review && !i.reviewView) || i.canEdit ? "edit" : "view",
       lang: i.lang || "id",
       callbackUrl: i.callbackUrl,
       user: { id: i.user.id, name: i.user.name },
@@ -164,13 +176,16 @@ export function buildEditorConfig(s: OnlyOfficeSettings, i: EditorConfigInput) {
         feedback: false,
         help: false,
         goback: false,
+        // Jejak perubahan selalu tampil (Mode Tampilan Word: Markup/Final/Original). Peninjau: Lacak Perubahan dipaksa menyala.
+        review: { trackChanges: !!i.review, reviewDisplay: "markup", showReviewChanges: true, hoverMode: false },
       },
     },
     width: "100%",
     height: "100%",
   };
-  if (i.plugin && i.canEdit) {
-    config.editorConfig.plugins = { pluginsData: [i.plugin.configUrl], options: { [i.plugin.guid]: i.plugin.options } };
+  if (i.canEdit && (i.plugin || i.panel)) {
+    const list = [i.plugin, i.panel].filter(Boolean) as { configUrl: string; guid: string; options: Record<string, unknown> }[];
+    config.editorConfig.plugins = { pluginsData: list.map((x) => x.configUrl), options: Object.fromEntries(list.map((x) => [x.guid, x.options])) };
   }
   config.token = signDsPayload(s, config);
   return config;

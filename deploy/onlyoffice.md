@@ -37,3 +37,20 @@ Tambahkan di container DS: `-e ALLOW_PRIVATE_IP_ADDRESS=true` (hanya untuk jarin
 - Hasil edit hanya diunduh dari host Document Server sendiri (anti-SSRF).
 - Satu sesi editor = satu versi baru (Versi N+1); simpanan berikutnya di sesi yang sama memperbarui
   versi itu, bukan menumpuk versi. Versi original tidak pernah ditimpa. Hanya kontrak berstatus Draft yang bisa diedit.
+
+## Plugin "Sisipkan Pasal"
+
+Folder `onlyoffice-plugin/` (di akar proyek, sejajar `server.ts`) disajikan server di `/onlyoffice-plugins/...`
+dan dimuat BROWSER dari halaman editor. **Folder ini wajib ikut ter-deploy.**
+
+Checklist produksi:
+1. `ONLYOFFICE_PLUGIN_BASE_URL="https://domain-aplikasi-anda"` di `.env`. Tanpa ini, alamat plugin ditebak dari
+   host permintaan; di belakang proxy tebakan itu bisa `http` sehingga diblokir browser (mixed content).
+2. Aplikasi dan Document Server sama-sama `https`.
+3. Skrip editor (`plugins.js`) diambil dari Document Server sendiri (`<ONLYOFFICE_URL>/sdkjs-plugins/v1/plugins.js`);
+   cadangannya `onlyoffice.github.io`. Pastikan jalur `/sdkjs-plugins/` di Document Server tidak diblokir proxy.
+4. Hanya jalur `/onlyoffice-plugins` yang boleh dibingkai & diakses lintas asal (diatur di `server.ts`);
+   daftar pasal dilindungi token tautan per kontrak (berlaku 12 jam), bukan cookie.
+5. Jangan lupa `JWT_SECRET` Document Server yang kuat dan sama dengan `ONLYOFFICE_JWT_SECRET`.
+
+Di editor: tab **Plugin** -> **Sisipkan Pasal** -> cari pasal -> **Sisipkan**.

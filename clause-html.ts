@@ -5,7 +5,7 @@ import { parseFragment } from "parse5";
 // Mendukung tag yang diizinkan editor pasal (RICH_ALLOWED di App.tsx):
 //   p, div, br, b/strong, i/em, u, s, span(style), font(color,size), h3, h4,
 //   ul/ol/li (bersarang), table/thead/tbody/tr/td/th (colspan, rowspan), blockquote, hr, a
-// Gambar (<img>) belum didukung: dilewati (lihat `skipped` pada hasil).
+// Gambar (<img>): lewat ctx.image (PNG/JPEG); bila tak tersedia dilewati (lihat `skipped`).
 // Variabel {{Key}} di mana pun (juga di dalam tabel/daftar) menjadi content control sebaris.
 // ---------------------------------------------------------------------------
 
@@ -32,6 +32,8 @@ export interface Ctx {
   numbering: NumberingUse[];
   skipped: string[];
   defaultJc: "both" | "left";
+  /** Gambar sebaris (src, alt) -> XML run; null bila gambar tidak bisa dimuat (dilewati). */
+  image?: (src: string, alt: string) => string | null;
 }
 
 const NAMED_COLORS: Record<string, string> = {
@@ -159,7 +161,8 @@ function inlineRuns(nodes: PNode[], f: Fmt, ctx: Ctx, state: { lastSpace: boolea
       out.push("<w:r><w:br/></w:r>");
       state.lastSpace = true;
     } else if (n.nodeName === "img") {
-      ctx.skipped.push("img");
+      const x = ctx.image?.(attr(n, "src") || "", attr(n, "alt") || "");
+      if (x) out.push(x); else ctx.skipped.push("img");
     } else if (n.nodeName === "#comment") {
       // abaikan
     } else {
@@ -418,5 +421,16 @@ export function clauseToPluginBlocks(content: string): PlugBlock[] {
   const frag = parseFragment(contentToHtml(content)) as unknown as PNode;
   const out: PlugBlock[] = [];
   plugBlocks(kids(frag), {}, 0, out);
+  return out;
+}
+
+/** Semua alamat gambar (src) di isi pasal, untuk dimuat lebih dulu sebelum konversi. */
+export function extractImageSrcs(content: string): string[] {
+  const out: string[] = [];
+  const walk = (n: PNode) => {
+    if (n.nodeName === "img") { const s = attr(n, "src"); if (s) out.push(s); }
+    for (const k of kids(n)) walk(k);
+  };
+  walk(parseFragment(contentToHtml(content)) as unknown as PNode);
   return out;
 }

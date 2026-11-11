@@ -43,9 +43,11 @@ interface Props {
   onSaved?: () => void;
   /** Dipanggil bila editor tidak bisa dimuat — pemanggil beralih ke editor cadangan. */
   onUnavailable?: (reason: string) => void;
+  /** Plugin "Panel CLM" mengubah data pihak/kontrak di database — pemanggil mengambil ulang kontrak. */
+  onPartyUpdated?: () => void;
 }
 
-export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onUnavailable }: Props) {
+export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onUnavailable, onPartyUpdated }: Props) {
   const holderId = useRef(`oo-${Math.random().toString(36).slice(2, 10)}`).current;
   const editorRef = useRef<any>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -54,10 +56,16 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
   const onUnavailableRef = useRef(onUnavailable);
   onSavedRef.current = onSaved;
   onUnavailableRef.current = onUnavailable;
+  const onPartyUpdatedRef = useRef(onPartyUpdated);
+  onPartyUpdatedRef.current = onPartyUpdated;
   // Plugin "Panel CLM" (di dalam editor) meminta muat ulang setelah mengubah tata letak/bahasa di server.
   const [reloadTick, setReloadTick] = useState(0);
   useEffect(() => {
-    const onMsg = (e: MessageEvent) => { if (e.data && (e.data as any).clm === "reload") setReloadTick((n) => n + 1); };
+    const onMsg = (e: MessageEvent) => {
+      const m = e.data && (e.data as any).clm;
+      if (m === "reload") setReloadTick((n) => n + 1);
+      else if (m === "party-updated") onPartyUpdatedRef.current?.();
+    };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
   }, []);

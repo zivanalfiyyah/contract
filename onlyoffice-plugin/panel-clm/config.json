@@ -2,7 +2,7 @@
   "name": "Panel CLM",
   "nameLocale": { "id": "Panel CLM", "en": "CLM Panel" },
   "guid": "asc.{5B2E8C41-7D3A-4F96-A1C8-3E9D0B6F2A57}",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "variations": [
     {
       "description": "Data pihak & kontrak, bahasa, kop, TTD, meterai, rangkap",

@@ -495,6 +495,9 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, reviewer,
               configUrl={reviewer && !canEdit && isViewingCurrent ? `/api/contracts/${contract.id}/review-doc/config` : undefined}
               onSaved={() => { refreshVersions().catch(() => {}); }}
               onUnavailable={() => setOoFailed(true)}
+              onPartyUpdated={() => {
+                fetch(`/api/contracts/${contract.id}`).then((r) => (r.ok ? r.json() : null)).then((c) => { if (c && c.id) onContractUpdated(c); }).catch(() => {});
+              }}
             />
           )}
           {!useOO && !loading && !loadError && fileBuf && shownFile && (

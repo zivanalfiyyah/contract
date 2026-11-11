@@ -369,7 +369,7 @@ export function createDcsRouter(pool: Pool): express.Router {
       // template at compose time — later changes to the template don't
       // retroactively change an already-drafted/approved document.
       const docType = await getDocTypeByCode(pool, tid, version.doc_type_code);
-      const baseGroups: SignatureGroup[] = docType?.signatureGroups?.length ? docType.signatureGroups : [{ columns: [{ label: "Disetujui oleh", role: "admin" }] }];
+      const baseGroups: SignatureGroup[] = docType?.signatureGroups?.length ? docType.signatureGroups : [{ columns: [{ label: "Disetujui oleh", role: "direktur" }] }];
 
       // Penunjukan penandatangan per-dokumen: array id user berdasar INDEKS
       // KOLOM DATAR (urutan flattenSignatureGroups). Kolom pertama (Penyusun)
@@ -638,7 +638,7 @@ export function createDcsRouter(pool: Pool): express.Router {
       const columnIndex = already;
       const column = columns[columnIndex];
       const userRole = req.user!.role;
-      const isAdminOverride = userRole === "admin" || userRole === "super_admin";
+      const isAdminOverride = userRole === "super_admin";
       if (column.assignedUserId) {
         // Kolom ini ditunjuk ke orang SPESIFIK — hanya dia (atau admin) yang
         // boleh tanda tangan, tidak cukup sekadar punya role yang cocok.
@@ -820,7 +820,7 @@ export function createDcsRouter(pool: Pool): express.Router {
       const tid = tenantOf(req);
       const ver = await getVersionOwner(pool, tid, req.params.vid);
       if (!ver) return res.status(404).json({ error: "Versi tidak ditemukan" });
-      const isAdmin = req.user!.role === "admin" || req.user!.role === "super_admin";
+      const isAdmin = req.user!.role === "super_admin";
       if (req.user!.id !== ver.ownerUserId && !isAdmin) {
         return res.status(403).json({ error: "Hanya penyusun dokumen yang bisa menandai komentar selesai." });
       }
@@ -852,7 +852,7 @@ export function createDcsRouter(pool: Pool): express.Router {
       const already = await countApprovals(pool, tid, req.params.vid);
       const currentColumn = columns[already];
       const userRole = req.user!.role;
-      const isAdminOverride = userRole === "admin" || userRole === "super_admin";
+      const isAdminOverride = userRole === "super_admin";
       if (currentColumn) {
         if (currentColumn.assignedUserId) {
           if (req.user!.id !== currentColumn.assignedUserId && !isAdminOverride) {

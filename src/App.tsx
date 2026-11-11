@@ -5562,7 +5562,7 @@ export default function App() {
     { id: "performa-vendor", label: "Performa Vendor" },
     { id: "ai-tools", label: "AI Tools Hukum (semua submenu)" },
   ];
-  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["it_system", "admin", "legal", "manajemen", "marketing", "business_partnership", "account_executive", "operasional", "hr_ga", "direktur", "finance", "tax", "viewer"];
+  const ALL_ROLES_EXCEPT_SUPER: UserRole[] = ["it_system", "legal", "manajemen", "marketing", "business_partnership", "account_executive", "operasional", "hr_ga", "direktur", "finance", "tax", "viewer"];
   // Boleh lihat menu `id` atau tidak, untuk role saat ini. super_admin SELALU
   // penuh (tidak pernah dibatasi config ini — sesuai keputusan "yang bebas
   // cuma super admin"). Role yang belum pernah diatur di rolePermissions =
@@ -5879,6 +5879,8 @@ export default function App() {
 
   // Monitoring Kontrak filters
   const [monitorSearch, setMonitorSearch] = useState("");
+  // Filter PT (khusus Super Admin & Legal yang melihat dokumen lintas PT dalam satu tampilan).
+  const [monitorPt, setMonitorPt] = useState("");
   const [monitorCategory, setMonitorCategory] = useState("Semua");
   const [monitorStatus, setMonitorStatus] = useState("Semua");
   // Satu daftar kontrak (aktif + tidak aktif) — scope memfilter kelompok itu;
@@ -6109,7 +6111,7 @@ export default function App() {
   const emptyDocTypeForm = () => ({
     id: "", code: "", name: "", description: "",
     defaultSections: [{ heading: "", content: "" }],
-    signatureGroups: [{ heading: "", columns: [{ label: "Disetujui oleh", role: "admin" }] }] as DcsSignatureGroup[],
+    signatureGroups: [{ heading: "", columns: [{ label: "Disetujui oleh", role: "direktur" }] }] as DcsSignatureGroup[],
     layoutStyle: "standard" as "standard" | "memo" | "kebijakan",
     letterhead: false,
     defaultLanes: [] as string[],
@@ -6633,7 +6635,7 @@ export default function App() {
   // mengajukan ulang. Dokumen yang belum pernah diajukan: semua staf berwenang.
   const isDocumentOwnerSide = (c: Contract | null) => {
     if (!c || !currentUser) return false;
-    if (currentUser.role === "admin" || currentUser.role === "super_admin") return true;
+    if (currentUser.role === "super_admin") return true;
     const owner = c.approvalSubmittedById || c.createdById;
     if (!owner) return can("contract.edit");
     return owner === currentUser.id;
@@ -6642,7 +6644,7 @@ export default function App() {
     const steps = c?.approvalSteps || [];
     const currentStep = c && isInternalApprovalStage(c.status) ? steps.find((st) => st.decision === "pending") : undefined;
     const isMyTurn = !!currentStep && currentStep.approverId === currentUser?.id;
-    const isAdminOverride = !!currentStep && !isMyTurn && (currentUser?.role === "admin" || currentUser?.role === "super_admin");
+    const isAdminOverride = !!currentStep && !isMyTurn && (currentUser?.role === "super_admin");
     return { steps, currentStep, isMyTurn, isAdminOverride, canDecide: isMyTurn || isAdminOverride };
   };
   const unifiedContractStatusOf = (c: Contract): string =>
@@ -7092,6 +7094,8 @@ export default function App() {
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentText, setEditingCommentText] = useState("");
   const [mentionableUsers, setMentionableUsers] = useState<{ id: string; name: string; role: string }[]>([]);
+  // Calon approver LINTAS PT (semua PT, termasuk TBK & GKM). Dipakai pemilih approver kontrak.
+  const [approverCandidates, setApproverCandidates] = useState<{ id: string; name: string; role: string; tenantId: string; tenantName: string }[]>([]);
   const [selectedMentionIds, setSelectedMentionIds] = useState<string[]>([]);
   const [showMentionPicker, setShowMentionPicker] = useState(false);
 
@@ -7194,6 +7198,9 @@ export default function App() {
     if ((showCommentPanel || showApproverPicker || dcsSelectedVersionId || dcsCreateOpen || isManagingCategories || !!selectedContract) && mentionableUsers.length === 0) {
       fetchMentionableUsers();
     }
+    if ((showApproverPicker || isManagingCategories) && approverCandidates.length === 0) {
+      fetch("/api/users/approver-candidates").then((r) => (r.ok ? r.json() : [])).then(setApproverCandidates).catch(() => {});
+    }
   }, [showCommentPanel, showApproverPicker, dcsSelectedVersionId, dcsCreateOpen, isManagingCategories, !!selectedContract]);
 
   // Prefill approverPickerIds dari Matriks Approval Default kategori kontrak
@@ -7203,14 +7210,14 @@ export default function App() {
   // membaca mentionableUsers langsung di onClick masih dapat array kosong.
   // Murni usulan awal: hanya mengisi kalau user belum pilih apa pun sendiri.
   useEffect(() => {
-    if (showApproverPicker && selectedContract && mentionableUsers.length > 0 && approverPickerIds.length === 0) {
+    if (showApproverPicker && selectedContract && approverCandidates.length > 0 && approverPickerIds.length === 0) {
       const preset = masterData.categoryApprovalDefaults[selectedContract.category] || [];
       const eligible = preset.filter((id) =>
-        mentionableUsers.some((mu) => mu.id === id && mu.id !== currentUser?.id && canBeApprover(mu.role))
+        approverCandidates.some((mu) => mu.id === id && mu.id !== currentUser?.id && canBeApprover(mu.role))
       );
       if (eligible.length > 0) setApproverPickerIds(eligible);
     }
-  }, [showApproverPicker, mentionableUsers, selectedContract]);
+  }, [showApproverPicker, approverCandidates, selectedContract]);
 
   // Form evaluasi vendor disinkronkan tiap kali kontrak yang dibuka berganti —
   // prefill dari evaluasi yang SUDAH ada (mode edit), atau kosong (rating 0 =
@@ -9102,6 +9109,12 @@ export default function App() {
 
   // Open Workspace for Specific Contract
   const handleOpenWorkspace = async (contract: Contract) => {
+    // Addendum Draft lama yang masih berupa pasal (belum Word) dijadikan dokumen Word saat dibuka,
+    // supaya Addendum selalu diedit di editor yang sama dengan dokumen utama.
+    if (contract.amendsContractId && contract.status === "Draft" && !isUploadedDocument(contract)) {
+      const converted = await convertContractToWord(contract);
+      if (converted) contract = converted;
+    }
     setSelectedContract(contract);
     setDraftSavedSnapshot(JSON.stringify(contract));
     setAiReport(null);
@@ -10463,7 +10476,10 @@ export default function App() {
       if (data.success) {
         showToast(`Addendum ${data.contract.contractNumber} dibuat. Periksa pasal otomatis di editor pasal (bisa ditambah/diedit), lalu Aktifkan.`, "success");
         setAddendumSource(null);
-        handleOpenWorkspace(data.contract);
+        // Addendum langsung menjadi dokumen Word (editor ONLYOFFICE) seperti kontrak dari template;
+        // bila editor Word tidak aktif / gagal, jatuh ke editor pasal lama.
+        const addendumWord = await convertContractToWord(data.contract);
+        handleOpenWorkspace(addendumWord || data.contract);
         setActiveTab("monitoring");
         fetchInitialData();
       } else showToast(data.error || "Gagal membuat addendum", "warning");
@@ -12155,7 +12171,7 @@ export default function App() {
     const k = pendingDeepLinkConfig;
     setPendingDeepLinkConfig(null);
     if (k !== "pengguna") return;
-    if (currentUser.role !== "admin" && currentUser.role !== "super_admin" && currentUser.role !== "it_system") return;
+    if (currentUser.role !== "super_admin" && currentUser.role !== "it_system") return;
     goConfig(k);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser, pendingDeepLinkConfig]);
@@ -12178,7 +12194,7 @@ export default function App() {
     { label: "Data Vendor", hint: "Vendor, NPWP, rekening bank", keywords: "vendor npwp rekening bank supplier mitra pihak kedua", tab: "vendor" },
     { label: "Mitra / Operator", hint: "Daftar mitra/operator per PT & platform (TBK, Bank, GKM) untuk Arsip Eksternal", keywords: "mitra operator tbk bank gkm rumah sakit shuttle travel platform pt arsip eksternal folder", tab: "operator" },
     { label: "Data Karyawan", hint: "Karyawan untuk kontrak kerja", keywords: "karyawan employee pegawai pkwt kontrak kerja", tab: "karyawan" },
-    { label: "Kelola Pengguna", hint: "Akun & peran pengguna", keywords: "pengguna user akun peran role kelola admin", tab: "pengguna", role: ["admin", "super_admin", "it_system"] },
+    { label: "Kelola Pengguna", hint: "Akun & peran pengguna", keywords: "pengguna user akun peran role kelola admin", tab: "pengguna", role: ["super_admin", "it_system"] },
     { label: "Kelola Perusahaan", hint: "Tenant, cadangan, email, penyimpanan", keywords: "perusahaan tenant cadangan backup email penyimpanan storage", tab: "perusahaan", role: ["super_admin"] },
   ];
 
@@ -13444,7 +13460,7 @@ export default function App() {
   // dokumen tersebut ikut ditampilkan tapi ditandai sebagai override.
   const myApprovalQueue = (() => {
     if (!currentUser) return [];
-    const canOverride = currentUser.role === "admin" || currentUser.role === "super_admin";
+    const canOverride = currentUser.role === "super_admin";
     const delegatorIds = new Set(delegatedToMe.map((d) => d.id));
     return contracts
       .filter((c) => c.status === "OnReview" || c.status === "FinalReview")
@@ -16717,8 +16733,8 @@ export default function App() {
                   ] },
                   { group: "Perusahaan & Sistem", items: [
                     { k: "app", label: "Perusahaan & e-Meterai" },
-                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
-                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
+                    ...(currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
+                    ...(currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
                     ...(currentUser.role === "super_admin" ? [{ k: "perusahaan", label: "Kelola Perusahaan" }] : []),
                   ] },
                 ] as { group: string; items: { k: string; label: string; main?: string }[] }[];
@@ -18626,15 +18642,16 @@ export default function App() {
                               <p className="font-semibold text-slate-100 text-[13px] truncate">{u.name}</p>
                               {u.id === currentUser.id && <span className="text-[10px] text-slate-500 shrink-0">· Anda</span>}
                               {!u.active && <span className="text-[10px] font-medium text-slate-500 shrink-0">· Nonaktif</span>}
+                              {u.pendingRoleMapping && <span className="text-[10px] font-semibold text-amber-300 bg-amber-500/15 px-1.5 py-0.5 rounded shrink-0" title="Bekas Admin Perusahaan (peran dihapus). Pilih role baru lalu aktifkan.">Perlu pemetaan role</span>}
                             </div>
                             <p className="text-[12px] text-slate-500 truncate">{u.email}</p>
                           </div>
                           <div className="hidden sm:block text-right shrink-0 w-40">
-                            <p className="text-[12px] font-medium text-slate-300" title={rm?.desc}>{roleLabel(u.role)}</p>
+                            <p className="text-[12px] font-medium text-slate-300" title={rm?.desc}>{u.pendingRoleMapping ? "Belum dipetakan" : roleLabel(u.role)}</p>
                             {u.lastLoginAt && <p className="text-[10px] text-slate-600">Login {new Date(u.lastLoginAt).toLocaleDateString("id-ID", { day: "numeric", month: "short" })}</p>}
                           </div>
                           <div className="flex gap-0.5 items-center shrink-0 opacity-60 group-hover:opacity-100 transition">
-                            <button onClick={() => setUserForm({ ...u, password: "", newPassword: "" })} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer"><Pencil className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => setUserForm({ ...u, role: u.pendingRoleMapping ? "" : u.role, password: "", newPassword: "" })} title="Edit" className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-md cursor-pointer"><Pencil className="w-3.5 h-3.5" /></button>
                             {u.id !== currentUser.id && (
                               <button onClick={() => handleDeleteUser(u.id)} title="Hapus" className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-md cursor-pointer"><Trash2 className="w-3.5 h-3.5" /></button>
                             )}
@@ -18656,7 +18673,7 @@ export default function App() {
                   checkbox-nya SEMUA kosong = akses penuh (belum diatur),
                   bukan "tidak boleh apa-apa" — supaya nyalain fitur ini
                   pertama kali tidak mendadak mengunci semua orang. */}
-              {(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
+              {(currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
                 const rp: Record<string, string[]> = appSettings.rolePermissions || {};
                 // Belum diatur → pakai default peran (src/roles.ts), atau penuh
                 // bila peran itu tak punya default (admin, legal).
@@ -18731,9 +18748,9 @@ export default function App() {
                   (src/roles.ts), disimpan di appSettings.actionPermissions, dibaca
                   server (requirePerm) DAN tombol di layar (can()). Mengubah siapa
                   boleh hapus/pindah/upload TTD/dst. tidak perlu ubah kode lagi. */}
-              {(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
+              {(currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
                 const ap: Record<string, string[]> = appSettings.actionPermissions || {};
-                const canEditMatrix = currentUser.role === "admin" || currentUser.role === "super_admin";
+                const canEditMatrix = currentUser.role === "super_admin";
                 const isOn = (role: string, key: string) => {
                   const def = PERMISSIONS.find((p) => p.key === key)!;
                   return (Array.isArray(ap[key]) ? ap[key] : def.defaults).includes(role);
@@ -18835,7 +18852,7 @@ export default function App() {
                   dst), supaya role yang folder arsipnya dibatasi di sini
                   tetap bisa memilih kategori itu saat membuat kontrak baru
                   seperti biasa — cuma "melihat arsipnya" yang dibatasi. */}
-              {(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
+              {(currentUser.role === "super_admin" || currentUser.role === "it_system") && configTab === "hakakses" && (() => {
                 const fp: Record<string, string[]> = appSettings.folderPermissions || {};
                 const isChecked = (role: string, cat: string) =>
                   !Array.isArray(fp[role]) || fp[role].includes(cat);
@@ -19108,7 +19125,7 @@ export default function App() {
                 // induk menampilkan jumlah addendumnya, dan pencarian nomor/
                 // judul addendum tetap menemukan kontrak induknya.
                 const addendaOf = (c: Contract) => contracts.filter((a) => a.amendsContractId === c.id);
-                const scoped = contracts.filter((c) => !c.amendsContractId && (empTab ? isEmployeeContract(c) : !isEmployeeContract(c)));
+                const scoped = contracts.filter((c) => !c.amendsContractId && (empTab ? isEmployeeContract(c) : !isEmployeeContract(c)) && (!monitorPt || c.tenantId === monitorPt));
                 const addendumHit = (c: Contract) => (monitorSearch.trim() && matchContract(c, monitorSearch) === null
                   ? addendaOf(c).find((a) => matchContract(a, monitorSearch) !== null) || null
                   : null);
@@ -19330,6 +19347,17 @@ export default function App() {
                           <button onClick={() => { setMonitorSearch(""); setMonitorPage(1); }} aria-label="Hapus pencarian" className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full text-slate-500 hover:text-slate-200 cursor-pointer">×</button>
                         )}
                       </div>
+                      {(currentUser.role === "super_admin" || currentUser.role === "legal") && numberCompanies.length > 1 && (
+                        <select
+                          value={monitorPt}
+                          onChange={(e) => { setMonitorPt(e.target.value); setMonitorPage(1); }}
+                          title="Filter dokumen berdasarkan PT"
+                          className="h-11 rounded-full bg-slate-900 card-soft px-4 text-sm text-slate-200 cursor-pointer focus:outline-none"
+                        >
+                          <option value="">Semua PT</option>
+                          {numberCompanies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                      )}
                       <button onClick={() => openFilter()} className={topBtn}>
                         <SlidersHorizontal className="w-4 h-4 text-indigo-400" /> Filter
                         {activeFilterCount > 0 && <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-peach text-brand-orange text-[10px] font-bold flex items-center justify-center tabular-nums">{activeFilterCount}</span>}
@@ -19828,7 +19856,7 @@ export default function App() {
                             // Penyusun = pemegang kolom 0; Reviewer giliran = pemegang
                             // kolom pending pertama (ditunjuk ATAU sesuai role); admin
                             // boleh override. Menentukan tombol mana yang tampil.
-                            const isDcsAdmin = currentUser?.role === "admin" || currentUser?.role === "super_admin";
+                            const isDcsAdmin = currentUser?.role === "super_admin";
                             const penyusunEntry = dcsApprovalRoster[0];
                             const isPenyusun = !!currentUser && penyusunEntry?.assignedUserId === currentUser.id;
                             const pendingCol = dcsApprovalRoster.find((r) => r.status === "pending");
@@ -23454,7 +23482,7 @@ export default function App() {
                                 {ids.length > 0 && (
                                   <div className="flex flex-wrap gap-1.5">
                                     {ids.map((id, i) => {
-                                      const mu = mentionableUsers.find((x) => x.id === id);
+                                      const mu = approverCandidates.find((x) => x.id === id);
                                       if (!mu) return null;
                                       return (
                                         <span key={id} className="text-[10px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-full flex items-center gap-1">
@@ -23466,10 +23494,10 @@ export default function App() {
                                   </div>
                                 )}
                                 <div className="max-h-40 overflow-y-auto bg-slate-900 border border-slate-800 rounded-lg p-1.5 space-y-0.5">
-                                  {mentionableUsers.filter((mu) => canBeApprover(mu.role)).length === 0 && (
+                                  {approverCandidates.filter((mu) => canBeApprover(mu.role)).length === 0 && (
                                     <p className="text-[10px] text-slate-500 italic p-1.5">Belum ada kolega yang bisa jadi penanggung jawab.</p>
                                   )}
-                                  {mentionableUsers.filter((mu) => canBeApprover(mu.role)).map((mu) => {
+                                  {approverCandidates.filter((mu) => canBeApprover(mu.role)).map((mu) => {
                                     const selected = ids.includes(mu.id);
                                     return (
                                       <button
@@ -23481,7 +23509,7 @@ export default function App() {
                                         }`}
                                       >
                                         <span>{mu.name}</span>
-                                        <span className="text-[9px] text-slate-500">{roleLabel(mu.role)}</span>
+                                        <span className="text-[9px] text-slate-500">{roleLabel(mu.role)} · {mu.tenantName}</span>
                                       </button>
                                     );
                                   })}
@@ -26557,7 +26585,7 @@ export default function App() {
               {approverPickerIds.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {approverPickerIds.map((id, i) => {
-                    const mu = mentionableUsers.find((x) => x.id === id);
+                    const mu = approverCandidates.find((x) => x.id === id);
                     if (!mu) return null;
                     return (
                       <span key={id} className="text-[10px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-full flex items-center gap-1">
@@ -26569,10 +26597,10 @@ export default function App() {
                 </div>
               )}
               <div className="max-h-56 overflow-y-auto bg-slate-900 border border-slate-800 rounded-lg p-1.5 space-y-0.5">
-                {mentionableUsers.filter((mu) => mu.id !== currentUser?.id && canBeApprover(mu.role)).length === 0 && (
+                {approverCandidates.filter((mu) => mu.id !== currentUser?.id && canBeApprover(mu.role)).length === 0 && (
                   <p className="text-[10px] text-slate-500 italic p-1.5">Tidak ada kolega lain yang bisa jadi penanggung jawab.</p>
                 )}
-                {mentionableUsers.filter((mu) => mu.id !== currentUser?.id && canBeApprover(mu.role)).map((mu) => {
+                {approverCandidates.filter((mu) => mu.id !== currentUser?.id && canBeApprover(mu.role)).map((mu) => {
                   const selected = approverPickerIds.includes(mu.id);
                   return (
                     <button
@@ -26587,7 +26615,7 @@ export default function App() {
                       }`}
                     >
                       <span>{mu.name}</span>
-                      <span className="text-[9px] text-slate-500">{roleLabel(mu.role)}</span>
+                      <span className="text-[9px] text-slate-500">{roleLabel(mu.role)} · {mu.tenantName}</span>
                     </button>
                   );
                 })}
@@ -28423,7 +28451,7 @@ export default function App() {
           const cmt = clauseComments.find((c) => c.id === item.id);
           if (!cmt) return null;
           const replies = clauseComments.filter((c) => c.parentId === cmt.id);
-          const canManage = currentUser?.id === cmt.userId || ["admin", "legal", "super_admin"].includes(currentUser?.role);
+          const canManage = currentUser?.id === cmt.userId || ["legal", "super_admin"].includes(currentUser?.role);
           const isMarkupProposal = cmt.kind === "strike" || cmt.kind === "replace";
           const isPendingMarkup = isMarkupProposal && cmt.status === "pending";
           const canDecideMarkup = can("review.markup_decide") && isDocumentOwnerSide(selectedContract);
@@ -28899,10 +28927,10 @@ export default function App() {
                         <CheckCircle className="w-3 h-3" />
                         {cmt.resolved ? "Buka kembali" : "Tandai selesai"}
                       </button>
-                      {(currentUser?.id === cmt.userId || ["admin", "legal", "super_admin"].includes(currentUser?.role)) && !cmt.resolved && (
+                      {(currentUser?.id === cmt.userId || ["legal", "super_admin"].includes(currentUser?.role)) && !cmt.resolved && (
                         <button onClick={() => { setEditingCommentId(cmt.id); setEditingCommentText(cmt.text); }} className="text-[10px] text-slate-500 hover:text-slate-300 cursor-pointer transition">Edit</button>
                       )}
-                      {(currentUser?.id === cmt.userId || ["admin", "legal", "super_admin"].includes(currentUser?.role)) && (
+                      {(currentUser?.id === cmt.userId || ["legal", "super_admin"].includes(currentUser?.role)) && (
                         <button onClick={() => handleDeleteComment(cmt)} className="text-[10px] text-rose-600 hover:text-rose-400 cursor-pointer transition">Hapus</button>
                       )}
                       <button

@@ -70,7 +70,7 @@ async function testLayout(name: string, input: ComposeInput, expectMinPages: num
     letterhead: { companyName: "PT. Trans Berjaya Khatulistiwa", companyAddress: "Jl. Purbasari 4 No. 1 Kel. Cipageran, Kec. Cimahi Utara, Kota Cimahi, Jawa Barat" },
     signatureGroups: [
       { heading: "Penyusun:", columns: [{ label: "Manager HED", role: "manager" }, { label: "Manager FAT", role: "manager" }] },
-      { heading: "Mengetahui:", columns: [{ label: "CAO", role: "legal" }, { label: "CEO", role: "admin" }] },
+      { heading: "Mengetahui:", columns: [{ label: "CAO", role: "legal" }, { label: "CEO", role: "direktur" }] },
     ],
   }, 2);
 
@@ -81,7 +81,7 @@ async function testLayout(name: string, input: ComposeInput, expectMinPages: num
     docTypeCode: "POL", department: "DIR", major: 1, minor: 0,
     sections: [{ heading: "Pernyataan Kebijakan", content: "Mampu menghasilkan produk yang memenuhi kebutuhan pasar dalam aspek kualitas, harga, dan ketepatan waktu." }],
     letterhead: { companyName: "PT Makmur Abadi Valve", companyAddress: "Kp. Tegal Loa Rt. 11/03 Desa Karya Mekar, Purwakarta - Jawa Barat" },
-    signatureGroups: [{ columns: [{ label: "Disetujui oleh", role: "admin" }] }],
+    signatureGroups: [{ columns: [{ label: "Disetujui oleh", role: "direktur" }] }],
   }, 2);
 
   console.log("\nALL LAYOUT TESTS PASSED");

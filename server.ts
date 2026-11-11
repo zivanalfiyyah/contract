@@ -12,7 +12,7 @@ import {
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
   SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
 } from "./src/types";
-import { isFullAccessRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
+import { isFullAccessRole, isCrossTenantRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canAccessContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
@@ -29,6 +29,12 @@ import {
   onlyOfficeSettings, signLink, verifyLink, verifyDsRequest, signDsPayload, isAllowedDsDownloadUrl, rewriteDsUrlToInternal, buildEditorConfig,
 } from "./onlyoffice.js";
 import { clauseToPluginBlocks, extractImageSrcs } from "./clause-html.js";
+import { valueToEnglish, imageInfo } from "./template-docx.js";
+import {
+  ISO_DATE, formatShortDateId, partyWordValues, reconcileCore, buildPartyView, normalizePartyPatch, applyPartyPatch,
+  partyEditability, partyFormOf, partyFieldLabel, clearStaleEnglish, englishInvalidationBetween,
+  PARTY_TEXT_KEYS, PARTY_FIELDS, type PartyCompany,
+} from "./party-fields.js";
 import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap, type LetterheadInput, type SignatureInput, type SignatureOptions, type DigitalSignatureInput, readLayout, patchLayout, type LayoutPatch, listVariables, setVariables, listTranslatable, applyTranslations, setLanguageMode, readLanguage, refreshEnglishVars, refreshRangkapTail, signaturePageText, hasTwoCopies, type DocLanguage, type BilingualLayoutMode, type LangStash, unhideLegacyLanguage } from "./template-docx.js";
 import { readChangeHistory, acceptAllChanges, hasTrackedChanges, originalTextOf } from "./review-changes.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
@@ -49,7 +55,7 @@ import { ai, isGeminiConfigured, parseAiJson, aiErrorResponse } from "./ai-clien
 import { renderMask, validateMask, suggestDocTypeCode } from "./numbering-utils.js";
 import { DEFAULT_OPERATOR_GROUPS, sanitizeOperatorGroups } from "./operatorDefaults.js";
 import {
-  requireAuth, requireRole, requirePerm, hasPerm, actionOverridesFor, tenantOf, AuthedRequest,
+  requireAuth, requireRole, requirePerm, hasPerm, actionOverridesFor, tenantOf, resolveUser, AuthedRequest,
   hashPassword, verifyPassword, signToken, AUTH_COOKIE, setAuthCookie, clearAuthCookie, stripUser,
   generateResetToken, hashResetToken, signTotpChallenge, verifyTotpChallenge,
 } from "./auth.js";
@@ -188,6 +194,31 @@ const apiLimiter = rateLimit({
 });
 app.use("/api/", apiLimiter);
 
+// KONTEKS TENANT PER DOKUMEN (lintas PT). Untuk /api/contracts/:id/* dan /api/legal-jobs/:id/*,
+// bila user BOLEH mengakses dokumen itu walau milik PT lain (Super Admin: semua; Legal: dokumen
+// eksternal; peran lain: hanya yang ditugaskan langsung), tenantOf() diarahkan ke PT dokumen
+// tersebut. Bila tidak berhak, konteks tidak diubah → handler memakai PT sendiri → 404 (tanpa bocor).
+app.param("id", (req, _res, next) => {
+  try {
+    const url = req.originalUrl.split("?")[0];
+    const m = url.match(/^\/api\/(contracts|legal-jobs)\/([^/]+)/);
+    if (!m || decodeURIComponent(m[2]) !== req.params.id) return next();
+    const user = resolveUser(req);
+    if (!user) return next();
+    const db = loadDB();
+    if (m[1] === "contracts") {
+      const c = (db.contracts as Contract[]).find((x) => x.id === req.params.id);
+      if (c && c.tenantId !== user.tenantId && canAccessContract({ id: user.id, role: user.role as string, tenantId: user.tenantId, actingForIds: actingForIdsOf(db, user.id) }, c)) {
+        (req as any).tenantCtx = c.tenantId;
+      }
+    } else if (isCrossTenantRole(user.role as string)) {
+      const j = ((db.legalJobs || []) as LegalJob[]).find((x) => x.id === req.params.id);
+      if (j && j.tenantId !== user.tenantId) (req as any).tenantCtx = j.tenantId;
+    }
+  } catch { /* konteks default */ }
+  next();
+});
+
 // AI calls cost real money per request — cap them tighter than the general
 // API limit so one compromised/misbehaving account can't run up the bill.
 const aiLimiter = rateLimit({
@@ -311,7 +342,7 @@ function startFinalInternalReview(db: any, contract: Contract): ContractApproval
   const lastApproved = (contract.approvalHistory || []).slice().reverse().find((r) => r.outcome === "approved");
   const approvers = (lastApproved?.steps || [])
     .slice().sort((a, b) => a.order - b.order)
-    .map((st) => (db.users as User[]).find((u) => u.id === st.approverId && u.tenantId === tid && u.active))
+    .map((st) => (db.users as User[]).find((u) => u.id === st.approverId && u.active))   // approver boleh dari PT mana pun
     .filter((u): u is User => !!u && canBeApprover(u.role));
   const now = new Date().toISOString();
   const steps: ContractApprovalStep[] = approvers.map((u, i) => ({
@@ -409,10 +440,11 @@ function activeDelegateIdOf(user: User | undefined, onDate?: string): string | n
 }
 /** Boleh-kah `actorId` memutuskan atas nama `approverId` karena delegasi? */
 function canActAsDelegate(db: any, tid: string, approverId: string, actorId: string): boolean {
-  const approver = (db.users as User[]).find((u) => u.id === approverId && u.tenantId === tid);
+  // Approver bisa dari PT lain (approval lintas PT); pengganti harus se-PT dengan approver-nya.
+  const approver = (db.users as User[]).find((u) => u.id === approverId);
   const delegateId = activeDelegateIdOf(approver);
   if (!delegateId || delegateId !== actorId) return false;
-  const pengganti = (db.users as User[]).find((u) => u.id === actorId && u.tenantId === tid);
+  const pengganti = (db.users as User[]).find((u) => u.id === actorId && u.tenantId === approver!.tenantId);
   return !!pengganti?.active; // pengganti nonaktif tidak mewarisi apa pun
 }
 
@@ -471,6 +503,9 @@ app.post("/api/auth/login", loginLimiter, (req, res) => {
       code: "EMAIL_UNVERIFIED",
       error: "Email Anda belum diverifikasi. Masukkan kode verifikasi 6 angka yang kami kirim ke email Anda.",
     });
+  }
+  if (user.pendingRoleMapping) {
+    return res.status(403).json({ error: "Akun Anda bekas Admin Perusahaan (peran sudah dihapus) dan menunggu pemetaan role oleh Super Admin. Hubungi Super Admin." });
   }
   if (!user.active) {
     return res.status(401).json({ error: "Email atau kata sandi salah." });
@@ -699,7 +734,7 @@ app.post("/api/auth/reset-password", loginLimiter, (req, res) => {
 // Peran yang boleh dipilih sendiri saat mendaftar.
 const SELF_REGISTER_ROLES: UserRole[] = ["viewer", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga"];
 // Peran yang bisa diberikan lewat Kelola Pengguna (super_admin tidak).
-const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "admin", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "direktur", "finance", "tax", "viewer"];
+const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "direktur", "finance", "tax", "viewer"];
 const OTP_TTL_MS = 10 * 60 * 1000;     // kode berlaku 10 menit
 const OTP_MAX_ATTEMPTS = 5;            // lebih dari ini → kode hangus, minta baru
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -734,8 +769,9 @@ function pruneStaleRegistrations(db: any): boolean {
   return (db.users as User[]).length !== before;
 }
 
+// Pengelola pengguna di sebuah PT (penerima kabar pendaftar baru): IT/System PT itu.
 function tenantAdminsOf(db: any, tid: string): User[] {
-  return (db.users as User[]).filter((u) => u.tenantId === tid && u.active && u.role === "admin");
+  return (db.users as User[]).filter((u) => u.tenantId === tid && u.active && u.role === "it_system");
 }
 
 // Endpoint pendaftaran tidak lewat requireAuth, jadi audit ditulis manual
@@ -800,7 +836,7 @@ app.post("/api/auth/register", registerLimiter, async (req, res) => {
   if (password.length < 8) return res.status(400).json({ error: "Kata sandi minimal 8 karakter." });
   if (password.length > 200) return res.status(400).json({ error: "Kata sandi terlalu panjang." });
   if (!SELF_REGISTER_ROLES.includes(role)) {
-    return res.status(400).json({ error: "Peran tidak valid. Pilih Viewer, Staff, Legal, atau Manager. Peran Admin hanya bisa diberikan oleh admin perusahaan." });
+    return res.status(400).json({ error: "Peran tidak valid. Pilih Viewer, Staff, Legal, atau Manager." });
   }
 
   const db = loadDB();
@@ -993,7 +1029,7 @@ app.get("/api/users", requireAuth, requirePerm("settings.manage"), (req: AuthedR
 
 // Minimal colleague directory (id/name/role only) for the @mention picker in
 // comments — any authenticated tenant member needs this, not just admins,
-// so it's intentionally not behind requireRole("admin") like /api/users.
+// so it's intentionally not behind requirePerm("settings.manage") like /api/users.
 app.get("/api/users/mentionable", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
@@ -1001,6 +1037,18 @@ app.get("/api/users/mentionable", requireAuth, (req: AuthedRequest, res) => {
     scoped(db.users as User[], tid)
       .filter((u) => u.active)
       .map((u) => ({ id: u.id, name: u.name, role: u.role })),
+  );
+});
+
+// Daftar calon approver LINTAS PT (id/nama/role/PT saja — tanpa email). Dipakai pemilih approver.
+// Memilih approver dari PT lain TIDAK memberi dia akses ke dokumen PT itu selain yang ditugaskan.
+app.get("/api/users/approver-candidates", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tn = new Map((db.tenants as any[]).map((t) => [t.id, t.name] as const));
+  res.json(
+    (db.users as User[])
+      .filter((u) => u.active && u.tenantId && !(u as any).pendingRoleMapping && canBeApprover(u.role))
+      .map((u) => ({ id: u.id, name: u.name, role: u.role, tenantId: u.tenantId, tenantName: tn.get(u.tenantId) || u.tenantId })),
   );
 });
 
@@ -1106,17 +1154,11 @@ app.put("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: Aut
     return res.status(400).json({ error: "Akun ini belum memverifikasi email. Gunakan tombol Aktifkan atau Hapus." });
   }
 
-  // A tenant with zero active admins can no longer manage its own users —
-  // that's a support-ticket-only dead end, not just an inconvenience.
-  const wouldLoseAdminStatus =
-    (typeof req.body.active === "boolean" && !req.body.active && user.role === "admin") ||
-    (req.body.role && req.body.role !== "admin" && user.role === "admin");
-  if (wouldLoseAdminStatus) {
-    const otherActiveAdmins = (db.users as User[]).some(
-      (u) => u.tenantId === tid && u.id !== user.id && u.role === "admin" && u.active,
-    );
-    if (!otherActiveAdmins) {
-      return res.status(400).json({ error: "Tidak bisa menonaktifkan/mengubah peran admin terakhir di perusahaan ini." });
+  // Akun ex-"Admin Perusahaan" (peran dihapus) ditahan nonaktif sampai Super Admin memetakan role barunya.
+  if (user.pendingRoleMapping) {
+    const mapped = req.body.role && ASSIGNABLE_ROLES.includes(req.body.role);
+    if (req.body.active === true && !mapped) {
+      return res.status(400).json({ error: "Akun ini bekas Admin Perusahaan (peran sudah dihapus). Pilih role barunya dulu sebelum mengaktifkan." });
     }
   }
   if (req.params.id === req.user!.id && typeof req.body.active === "boolean" && !req.body.active) {
@@ -1124,7 +1166,10 @@ app.put("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: Aut
   }
 
   if (req.body.name) user.name = req.body.name;
-  if (req.body.role && ASSIGNABLE_ROLES.includes(req.body.role)) user.role = req.body.role;
+  if (req.body.role && ASSIGNABLE_ROLES.includes(req.body.role)) {
+    user.role = req.body.role;
+    if (user.pendingRoleMapping) { user.pendingRoleMapping = false; pushAudit(db, req, { action: "Petakan Role Admin Lama", details: `Akun "${user.name}" (bekas Admin Perusahaan) dipetakan ke ${roleLabelOf(req.body.role)}` }); }
+  }
   if (typeof req.body.active === "boolean") user.active = req.body.active;
   if (req.body.newPassword) {
     if (String(req.body.newPassword).length < 8) return res.status(400).json({ error: "Kata sandi minimal 8 karakter" });
@@ -1144,7 +1189,7 @@ app.put("/api/users/:id/delegation", requireAuth, (req: AuthedRequest, res) => {
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
   if (!user) return res.status(404).json({ error: "User tidak ditemukan" });
   const isSelf = req.params.id === req.user!.id;
-  const isAdmin = req.user!.role === "admin" || req.user!.role === "super_admin";
+  const isAdmin = req.user!.role === "super_admin";
   if (!isSelf && !isAdmin) {
     return res.status(403).json({ error: "Hanya bisa mengatur delegasi milik sendiri." });
   }
@@ -1202,14 +1247,6 @@ app.delete("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: 
   if (req.params.id === req.user!.id) return res.status(400).json({ error: "Tidak bisa menghapus akun sendiri" });
   const target = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
   if (!target) return res.status(404).json({ error: "User tidak ditemukan" });
-  if (target.role === "admin") {
-    const otherActiveAdmins = (db.users as User[]).some(
-      (u) => u.tenantId === tid && u.id !== target.id && u.role === "admin" && u.active,
-    );
-    if (!otherActiveAdmins) {
-      return res.status(400).json({ error: "Tidak bisa menghapus admin terakhir di perusahaan ini." });
-    }
-  }
   db.users = (db.users as User[]).filter((u) => u.id !== req.params.id);
   pushAudit(db, req, { action: "Delete User", details: `Menghapus pengguna "${target.name}"` });
   saveDB(db);
@@ -1258,7 +1295,7 @@ app.post("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedRe
   db.tenants.push({ id: tid, name, branch: branch || "", code: sanitizeCompanyCode(req.body.code) || undefined, active: true, platforms: normalizePlatformList(req.body.platforms), createdAt: new Date().toISOString() });
   const adminUser: User = {
     id: "usr-" + Date.now(), tenantId: tid, name: adminName || "Admin " + name,
-    email: adminEmail, passwordHash: hashPassword(adminPassword), role: "admin", active: true,
+    email: adminEmail, passwordHash: hashPassword(adminPassword), role: "it_system", active: true,
     createdAt: new Date().toISOString(),
   };
   db.users.push(adminUser);
@@ -1958,6 +1995,22 @@ export async function initFirebaseDB() {
     }
     if (changed) { saveDB(db); logger.info({ changed }, "Peran manager dimigrasikan ke manajemen"); }
   }
+  // Migrasi peran "Admin Perusahaan" (peran dihapus). TIDAK diubah otomatis ke role lain: akun lama hanya
+  // dinonaktifkan & ditandai (pendingRoleMapping); role aslinya dicatat di previousRole. Super Admin
+  // memetakan role barunya di Kelola Pengguna, baru akun bisa diaktifkan lagi. Data & histori dokumen utuh.
+  {
+    const db = loadDB();
+    let changed = 0;
+    for (const u of db.users as User[]) {
+      if ((u.role as string) === "admin") {
+        u.previousRole = "admin";
+        u.pendingRoleMapping = true;
+        u.active = false;
+        changed++;
+      }
+    }
+    if (changed) { saveDB(db); logger.warn({ changed }, "Akun bekas Admin Perusahaan dinonaktifkan — menunggu pemetaan role oleh Super Admin"); }
+  }
 }
 
 // REST APIs
@@ -2162,8 +2215,8 @@ app.put("/api/settings", requireAuth, requirePerm("settings.manage", "settings.e
     const before = JSON.stringify(rawSettingsFor(db, tid)?.actionPermissions || {});
     const cleaned = sanitizeActionPermissions(patch.actionPermissions);
     if (JSON.stringify(cleaned) !== before) {
-      if (req.user!.role !== "admin" && req.user!.role !== "super_admin") {
-        return res.status(403).json({ error: "Hanya Admin atau Super Admin yang dapat mengubah matriks hak akses." });
+      if (req.user!.role !== "super_admin") {
+        return res.status(403).json({ error: "Hanya Super Admin yang dapat mengubah matriks hak akses." });
       }
       pushAudit(db, req, { action: "Update Hak Akses Aksi", details: "Memperbarui matriks hak akses aksi per role" });
     }
@@ -2284,8 +2337,8 @@ app.put("/api/clauses/:id", requireAuth, requirePerm("templates.manage"), (req: 
   const idx = db.clauses.findIndex((c: Clause) => c.id === req.params.id && c.tenantId === tid);
   if (idx !== -1) {
     // Klausul terproteksi hanya boleh diubah oleh legal/admin.
-    if (db.clauses[idx].isProtected && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
-      return res.status(403).json({ error: "Klausul ini terproteksi — hanya Legal/Admin yang boleh mengubah." });
+    if (db.clauses[idx].isProtected && !["legal", "super_admin"].includes(req.user!.role)) {
+      return res.status(403).json({ error: "Klausul ini terproteksi — hanya Legal/Super Admin yang boleh mengubah." });
     }
     db.clauses[idx] = {
       ...db.clauses[idx],
@@ -2574,13 +2627,17 @@ function actingForIdsOf(db: any, userId: string): string[] {
     .map((u) => u.id);
 }
 function viewerOf(db: any, req: AuthedRequest) {
-  return { id: req.user!.id, role: req.user!.role as string, actingForIds: actingForIdsOf(db, req.user!.id) };
+  return { id: req.user!.id, role: req.user!.role as string, tenantId: req.user!.tenantId, actingForIds: actingForIdsOf(db, req.user!.id) };
 }
 // Kontrak yang boleh DILIHAT pengguna ini (batas per divisi / kontrak
 // karyawan — lihat canViewContract di src/roles.ts).
+// LINTAS PT: Super Admin = semua dokumen semua PT; Legal = dokumen EKSTERNAL semua PT; HR/GA & peran lain
+// = PT sendiri (+ dokumen PT lain HANYA bila ditugaskan langsung kepadanya sebagai approver/reviewer).
+// ?tenantId=<PT> menyaring ke satu PT (filter PT di tampilan Super Admin/Legal).
 function visibleContracts(db: any, req: AuthedRequest): Contract[] {
   const viewer = viewerOf(db, req);
-  return scoped(db.contracts as Contract[], tenantOf(req)).filter((c) => canViewContract(viewer, c));
+  const pt = isCrossTenantRole(viewer.role) && typeof req.query.tenantId === "string" && req.query.tenantId ? req.query.tenantId : "";
+  return (db.contracts as Contract[]).filter((c) => (!pt || c.tenantId === pt) && canAccessContract(viewer, c));
 }
 // Dipakai hampir semua endpoint /api/contracts/:id — kontrak di luar
 // jangkauan pengguna dianggap "tidak ditemukan" (404), sama seperti kontrak
@@ -2589,7 +2646,7 @@ function findOwnedContract(db: any, req: AuthedRequest, id: string): Contract | 
   const tid = tenantOf(req);
   const c = (db.contracts as Contract[]).find((x) => x.id === id && x.tenantId === tid);
   if (!c) return undefined;
-  return canViewContract(viewerOf(db, req), c) ? c : undefined;
+  return canAccessContract(viewerOf(db, req), c) ? c : undefined;
 }
 
 app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
@@ -3544,7 +3601,7 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = (db.contracts as Contract[]).findIndex((c) => c.id === req.params.id && c.tenantId === tid);
-  if (idx === -1 || !canViewContract(viewerOf(db, req), db.contracts[idx])) return res.status(404).json({ error: "Contract not found" });
+  if (idx === -1 || !canAccessContract(viewerOf(db, req), db.contracts[idx])) return res.status(404).json({ error: "Contract not found" });
   const oldContract = db.contracts[idx];
 
   if (req.body.status !== undefined && req.body.status !== oldContract.status) {
@@ -3642,7 +3699,7 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
     status: req.body.status !== undefined ? req.body.status : oldContract.status,
     // Divisi peminta — hanya Legal/Admin yang menandai (menentukan divisi
     // mana yang ikut melihat dokumen ini).
-    requestingDivision: req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)
+    requestingDivision: req.body.requestingDivision !== undefined && ["legal", "super_admin"].includes(req.user!.role)
       ? (isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined)
       : oldContract.requestingDivision,
     // category/subFolderId: dipakai fitur "Pindahkan ke Arsip" (handleBulkMove
@@ -4043,7 +4100,7 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requirePerm("contract.bulk
     const langkah = (c.approvalSteps || []).find((s) => s.decision === "pending");
     if (isInternalApprovalStage(c.status) && langkah) {
       penerima.add(langkah.approverId);
-      const approver = (db.users as User[]).find((u) => u.id === langkah.approverId && u.tenantId === tid);
+      const approver = (db.users as User[]).find((u) => u.id === langkah.approverId);
       const pengganti = activeDelegateIdOf(approver);
       if (pengganti) penerima.add(pengganti);
     }
@@ -4080,7 +4137,7 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requirePerm("contract.bulk
 // Peninjau yang meminta revisi tidak ikut menerima/menolak usulan atau
 // mengajukan ulang. Dokumen lama tanpa data pembuat → semua staf berwenang.
 function isDocumentOwnerSide(c: Contract, user: { id: string; role: string }) {
-  if (user.role === "admin" || user.role === "super_admin") return true;
+  if (user.role === "super_admin") return true;
   const owner = c.approvalSubmittedById || c.createdById;
   if (!owner) return true;
   return owner === user.id;
@@ -4116,7 +4173,9 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
   if (new Set(approverIds).size !== approverIds.length) {
     return res.status(400).json({ error: "Penanggung jawab tidak boleh sama/berulang dalam satu matriks." });
   }
-  const approvers = approverIds.map((id) => (db.users as User[]).find((u) => u.id === id && u.tenantId === tid && u.active));
+  // Approver boleh dipilih dari PT MANA PUN (TBK, GKM, dst.) — tidak ada lagi syarat satu PT dengan pengirim.
+  // Akses dokumennya tetap hanya untuk yang ditugaskan langsung (lihat canAccessContract).
+  const approvers = approverIds.map((id) => (db.users as User[]).find((u) => u.id === id && u.active && u.tenantId));
   if (approvers.some((u) => !u)) {
     return res.status(400).json({ error: "Salah satu penanggung jawab tidak valid/tidak aktif." });
   }
@@ -4161,6 +4220,16 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
     message: `Kontrak ${contract.contractNumber} diajukan untuk persetujuan — menunggu ${steps[0].approverName}.`,
     type: "info", contractId: contract.id,
   });
+  // Approver dari PT lain: notifikasi ditujukan langsung kepadanya (disimpan di PT dokumen,
+  // hanya dia yang bisa melihat — lihat GET /api/notifications).
+  if (approvers.some((u) => u!.tenantId !== tid)) {
+    pushNotif(db, tid, {
+      title: "Kontrak Menunggu Persetujuan Anda",
+      message: `Kontrak ${contract.contractNumber} ("${contract.title}") ditugaskan kepada Anda untuk review.`,
+      type: "info", contractId: contract.id,
+      targetUserIds: approvers.filter((u) => u!.tenantId !== tid).map((u) => u!.id),
+    });
+  }
   saveDB(db);
   sendPushToUser(steps[0].approverId, {
     title: "Menunggu Persetujuan Anda",
@@ -4217,7 +4286,7 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
   const isOwnTurn = currentStep.approverId === req.user!.id;
   const isDelegate = !isOwnTurn && canActAsDelegate(db, tid, currentStep.approverId, req.user!.id);
   const isAdminOverride = !isOwnTurn && !isDelegate
-    && (req.user!.role === "admin" || req.user!.role === "super_admin");
+    && req.user!.role === "super_admin";
   if (!isOwnTurn && !isDelegate && !isAdminOverride) {
     return res.status(403).json({ error: "Bukan giliran Anda menyetujui dokumen ini." });
   }
@@ -4474,7 +4543,7 @@ app.post("/api/contracts/:id/classify", requireAuth, requirePerm("contract.class
   contract.category = category;
   contract.docType = docType;
   contract.updatedAt = new Date().toISOString();
-  if (req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)) {
+  if (req.body.requestingDivision !== undefined && ["legal", "super_admin"].includes(req.user!.role)) {
     contract.requestingDivision = isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined;
   }
   pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Klasifikasi Arsip", details: `${before} → ${company.name} / ${docType} / ${platform} / ${operator || "-"} (nomor dokumen tidak berubah)` });
@@ -4863,6 +4932,70 @@ function getAddendumInfoServer(db: any, contract: Contract): { parent: Contract 
   const sequence = myIndex >= 0 ? myIndex + 1 : siblings.length + 1;
   const previous = myIndex > 0 ? siblings[myIndex - 1] : null;
   return { parent, previous, ordinal: addendumOrdinal(sequence) };
+}
+
+// Teks sumber utk terjemahan paragraf RECITAL addendum ("Bahwa PARA PIHAK
+// telah membuat dan menandatangani ... Nomor ... tanggal ..., yang telah
+// diubah terakhir kali melalui Addendum ... (selanjutnya disebut
+// "Perjanjian")..."). undefined kalau kontrak ini BUKAN addendum (tidak ada
+// yang perlu diterjemahkan). Beda dari closing paragraph di bawah: token
+// ParentDocType/ParentNumber/dll di sini DIBEKUKAN (disubstitusi nilai
+// asli) di sini — sama seperti composeContractPreambleForTranslation
+// membekukan StartDate/Party1Name dst — karena nilainya berasal dari
+// kontrak INDUK/SEBELUMNYA (bukan dari selectedContract.variables), fakta
+// historis yang jarang berubah setelah addendum ini final, jadi hasil
+// terjemahannya aman disimpan sebagai teks jadi (frontend render dgn tokens
+// kosong, persis preambleEn — lihat addendumRecitalEn di src/App.tsx).
+function composeAddendumRecitalForTranslation(db: any, contract: Contract, sourceLang: "id" | "en"): string | undefined {
+  if (!contract.amendsContractId) return undefined;
+  const info = getAddendumInfoServer(db, contract);
+  if (!info) return undefined;
+  const template =
+    contract.templateSnapshot?.addendumRecitalParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.addendumRecitalParagraph;
+  const previousOrdinal = info.previous ? (getAddendumInfoServer(db, info.previous)?.ordinal || "") : "";
+  // Sama seperti composeContractPreambleForTranslation: format tanggal jadi
+  // kalimat panjang (bukan ISO mentah "2026-07-01") SEBELUM dikirim ke AI,
+  // supaya AI ikut menerjemahkan/melokalkan tanggalnya juga — kalau dikirim
+  // mentah, prompt yang minta AI "mempertahankan tanggal apa adanya" bikin
+  // tanggalnya nyangkut ISO di kedua bahasa (baik ID maupun EN).
+  const fmtDate = (d?: string) =>
+    d ? new Date(d).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { day: "numeric", month: "long", year: "numeric" }) : "";
+  if (template) {
+    const tokens: Record<string, string> = {
+      ParentDocType: info.parent?.docType || info.parent?.category || "Perjanjian",
+      ParentNumber: info.parent?.contractNumber || "",
+      ParentDate: fmtDate(info.parent?.startDate),
+      ParentEndDate: fmtDate(info.parent?.endDate),
+      PreviousOrdinal: previousOrdinal,
+      PreviousNumber: info.previous?.contractNumber || "",
+      PreviousDate: fmtDate(info.previous?.startDate),
+    };
+    return template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
+  }
+  // Sama persis dgn default JSX di src/App.tsx (blok selectedContractAddendumInfo)
+  // — kalau JSX itu diubah, sinkronkan juga di sini.
+  const parentLabel = info.parent?.docType || info.parent?.category || "Perjanjian";
+  const previousClause = info.previous
+    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${fmtDate(info.previous.startDate)}**`
+    : "";
+  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${fmtDate(info.parent?.startDate)}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${fmtDate(info.parent?.endDate)}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
+}
+
+// Teks sumber utk terjemahan paragraf PENUTUP addendum ("Demikian Addendum
+// ini dibuat dan ditandatangani..."). undefined kalau bukan addendum. Beda
+// dari recital di atas: token {{Variabel}} di sini (kalau ada, dari
+// template kustom) TIDAK dibekukan — dikirim mentah ke AI (sama seperti
+// clause.content) supaya tetap sinkron kalau selectedContract.variables
+// diedit belakangan; frontend mensubstitusinya ulang saat render (lihat
+// closingParagraphEn di src/App.tsx), bukan dibekukan sekali di sini.
+function composeAddendumClosingForTranslation(db: any, contract: Contract): string | undefined {
+  if (!contract.amendsContractId) return undefined;
+  const template =
+    contract.templateSnapshot?.closingParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.closingParagraph;
+  if (template) return template;
+  return 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.';
 }
 
 app.get("/api/contracts/:id/addendum-context", requireAuth, (req: AuthedRequest, res) => {
@@ -5735,21 +5868,8 @@ function clausePolicyMap(db: any, tenantId: string): PolicyMap {
 const OO_FILE_TTL = 60 * 60 * 12; // 12 jam: tautan berkas & callback hidup selama sesi edit
 
 // ---- Sinkron data sistem <-> variabel di dokumen Word (gabungan tiga arah dgn potret terakhir) ----
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-const formatShortDateId = (iso: string) => {
-  const d = new Date(iso);
-  return isNaN(d.getTime()) ? iso : d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
-};
-const ID_MONTHS: Record<string, string> = { januari: "01", februari: "02", maret: "03", april: "04", mei: "05", juni: "06", juli: "07", agustus: "08", september: "09", oktober: "10", november: "11", desember: "12" };
-/** "Rabu, 1 Juli 2026" / "31 Desember 2026" -> "2026-07-01"; null bila tidak terbaca. */
-function parseIdDate(text: string): string | null {
-  const m = /(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec(text || "");
-  if (!m) return null;
-  const mm = ID_MONTHS[m[2].toLowerCase()];
-  const d = Number(m[1]);
-  if (!mm || d < 1 || d > 31) return null;
-  return `${m[3]}-${mm}-${String(d).padStart(2, "0")}`;
-}
+// ISO_DATE, formatShortDateId, parseIdDate: lihat party-fields.ts (satu definisi, dipakai juga Panel CLM).
+const companyOf = (st: any): PartyCompany => ({ name: st.companyName, address: st.companyAddress, repTitle: st.companyRepresentativeTitle });
 /** Nilai yang SEHARUSNYA tampil di variabel dokumen, menurut data sistem saat ini. */
 function desiredWordValues(db: any, c: Contract): Record<string, string> {
   const st = withSettingsDefaults(rawSettingsFor(db, c.tenantId));
@@ -5766,6 +5886,9 @@ function desiredWordValues(db: any, c: Contract): Record<string, string> {
     Party2Name: c.party2Name,
     Party2Address: c.party2Address || (c.variables as any)?.Address || "[Alamat belum diisi]",
   });
+  // Field modal "Edit Data Pihak & Kontrak" lainnya (jabatan, label/nomor identitas, tipe, judul, jenis dokumen).
+  // Kunci BARU, jadi variabel lama di dokumen tidak berubah artinya; hanya terpakai bila dokumen memuat variabelnya.
+  Object.assign(vals, partyWordValues(c, companyOf(st)));
   if (c.endDate) vals.EndDate = formatShortDateId(c.endDate);
   return vals;
 }
@@ -5780,33 +5903,8 @@ async function reconcileWordValues(db: any, c: Contract, docx: Buffer): Promise<
   const inDoc = await listVariables(docx);
   const want = desiredWordValues(db, c);
   const snap: Record<string, string> = { ...(c.wordSync || {}) };
-  const push: Record<string, string> = {};
-  const pushed: string[] = [], pulled: string[] = [];
-  for (const [key, docVal] of Object.entries(inDoc)) {
-    const sys = want[key];
-    if (sys === undefined) continue;
-    if (snap[key] === undefined) { snap[key] = docVal; continue; } // pertama kali: catat saja
-    if (sys !== snap[key]) {
-      if (sys !== docVal) { push[key] = sys; pushed.push(key); }
-      snap[key] = sys;
-    } else if (docVal !== snap[key]) {
-      // Isi dokumen berubah, data sistem tidak: salin balik bila bisa dibaca dengan aman.
-      const identity: Record<string, () => void> = {
-        Party2Name: () => { if (docVal.trim()) c.party2Name = docVal.trim(); },
-        Party2Address: () => { if (docVal.trim() && !docVal.startsWith("[")) c.party2Address = docVal.trim(); },
-      };
-      const iso = parseIdDate(docVal);
-      if (key === "StartDate" && iso) { c.startDate = iso; pulled.push(key); snap[key] = docVal; }
-      else if (key === "EndDate" && iso) { c.endDate = iso; if (typeof c.variables?.EndDate === "string") (c.variables as any).EndDate = iso; pulled.push(key); snap[key] = docVal; }
-      else if (identity[key]) { identity[key](); pulled.push(key); snap[key] = docVal; }
-      else if (typeof c.variables?.[key] === "string" && ISO_DATE.test(c.variables[key] as string)) {
-        if (iso) { (c.variables as any)[key] = iso; pulled.push(key); }
-        snap[key] = docVal;
-      } else if (typeof c.variables?.[key] === "string" && !(key in { StartDate: 1, EndDate: 1, Party1Name: 1, Party1Address: 1, Party1Representative: 1, Party1RepTitle: 1 })) {
-        (c.variables as any)[key] = docVal; pulled.push(key); snap[key] = docVal;
-      } else snap[key] = docVal; // tidak bisa dibaca aman (mis. identitas Pihak Pertama dari pengaturan): dibiarkan
-    }
-  }
+  // Logika tiga arah ada di party-fields.ts (reconcileCore) — dipakai juga Panel CLM saat sinkron langsung dari editor.
+  const { push, pushed, pulled } = reconcileCore({ contract: c, inDoc, want, snap, company: companyOf(withSettingsDefaults(rawSettingsFor(db, c.tenantId))) });
   c.wordSync = snap;
   if (!pushed.length) return { pushed, pulled };
   const out = await setVariables(docx, push);
@@ -5838,8 +5936,10 @@ async function syncWordDocument(req: AuthedRequest, contractId: string): Promise
   contract.wordSync = work.wordSync;
   if (r.pulled.length) {
     contract.variables = { ...(contract.variables || {}), ...(work.variables || {}) };
-    contract.startDate = work.startDate; contract.endDate = work.endDate;
-    contract.party2Name = work.party2Name; contract.party2Address = work.party2Address;
+    // Salin HANYA field data pihak yang benar-benar diubah rekonsiliasi (jangan menimpa perubahan lain yang masuk bersamaan).
+    const before = partyFormOf(c0), after = partyFormOf(work);
+    for (const k of PARTY_TEXT_KEYS) if (before[k] !== after[k]) (contract as any)[k] = (work as any)[k];
+    clearStaleEnglish(contract, englishInvalidationBetween(c0, work));
   }
   let made = false;
   if (outDocx && stored) {
@@ -5945,6 +6045,121 @@ app.get("/api/onlyoffice/plugin/clauses/:id", (req, res) => {
 // Plugin "Panel CLM": data/bahasa/tata letak dari dalam editor. Tautan bertoken (kind "plugin"); aksi diteruskan ke
 // endpoint yang sama dengan UI utama (word-layout / word-language) atas nama pengguna pembuka editor.
 const OO_PANEL_GUID = "asc.{5B2E8C41-7D3A-4F96-A1C8-3E9D0B6F2A57}";
+
+// ---- Panel CLM: "Data Pihak & Kontrak" (padanan modal "Edit Data Pihak & Kontrak" di aplikasi utama) ----
+// Aturan field, validasi & pemetaan variabel Word ada di party-fields.ts. Dipanggil LANGSUNG (bukan lewat
+// loopback seperti layout/bahasa): panel menyinkron berkala, dan semua panggilan loopback berbagi satu IP
+// (127.0.0.1) sehingga akan menghabiskan batas permintaan semua pengguna sekaligus.
+type PanelResult = { status: number; body: any };
+const partyCtx = (db: any, c: Contract) => {
+  const st = withSettingsDefaults(rawSettingsFor(db, c.tenantId));
+  const types = Array.isArray(st.masterData?.partyTypes) ? (st.masterData.partyTypes as string[]) : [];
+  return { st, company: companyOf(st), types };
+};
+const partyViewOf = (db: any, c: Contract) => { const x = partyCtx(db, c); return buildPartyView(c, x.company, x.types); };
+const wordPushOf = (db: any, c: Contract, keys: string[]) => {
+  const want = desiredWordValues(db, c);
+  const out: Record<string, { id: string; en: string }> = {};
+  for (const k of keys) if (want[k] !== undefined) out[k] = { id: want[k], en: valueToEnglish(want[k]) };
+  return out;
+};
+
+function panelPartyGet(actor: AuthedRequest, id: string): PanelResult {
+  const db = loadDB();
+  const c = findOwnedContract(db, actor, id);
+  if (!c) return { status: 404, body: { error: "Contract not found" } };
+  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
+  return { status: 200, body: { available: true, ...ed, status: c.status, view: partyViewOf(db, c) } };
+}
+
+function panelPartySave(actor: AuthedRequest, id: string, body: any): PanelResult {
+  if (!body || typeof body.fields !== "object" || body.fields === null || Array.isArray(body.fields)) {
+    return { status: 400, body: { error: "Data yang dikirim tidak valid." } };
+  }
+  const db = loadDB();
+  const c = findOwnedContract(db, actor, id);
+  if (!c) return { status: 404, body: { error: "Contract not found" } };
+  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
+  if (!ed.editable) return { status: 403, body: { error: ed.reason } };
+  const { types } = partyCtx(db, c);
+  const base = body.base && typeof body.base === "object" && !Array.isArray(body.base) ? body.base : undefined;
+  const r = normalizePartyPatch(c, body.fields, { partyTypes: types, base });
+  if (r.ok === false) {
+    return { status: r.status, body: { error: r.error, field: r.field, ...(r.status === 409 ? { view: partyViewOf(db, c) } : {}) } };
+  }
+  if (!r.changed.length) return { status: 200, body: { success: true, changed: [], push: {}, view: partyViewOf(db, c) } };
+  applyPartyPatch(c, r);
+  c.updatedAt = new Date().toISOString();
+  // Hanya NAMA field yang dicatat (bukan nilainya) — nomor identitas (NPWP/NIK) bersifat pribadi.
+  const labels = Array.from(new Set(r.changed.map((k) => partyFieldLabel(k)))).join(", ");
+  pushAudit(db, actor, {
+    contractId: c.id, contractNumber: c.contractNumber, action: "Modify Clause / Details",
+    details: `${actor.user!.name} mengubah data pihak & kontrak lewat Panel CLM (ONLYOFFICE): ${labels}.`,
+  });
+  saveDB(db);
+  // Dorong ke dokumen HANYA variabel yang berasal dari field yang diubah (jangan menimpa isian dokumen yang tidak disentuh).
+  const wordKeys = r.changed.map((k) => PARTY_FIELDS.find((f) => f.key === k)?.word).filter((w): w is string => !!w);
+  return { status: 200, body: { success: true, changed: r.changed, push: wordPushOf(db, c, wordKeys), view: partyViewOf(db, c) } };
+}
+
+/** Sinkron langsung dari editor yang sedang terbuka: `docValues` = isi variabel di dokumen sekarang. */
+function panelPartySync(actor: AuthedRequest, id: string, body: any): PanelResult {
+  const strMap = (v: unknown): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 400)) if (typeof x === "string") out[k.slice(0, 120)] = x.slice(0, 5000);
+    }
+    return out;
+  };
+  const docValues = strMap(body?.docValues);
+  const pullKeys = new Set<string>(Array.isArray(body?.pullKeys) ? body.pullKeys.filter((k: unknown) => typeof k === "string") : []);
+  const db = loadDB();
+  const c = findOwnedContract(db, actor, id);
+  if (!c) return { status: 404, body: { error: "Contract not found" } };
+  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
+  // Tidak boleh diubah (bukan Draft dst.): hanya kembalikan tampilan, jangan menarik/mendorong apa pun.
+  if (!ed.editable) return { status: 200, body: { ...ed, push: {}, pulled: [], view: partyViewOf(db, c) } };
+  const before = JSON.parse(JSON.stringify(c)) as Contract;
+  const work = JSON.parse(JSON.stringify(c)) as Contract;
+  const snap: Record<string, string> = { ...(work.wordSync || {}) };
+  const { company } = partyCtx(db, c);
+  const out = reconcileCore({
+    contract: work, inDoc: docValues, want: desiredWordValues(db, work), snap, company,
+    live: { pullable: (k) => pullKeys.has(k) },
+  });
+  let dirty = JSON.stringify(snap) !== JSON.stringify(c.wordSync || {});
+  c.wordSync = snap;
+  if (out.pulled.length) {
+    c.variables = { ...(c.variables || {}), ...(work.variables || {}) };
+    const a = partyFormOf(before), b = partyFormOf(work);
+    for (const k of PARTY_TEXT_KEYS) if (a[k] !== b[k]) (c as any)[k] = (work as any)[k];
+    clearStaleEnglish(c, englishInvalidationBetween(before, work));
+    c.updatedAt = new Date().toISOString();
+    pushAudit(db, actor, { contractId: c.id, contractNumber: c.contractNumber, action: "Word Sync", details: `Variabel diubah di dokumen Word dan disalin ke data sistem: ${out.pulled.join(", ")}.` });
+    dirty = true;
+  }
+  if (dirty) saveDB(db);
+  return { status: 200, body: { editable: true, push: wordPushOf(db, c, out.pushed), pulled: out.pulled, view: partyViewOf(db, c) } };
+}
+
+/** Logo Pihak Kedua: hanya mengunggah berkas & mengembalikan url/key-nya (disimpan ke kontrak lewat "Simpan"), sama dgn modal. */
+async function panelPartyLogo(actor: AuthedRequest, id: string, body: any): Promise<PanelResult> {
+  const db = loadDB();
+  const c = findOwnedContract(db, actor, id);
+  if (!c) return { status: 404, body: { error: "Contract not found" } };
+  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
+  if (!ed.editable) return { status: 403, body: { error: ed.reason } };
+  const dataUrl = typeof body?.dataUrl === "string" ? body.dataUrl : "";
+  const m = /^data:(image\/(?:png|jpe?g));base64,/i.exec(dataUrl);
+  const buf = decodeDataUrl(dataUrl);
+  if (!m || !buf) return { status: 400, body: { error: "Logo harus berformat PNG atau JPEG (maks 5 MB)" } };
+  const mime = m[1].toLowerCase();
+  if (!imageInfo(buf, mime)) return { status: 400, body: { error: "Berkas bukan gambar PNG/JPEG yang valid" } };
+  const safeName = String(body?.fileName || "logo").replace(/[^\w.\-]/g, "_").slice(0, 60);
+  const stored = await storeFile(buf, `party2-logo-${id}-${Date.now()}-${safeName}`, mime);
+  return { status: 200, body: { url: stored.url, key: stored.key, mimeType: mime } };
+}
+
 app.options("/api/onlyoffice/plugin/panel/:id/:action?", (_req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Headers", "content-type"); res.status(204).end();
 });
@@ -5958,6 +6173,22 @@ async function panelProxy(req: express.Request, res: express.Response) {
   const user = (db.users as any[]).find((u) => u.id === claims.userId && u.tenantId === claims.tenantId);
   if (!user) return res.status(401).json({ error: "Pengguna tidak ditemukan." });
   const action = req.params.action || "";
+  if (action === "party" || action === "party-sync" || action === "party-logo") {
+    if ((user as any).active === false) return res.status(401).json({ error: "Pengguna tidak aktif." });
+    const actor = { user: stripUser(user), ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest;
+    const post = req.method === "POST";
+    try {
+      let out: PanelResult;
+      if (action === "party") out = post ? panelPartySave(actor, claims.contractId, req.body) : panelPartyGet(actor, claims.contractId);
+      else if (!post) return res.status(405).json({ error: "Gunakan POST." });
+      else if (action === "party-sync") out = panelPartySync(actor, claims.contractId, req.body);
+      else out = await panelPartyLogo(actor, claims.contractId, req.body);
+      return res.status(out.status).json(out.body);
+    } catch (err: any) {
+      logger.error({ err, contractId: claims.contractId, action }, "Panel CLM: gagal memproses data pihak");
+      return res.status(500).json({ error: "Gagal memproses data pihak." });
+    }
+  }
   if (action && !["layout", "language"].includes(action)) return res.status(404).json({ error: "Aksi tidak dikenal." });
   const target = `http://127.0.0.1:${PORT}/api/contracts/${encodeURIComponent(claims.contractId)}/${action === "language" ? "word-language" : "word-layout"}`;
   const isPost = req.method === "POST";
@@ -6238,6 +6469,11 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
   // diterjemahkan AI sesudahnya (satu jalur yang sama dengan tombol bahasa di toolbar).
   const wantLang: DocLanguage = c0.documentLanguage === "en" || c0.documentLanguage === "bilingual" ? c0.documentLanguage : "id";
   const wantLayout: BilingualLayoutMode = c0.bilingualLayout === "stacked" ? "stacked" : "side";
+  // Addendum: narasi pembuka (para pihak) + recital rujukan ke perjanjian induk di awal, paragraf penutup
+  // ("Demikian Addendum ini ...") setelah pasal. Disusun di server dari data induk supaya selalu konsisten.
+  const isAddendumDoc = !!c0.amendsContractId;
+  const addendumRecital = isAddendumDoc ? composeAddendumRecitalForTranslation(pre, c0, "id") : undefined;
+  const addendumTail = isAddendumDoc ? composeAddendumClosingForTranslation(pre, c0) : undefined;
   const policy = clausePolicyMap(pre, c0.tenantId);
   const clauses = [...(c0.clauses || [])].sort((a, b) => a.order - b.order).map((cl) => ({
     id: cl.id,
@@ -6258,7 +6494,12 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
       signatureOptions,
       digitalSignature: digital,
       images,
-      opening, closing, clauses,
+      opening,
+      // Recital addendum sudah berakhir dengan "...pasal-pasal berikut:", jadi kalimat penutup pembuka kontrak biasa dilewati.
+      closing: isAddendumDoc ? "" : closing,
+      recital: addendumRecital,
+      tail: addendumTail,
+      clauses,
       values: { ...(c0.variables || {}), ...tokens, ...desiredWordValues(pre, c0) },
     });
     let langNote = "";
@@ -6292,7 +6533,7 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
     });
     pushAudit(db, req, {
       contractId: contract.id, contractNumber: contract.contractNumber, action: "Convert To Word",
-      details: `${req.user!.name} mengubah kontrak template menjadi dokumen Word (${clauses.length} pasal) · SHA-256 ${file.sha256.slice(0, 16)}…`,
+      details: `${req.user!.name} mengubah ${isAddendumDoc ? "addendum" : "kontrak template"} menjadi dokumen Word (${clauses.length} pasal) · SHA-256 ${file.sha256.slice(0, 16)}…`,
     });
     contract.documentLanguage = finalLang;
     await saveLangStash(contract, convStash);
@@ -7175,19 +7416,35 @@ app.post("/api/contracts/:id/renew", requireAuth, requirePerm("contract.edit"), 
 // terkait kontrak tetap tampil seperti biasa.
 function contractVisibilityFilter(db: any, req: AuthedRequest) {
   const viewer = viewerOf(db, req);
-  const byId = new Map(scoped(db.contracts as Contract[], tenantOf(req)).map((c) => [c.id, c] as const));
+  const byId = new Map((db.contracts as Contract[]).map((c) => [c.id, c] as const));
   return (contractId?: string) => {
     if (!contractId) return true;
     const c = byId.get(contractId);
-    return !c || canViewContract(viewer, c);
+    return !c || canAccessContract(viewer, c);
   };
 }
 
 app.get("/api/audits", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const ok = contractVisibilityFilter(db, req);
-  const privileged = ["super_admin", "admin", "legal", "manajemen", "it_system"].includes(req.user!.role);
-  res.json(scoped(db.audits as AuditTrail[], tenantOf(req)).filter((a) => ok(a.contractId) && (privileged || a.contractId || a.userId === req.user!.id)));
+  const privileged = ["super_admin", "legal", "manajemen", "it_system"].includes(req.user!.role);
+  const viewer = viewerOf(db, req);
+  const home = tenantOf(req);
+  const cross = isCrossTenantRole(viewer.role);
+  const pt = cross && typeof req.query.tenantId === "string" ? req.query.tenantId : "";
+  const contractById = new Map((db.contracts as Contract[]).map((c) => [c.id, c] as const));
+  res.json((db.audits as AuditTrail[]).filter((a) => {
+    const t = (a as any).tenantId as string | undefined;
+    if (pt && t !== pt) return false;
+    // Super Admin/Legal: jejak SEMUA PT, tapi hanya yang menyangkut dokumen yang boleh mereka akses.
+    if (cross && t !== home) {
+      if (!a.contractId) return false;
+      const c = contractById.get(a.contractId);
+      return !!c && canAccessContract(viewer, c);
+    }
+    if (!pt && t !== home) return false;
+    return ok(a.contractId) && (privileged || a.contractId || a.userId === req.user!.id);
+  }));
 });
 
 app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
@@ -7198,9 +7455,13 @@ app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
   // sekantor.
   const ok = contractVisibilityFilter(db, req);
   const uid = req.user!.id;
-  const mine = scoped(db.notifications as SystemNotification[], tenantOf(req))
+  const home = tenantOf(req);
+  // Notifikasi PT lain hanya bila DITUJUKAN langsung ke user ini (mis. penugasan approval lintas PT).
+  const mine = (db.notifications as SystemNotification[])
+    .filter((n) => n.tenantId === home || !!n.targetUserIds?.includes(uid))
     .filter((n) => !n.targetUserIds?.length || n.targetUserIds.includes(uid))
-    .filter((n) => ok(n.contractId))
+    .filter((n) => n.tenantId !== home || ok(n.contractId))
+    .filter((n) => n.tenantId === home || !n.contractId || ok(n.contractId))
     // Status baca PER ORANG (readBy). Notifikasi lama tanpa readBy memakai
     // `read` global seperti dulu.
     .map((n) => ({ ...n, read: n.readBy ? !!n.readBy[uid] : !!n.read, readBy: undefined }));
@@ -7217,7 +7478,7 @@ app.post("/api/notifications/read-all", requireAuth, (req: AuthedRequest, res) =
     // DIA (readBy) — bukan menandai terbaca untuk seluruh perusahaan.
     // Catatan: ini TIDAK dihitung "membuka" pengumuman rilis — untuk itu
     // penerima harus mengklik notifikasinya (lihat /:id/open).
-    if (n.tenantId === tid && (!n.targetUserIds?.length || n.targetUserIds.includes(uid))) {
+    if ((n.tenantId === tid || n.targetUserIds?.includes(uid)) && (!n.targetUserIds?.length || n.targetUserIds.includes(uid))) {
       n.readBy = { ...(n.readBy || {}), [uid]: n.readBy?.[uid] || now };
     }
   });
@@ -7232,7 +7493,7 @@ app.post("/api/notifications/:id/open", requireAuth, (req: AuthedRequest, res) =
   const db = loadDB();
   const tid = tenantOf(req);
   const uid = req.user!.id;
-  const n = (db.notifications as SystemNotification[]).find((x) => x.id === req.params.id && x.tenantId === tid);
+  const n = (db.notifications as SystemNotification[]).find((x) => x.id === req.params.id && (x.tenantId === tid || !!x.targetUserIds?.includes(uid)));
   if (!n || (n.targetUserIds?.length && !n.targetUserIds.includes(uid))) return res.status(404).json({ error: "Notifikasi tidak ditemukan" });
   const now = new Date().toISOString();
   n.readBy = { ...(n.readBy || {}), [uid]: n.readBy?.[uid] || now };
@@ -8500,7 +8761,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   );
   if (!comment) return res.status(404).json({ error: "Komentar tidak ditemukan" });
 
-  const isOwnerOrPrivileged = comment.userId === req.user!.id || ["admin", "legal", "super_admin"].includes(req.user!.role);
+  const isOwnerOrPrivileged = comment.userId === req.user!.id || ["legal", "super_admin"].includes(req.user!.role);
 
   // Editing the actual comment text stays owner/admin/legal-only, but
   // resolving a thread is a collaborative action (Google-Docs style: anyone
@@ -8561,7 +8822,7 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
   );
   if (idx === -1) return res.status(404).json({ error: "Komentar tidak ditemukan" });
   const comment = db.clauseComments[idx];
-  if (comment.userId !== req.user!.id && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
+  if (comment.userId !== req.user!.id && !["legal", "super_admin"].includes(req.user!.role)) {
     return res.status(403).json({ error: "Tidak dapat menghapus komentar orang lain" });
   }
   db.clauseComments.splice(idx, 1);
@@ -8895,70 +9156,6 @@ function composeContractPreambleForTranslation(db: any, contract: Contract, sour
 // cuma tanda bintangnya). Dipaksa benar di sini, terlepas dari perilaku
 // model, karena frasa ini SELALU berasal dari template baku (bukan input
 // bebas pengguna) sehingga aman dipetakan langsung tanpa AI.
-// Teks sumber utk terjemahan paragraf RECITAL addendum ("Bahwa PARA PIHAK
-// telah membuat dan menandatangani ... Nomor ... tanggal ..., yang telah
-// diubah terakhir kali melalui Addendum ... (selanjutnya disebut
-// "Perjanjian")..."). undefined kalau kontrak ini BUKAN addendum (tidak ada
-// yang perlu diterjemahkan). Beda dari closing paragraph di bawah: token
-// ParentDocType/ParentNumber/dll di sini DIBEKUKAN (disubstitusi nilai
-// asli) di sini — sama seperti composeContractPreambleForTranslation
-// membekukan StartDate/Party1Name dst — karena nilainya berasal dari
-// kontrak INDUK/SEBELUMNYA (bukan dari selectedContract.variables), fakta
-// historis yang jarang berubah setelah addendum ini final, jadi hasil
-// terjemahannya aman disimpan sebagai teks jadi (frontend render dgn tokens
-// kosong, persis preambleEn — lihat addendumRecitalEn di src/App.tsx).
-function composeAddendumRecitalForTranslation(db: any, contract: Contract, sourceLang: "id" | "en"): string | undefined {
-  if (!contract.amendsContractId) return undefined;
-  const info = getAddendumInfoServer(db, contract);
-  if (!info) return undefined;
-  const template =
-    contract.templateSnapshot?.addendumRecitalParagraph ||
-    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.addendumRecitalParagraph;
-  const previousOrdinal = info.previous ? (getAddendumInfoServer(db, info.previous)?.ordinal || "") : "";
-  // Sama seperti composeContractPreambleForTranslation: format tanggal jadi
-  // kalimat panjang (bukan ISO mentah "2026-07-01") SEBELUM dikirim ke AI,
-  // supaya AI ikut menerjemahkan/melokalkan tanggalnya juga — kalau dikirim
-  // mentah, prompt yang minta AI "mempertahankan tanggal apa adanya" bikin
-  // tanggalnya nyangkut ISO di kedua bahasa (baik ID maupun EN).
-  const fmtDate = (d?: string) =>
-    d ? new Date(d).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { day: "numeric", month: "long", year: "numeric" }) : "";
-  if (template) {
-    const tokens: Record<string, string> = {
-      ParentDocType: info.parent?.docType || info.parent?.category || "Perjanjian",
-      ParentNumber: info.parent?.contractNumber || "",
-      ParentDate: fmtDate(info.parent?.startDate),
-      ParentEndDate: fmtDate(info.parent?.endDate),
-      PreviousOrdinal: previousOrdinal,
-      PreviousNumber: info.previous?.contractNumber || "",
-      PreviousDate: fmtDate(info.previous?.startDate),
-    };
-    return template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
-  }
-  // Sama persis dgn default JSX di src/App.tsx (blok selectedContractAddendumInfo)
-  // — kalau JSX itu diubah, sinkronkan juga di sini.
-  const parentLabel = info.parent?.docType || info.parent?.category || "Perjanjian";
-  const previousClause = info.previous
-    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${fmtDate(info.previous.startDate)}**`
-    : "";
-  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${fmtDate(info.parent?.startDate)}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${fmtDate(info.parent?.endDate)}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
-}
-
-// Teks sumber utk terjemahan paragraf PENUTUP addendum ("Demikian Addendum
-// ini dibuat dan ditandatangani..."). undefined kalau bukan addendum. Beda
-// dari recital di atas: token {{Variabel}} di sini (kalau ada, dari
-// template kustom) TIDAK dibekukan — dikirim mentah ke AI (sama seperti
-// clause.content) supaya tetap sinkron kalau selectedContract.variables
-// diedit belakangan; frontend mensubstitusinya ulang saat render (lihat
-// closingParagraphEn di src/App.tsx), bukan dibekukan sekali di sini.
-function composeAddendumClosingForTranslation(db: any, contract: Contract): string | undefined {
-  if (!contract.amendsContractId) return undefined;
-  const template =
-    contract.templateSnapshot?.closingParagraph ||
-    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.closingParagraph;
-  if (template) return template;
-  return 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.';
-}
-
 function fixFixedPartyLabels(text: string | undefined, targetLang: "id" | "en"): string | undefined {
   if (!text) return text;
   const pairs: [RegExp, string][] =
@@ -9491,7 +9688,7 @@ const DIVISION_PIC_LABEL: Record<string, string> = {
   account_executive: "Account Executive", operasional: "Operasional",
 };
 function canViewLegalJob(user: { id: string; role: string }, job: LegalJob): boolean {
-  if (["super_admin", "admin", "legal", "manajemen"].includes(user.role)) return true;
+  if (["super_admin", "legal", "manajemen"].includes(user.role)) return true;
   if (job.requesterId === user.id) return true;
   if (isDivisionRole(user.role)) return job.requestingDivision === user.role || job.picName === DIVISION_PIC_LABEL[user.role];
   return false;
@@ -9501,10 +9698,17 @@ function findVisibleLegalJob(db: any, req: AuthedRequest, id: string): LegalJob 
   return job && canViewLegalJob(req.user!, job) ? job : undefined;
 }
 
+// Pekerjaan Legal lintas PT: Legal & Super Admin melihat semua PT (bisa disaring ?tenantId=<PT>).
+function legalJobsForViewer(db: any, req: AuthedRequest): LegalJob[] {
+  if (!db.legalJobs) db.legalJobs = [];
+  if (!isCrossTenantRole(req.user!.role)) return legalJobTenantList(db, tenantOf(req));
+  const pt = typeof req.query.tenantId === "string" ? req.query.tenantId : "";
+  return (db.legalJobs as LegalJob[]).filter((j) => !pt || j.tenantId === pt);
+}
 app.get("/api/legal-jobs", requireAuth, (req: AuthedRequest, res) => {
-  if (!isFullAccessRole(req.user!.role)) return res.json([]); // Pekerjaan Legal: hanya Legal/Admin/Super Admin
+  if (!isFullAccessRole(req.user!.role)) return res.json([]); // Pekerjaan Legal: hanya Legal/Super Admin
   const db = loadDB();
-  const list = legalJobTenantList(db, tenantOf(req)).filter((j) => canViewLegalJob(req.user!, j)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const list = legalJobsForViewer(db, req).filter((j) => canViewLegalJob(req.user!, j)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   res.json(list.map((j) => withLinkedContract(db, j)));
 });
 
@@ -9591,7 +9795,7 @@ app.post("/api/legal-jobs", requireAuth, requirePerm("legaljob.request"), upload
       title: "Permintaan Kontrak Baru",
       message: `${req.user!.name} (${picName}) meminta: "${title}" — ${partnerName}, deadline ${deadline}.`,
       type: "info", legalJobId: job.id,
-      targetUserIds: ((db.users as User[]) || []).filter((u) => u.tenantId === tid && u.active && (u.role === "legal" || u.role === "admin")).map((u) => u.id),
+      targetUserIds: ((db.users as User[]) || []).filter((u) => u.tenantId === tid && u.active && u.role === "legal").map((u) => u.id),
     });
     pushAudit(db, req, { action: "Permintaan Kontrak", details: `${picName} meminta "${title}" (${partnerName}).` });
     saveDB(db);
@@ -9906,17 +10110,17 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
 // ----- Dashboard Legal: agregasi ringkasan real-time -----
 
 app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
-  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Dashboard Legal hanya untuk tim Legal, Admin, dan Super Admin." });
+  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Dashboard Legal hanya untuk tim Legal dan Super Admin." });
   const db = loadDB();
   const tid = tenantOf(req);
-  const jobs = legalJobTenantList(db, tid);
+  const jobs = legalJobsForViewer(db, req);
   const contracts = visibleContracts(db, req);
   const now = Date.now();
 
   // Hitungan per TAHAP alur (src/workflow.ts) — pekerjaan yang sudah punya
   // kontrak mengikuti status kontraknya (dulu memakai job.status mentah yang
   // berhenti di "draft" begitu kontrak dibuat, sehingga angkanya basi).
-  const contractById = new Map((db.contracts as Contract[]).filter((c) => c.tenantId === tid).map((c) => [c.id, c]));
+  const contractById = new Map((db.contracts as Contract[]).map((c) => [c.id, c]));
   const stageOf = (j: LegalJob) => jobStage(j, j.linkedContractId ? contractById.get(j.linkedContractId) : null);
   const statusCounts: Record<string, number> = {};
   for (const j of jobs) { const st = stageOf(j); statusCounts[st] = (statusCounts[st] || 0) + 1; }

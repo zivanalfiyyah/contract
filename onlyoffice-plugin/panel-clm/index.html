@@ -29,13 +29,43 @@
   #msg.ok{display:block;background:#dcfce7;color:#166534}
   #msg.err{display:block;background:#fee2e2;color:#991b1b}
   .hint{color:#777;font-size:11px;margin:4px 0}
+  input[type=date],select{width:100%;box-sizing:border-box;padding:6px;border:1px solid #c7c7c7;border-radius:4px;font-size:12px;background:#fff}
+  input:disabled,select:disabled{background:#f3f4f6;color:#6b7280}
+  input.dirty,select.dirty{border-color:#4f46e5;background:#eef2ff}
+  input.invalid{border-color:#dc2626;background:#fef2f2}
+  .grp{border:1px solid #e5e7eb;border-radius:6px;padding:8px;margin:8px 0;background:#fafafa}
+  .grpt{font-weight:bold;color:#312e81;margin-bottom:2px;font-size:12px}
+  .row2{display:flex;gap:6px}.row2>.f{flex:1;min-width:0}
+  .f.narrow{max-width:45%}
+  .req{color:#dc2626}
+  .lockb{font-size:10px;color:#92400e;background:#fef3c7;border-radius:3px;padding:0 4px}
+  .locked{padding:6px;border:1px dashed #c7c7c7;border-radius:4px;background:#f3f4f6;color:#374151;word-break:break-all}
+  .logo{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+  .logoimg{max-height:40px;max-width:90px;border:1px solid #e5e7eb;border-radius:4px;background:#fff}
+  .logo input[type=file]{font-size:11px;max-width:100%}
+  #partyBanner{display:none;margin:6px 0;padding:6px;border-radius:4px;background:#fef3c7;color:#92400e}
+  #partyBar{position:sticky;bottom:0;background:#fff;border-top:1px solid #e5e7eb;padding:6px 0;margin-top:6px}
+  .pmsg{margin-top:6px;padding:6px;border-radius:4px;display:none}
+  .pmsg.ok{display:block;background:#dcfce7;color:#166534}.pmsg.err{display:block;background:#fee2e2;color:#991b1b}
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="msg"></div>
   <h4>Data pihak &amp; kontrak</h4>
-  <div id="vars"><div class="hint">Memuat…</div></div>
+  <div id="partyBanner"></div>
+  <div id="party"><div class="hint">Memuat…</div></div>
+  <div id="partyBar" style="display:none">
+    <div class="row">
+      <button class="go" id="partySave" style="margin-top:0" disabled>Simpan Perubahan</button>
+      <button id="partyReset" disabled>Batal</button>
+    </div>
+    <div id="partyMsg" class="pmsg"></div>
+  </div>
+  <div class="hint">Perubahan tersimpan ke database &amp; aplikasi utama, dan placeholder di dokumen ikut diperbarui. Nama di blok tanda tangan tidak berubah otomatis.</div>
+
+  <h4>Variabel lain di dokumen</h4>
+  <div id="vars"></div>
   <button class="go" id="saveVars" style="display:none">Terapkan data ke dokumen</button>
 
   <h4>Bahasa dokumen</h4>

@@ -113,7 +113,7 @@ export interface AuthedRequest extends Request {
   user?: SafeUser;
 }
 
-function resolveUser(req: Request): SafeUser | null {
+export function resolveUser(req: Request): SafeUser | null {
   const token = (req as any).cookies?.[AUTH_COOKIE];
   if (!token) return null;
   try {
@@ -160,7 +160,8 @@ export function actionOverridesFor(db: any, tid: string): ActionPermissions | un
 export function hasPerm(req: AuthedRequest, key: string): boolean {
   if (!req.user) return false;
   if (req.user.role === "super_admin") return true;
-  return isPermAllowed(req.user.role, key, actionOverridesFor(loadDB(), tenantOf(req)));
+  // Matriks hak akses = milik PT ASAL pengguna, bukan PT dokumen yang sedang dibuka (Legal/approver lintas PT).
+  return isPermAllowed(req.user.role, key, actionOverridesFor(loadDB(), req.user.tenantId));
 }
 /**
  * Pengganti requireRole untuk aksi yang bisa diatur lewat matriks. Lolos bila
@@ -177,8 +178,15 @@ export function requirePerm(...keys: string[]) {
 
 // The tenant a request operates within. super_admin may target another tenant
 // via ?tenantId / body.tenantId; everyone else is locked to their own.
+//
+// Pada route /api/contracts/:id/* dan /api/legal-jobs/:id/*, middleware konteks (server.ts) mengisi
+// req.tenantCtx = PT milik dokumen BILA pengguna memang berhak atas dokumen lintas PT itu (Super Admin,
+// Legal untuk dokumen eksternal, atau approver yang ditugaskan langsung). Dengan begitu pengaturan PT,
+// nomor dokumen, dan pencarian data di dalam handler memakai PT dokumen — bukan PT asal pengguna.
 export function tenantOf(req: AuthedRequest): string {
   const u = req.user!;
+  const ctx = (req as any).tenantCtx as string | undefined;
+  if (ctx) return ctx;
   if (u.role === "super_admin") {
     const override = (req.query.tenantId as string) || req.body?.tenantId;
     if (override) return override;

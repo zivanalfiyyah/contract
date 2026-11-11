@@ -1040,6 +1040,10 @@ export async function buildTemplateDocx(opts: {
   opening?: string;
   /** Kalimat penutup pembuka ("... dengan ketentuan dan pasal-pasal sebagai berikut:"). */
   closing?: string;
+  /** Addendum: paragraf recital (rujukan ke perjanjian induk), disisipkan setelah narasi pembuka. */
+  recital?: string;
+  /** Addendum: paragraf penutup yang diletakkan SETELAH seluruh pasal, sebelum blok tanda tangan. */
+  tail?: string;
   /** Kop surat di awal dokumen. */
   letterhead?: LetterheadInput;
   /** Kolom tanda tangan di akhir dokumen. */
@@ -1075,6 +1079,8 @@ export async function buildTemplateDocx(opts: {
   const layout = bi?.layout || "side";
   const openingXml = opts.opening ? clauseContentToWordXml(opts.opening, ctx) : "";
   const closingXml = opts.closing ? clauseContentToWordXml(opts.closing, ctx) : "";
+  const recitalXml = opts.recital ? clauseContentToWordXml(opts.recital, ctx) : "";
+  const tailXml = opts.tail ? clauseContentToWordXml(opts.tail, ctx) : "";
   const openingEn = bi?.opening ? clauseContentToWordXml(bi.opening, ctx) : "";
   const closingEn = bi?.closing ? clauseContentToWordXml(bi.closing, ctx) : "";
   const clauseXml = opts.clauses.map((c) => clauseSdt(c, ctx, bi ? { layout } : undefined));
@@ -1096,8 +1102,10 @@ export async function buildTemplateDocx(opts: {
     kopXml,
     headXml,
     bi ? pairXml(openingXml, openingEn, layout) : openingXml,
+    recitalXml,
     bi ? pairXml(closingXml, closingEn, layout) : closingXml,
     ...clauseXml,
+    tailXml,
     sigXml,
     `<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`,
   ].join("");
@@ -1303,7 +1311,7 @@ export async function applyLocks(docx: Buffer, policy: PolicyMap, opts: { unlock
 }
 
 /** Peran yang boleh mengubah pasal terlindungi & menghapus pasal wajib (sama dgn aturan edit perpustakaan pasal). */
-export const CLAUSE_OVERRIDE_ROLES = ["admin", "legal", "super_admin"];
+export const CLAUSE_OVERRIDE_ROLES = ["legal", "super_admin"];
 
 /** Perbaikan dokumen lama: versi awal fitur bahasa menyembunyikan teks (w:vanish) yang tidak terbaca di editor/penampil lain. Tampilkan lagi. */
 export async function unhideLegacyLanguage(docx: Buffer): Promise<Buffer> {

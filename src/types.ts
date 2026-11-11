@@ -17,13 +17,12 @@ export interface Tenant {
   createdAt?: string;
 }
 
-// Peran pengguna (RBAC). super_admin lintas-tenant (operator SaaS);
-// sisanya tercakup dalam satu tenant/perusahaan.
+// Peran pengguna (RBAC). super_admin lintas-tenant (semua PT, satu tampilan); legal lintas-PT
+// hanya untuk dokumen eksternal; sisanya tercakup dalam satu tenant/perusahaan.
 // Detail hak tiap peran: lihat src/roles.ts.
 export type UserRole =
   | "super_admin"          // semua fitur, lintas perusahaan
   | "it_system"            // pengaturan & sistem, tanpa hak bisnis
-  | "admin"                // admin per perusahaan
   | "legal"                // susun, ajukan, kirim eksternal, TTD
   | "manajemen"            // lihat semua + approve
   | "marketing"            // divisi bisnis — Permintaan Kontrak ke Legal
@@ -48,6 +47,10 @@ export interface User {
   active: boolean;
   createdAt: string;
   lastLoginAt?: string;
+  // Migrasi peran "Admin Perusahaan" (dihapus): akun lama DINONAKTIFKAN & ditandai di sini, rolenya
+  // tidak diubah otomatis. Super Admin memetakan role barunya di Kelola Pengguna, baru bisa diaktifkan.
+  pendingRoleMapping?: boolean;
+  previousRole?: string;
   // Lupa password: hash (bukan token mentah) + waktu kadaluarsa token reset.
   // Token mentah hanya pernah ada di email yang dikirim & di request user —
   // tidak pernah disimpan mentah agar kebocoran DB tidak otomatis membuka akun.

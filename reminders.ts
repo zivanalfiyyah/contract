@@ -210,7 +210,7 @@ export function checkLegalJobDeadlines(db: any, today: string): number {
     if (days > 3) continue;
     const targets = new Set<string>(
       ((db.users || []) as any[])
-        .filter((u) => u.tenantId === job.tenantId && u.active && (u.role === "legal" || u.role === "admin"))
+        .filter((u) => u.tenantId === job.tenantId && u.active && u.role === "legal")
         .map((u) => u.id),
     );
     if (job.requesterId) targets.add(job.requesterId);

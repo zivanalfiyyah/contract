@@ -73,7 +73,7 @@ const DEFAULT_DOC_TYPES: DefaultDocType[] = [
       { heading: "2. Pernyataan Kebijakan", content: "" },
       { heading: "3. Ketentuan & Sanksi", content: "" },
     ],
-    signatureGroups: [{ columns: [{ label: "Disetujui oleh", role: "admin" }] }],
+    signatureGroups: [{ columns: [{ label: "Disetujui oleh", role: "direktur" }] }],
     layoutStyle: "kebijakan", letterhead: true,
   },
   {
@@ -81,7 +81,7 @@ const DEFAULT_DOC_TYPES: DefaultDocType[] = [
     defaultSections: [{ heading: "Isi Memo", content: "" }],
     signatureGroups: [
       { heading: "Penyusun:", columns: [{ label: "Manager HED", role: "manager" }, { label: "Manager FAT", role: "manager" }] },
-      { heading: "Mengetahui:", columns: [{ label: "CAO", role: "legal" }, { label: "CEO", role: "admin" }] },
+      { heading: "Mengetahui:", columns: [{ label: "CAO", role: "legal" }, { label: "CEO", role: "direktur" }] },
     ],
     layoutStyle: "memo", letterhead: true,
   },

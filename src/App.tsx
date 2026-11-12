@@ -25376,8 +25376,8 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-                {/* Audit Logs Table (8 cols) */}
-                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
+                {/* Audit Logs Table (full width) */}
+                <div className="xl:col-span-12 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <h3 className="font-bold text-sm">
                       Log Forensik Aktivitas Sistem
@@ -25492,68 +25492,6 @@ export default function App() {
                   )}
                   </>
                     ); })()}
-                </div>
-
-                {/* Database Integration Simulation (4 cols) */}
-                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-2xl p-6 space-y-5">
-                  <div className="border-b border-slate-800 pb-2">
-                    <h3 className="font-bold text-sm">
-                      Sinkronisasi Database Eksternal
-                    </h3>
-                    <p className="text-[10px] text-slate-500">
-                      Menampilkan data simulasi terintegrasi HR & Vendor
-                    </p>
-                  </div>
-
-                  {/* Employees */}
-                  <div className="space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Integrated Employee List (HR Module)
-                    </span>
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                      {employees.map((emp) => (
-                        <div
-                          key={emp.id}
-                          className="p-3 bg-slate-950 rounded-2xl flex items-center justify-between text-[11px]"
-                        >
-                          <div>
-                            <p className="font-bold text-slate-200">
-                              {emp.name}
-                            </p>
-                            <p className="text-[10px] text-slate-500">
-                              {emp.id} • {emp.position}
-                            </p>
-                          </div>
-                          <span className="text-indigo-400 font-semibold">
-                            Rp {emp.salary.toLocaleString("id-ID")}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Vendors */}
-                  <div className="space-y-2 pt-3 border-t border-slate-850">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Integrated Vendor List (Procurement Module)
-                    </span>
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                      {vendors.map((v) => (
-                        <div
-                          key={v.id}
-                          className="p-3 bg-slate-950 rounded-2xl text-[11px] space-y-0.5"
-                        >
-                          <p className="font-bold text-slate-200">{v.name}</p>
-                          <p className="text-[10px] text-slate-400">
-                            NPWP: {v.npwp}
-                          </p>
-                          <p className="text-[9px] text-slate-500 line-clamp-1">
-                            Alamat: {v.address}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
                 </div>
               </div>
             </div>

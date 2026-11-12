@@ -1181,7 +1181,12 @@ function GuestConfirmDialog({ open, title, body, confirmLabel, busy, onConfirm, 
 // Jenis Dokumen (categoryOf) karena template & penomoran masih memakainya.
 type TaxCompany = { id: string; name: string; code: string; platforms?: string[] };
 type TaxValue = { companyId: string; platform: string; platformCustom?: boolean; operator?: string; category: string; docType: string };
-type OperatorGroup = { id: string; name: string; companies: string[]; platforms: string[]; operators: string[] };
+type OperatorDetail = {
+  picName?: string; picPhone?: string; email?: string; npwp?: string; address?: string;
+  bankAccountNumber?: string; bankAccountName?: string; bankName?: string; bankBranch?: string;
+  pphRatePercent?: number | "";
+};
+type OperatorGroup = { id: string; name: string; companies: string[]; platforms: string[]; operators: string[]; operatorDetails?: Record<string, OperatorDetail> };
 const isLainnyaLabel = (s: unknown) => /^lain[\s-]?lain(nya)?$|^lainnya$/i.test(String(s ?? "").trim());
 const sameText = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
 const OTHER_OPTION = "__lainnya__";
@@ -5910,6 +5915,8 @@ export default function App() {
   const [emailTestResult, setEmailTestResult] = useState<{ connected: boolean; message: string } | null>(null);
   const [storageCloudConfigured, setStorageCloudConfigured] = useState<boolean | null>(null);
   const [vendorForm, setVendorForm] = useState<any>(null); // null = closed, else editing/new
+  // Form Tambah/Edit Mitra-Operator (isian mengikuti form Vendor). groupIdx = grup, origName = nama lama (null = baru).
+  const [operatorForm, setOperatorForm] = useState<{ groupId: string; origName: string | null; name: string } & OperatorDetail | null>(null);
   const [employeeForm, setEmployeeForm] = useState<any>(null);
   // Form "Tambah Kolom TTD / Pihak" (null = tertutup). Dulu dua window.prompt
   // beruntun — batal di prompt kedua membuang isian pertama tanpa jejak.
@@ -12097,6 +12104,40 @@ export default function App() {
     setNewEmploymentType("");
   };
 
+  // Simpan daftar Mitra/Operator langsung (dipakai form Tambah/Edit/Hapus mitra),
+  // seperti vendor: tidak perlu menekan "Simpan" lagi.
+  const saveOperatorGroups = async (next: OperatorGroup[]): Promise<boolean> => {
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...appSettings, masterData: { ...appSettings.masterData, operatorGroups: next } }),
+      });
+      const data = await res.json();
+      if (data.success) { setAppSettings(data.settings); return true; }
+      showToast(data.error || "Gagal menyimpan Mitra/Operator", "warning");
+    } catch { showToast("Gagal menyimpan Mitra/Operator", "warning"); }
+    return false;
+  };
+  const handleSaveOperatorForm = async () => {
+    const f = operatorForm;
+    if (!f) return;
+    const name = f.name.trim();
+    if (!name) { showToast("Nama mitra/operator wajib diisi", "warning"); return; }
+    const g = operatorGroups.find((x) => x.id === f.groupId);
+    if (!g) return;
+    if ((g.operators || []).some((o) => sameText(o, name) && !(f.origName && sameText(o, f.origName)))) {
+      showToast(`"${name}" sudah ada di grup ini`, "warning"); return;
+    }
+    const { groupId: _g, origName, name: _n, ...detail } = f;
+    const details = { ...(g.operatorDetails || {}) };
+    if (origName) delete details[origName];
+    details[name] = detail;
+    const ops = origName ? (g.operators || []).map((o) => (o === origName ? name : o)) : [...(g.operators || []), name];
+    const ok = await saveOperatorGroups(operatorGroups.map((x) => (x.id === g.id ? { ...x, operators: ops, operatorDetails: details } : x)));
+    if (ok) { showToast(origName ? "Mitra/Operator diperbarui" : "Mitra/Operator ditambahkan", "success"); setOperatorForm(null); }
+  };
+
   const handleSaveSettings = async () => {
     try {
       const res = await fetch("/api/settings", {
@@ -17296,7 +17337,7 @@ export default function App() {
                             <Users className="w-4 h-4 text-indigo-400" /> Mitra / Operator
                           </h4>
                           <p className="text-[11px] text-slate-500 mt-1 max-w-2xl">
-                            Daftar pilihan <b>Mitra/Operator</b> di form dokumen eksternal (sekaligus folder level ke-4 di Arsip Eksternal). Tiap grup berlaku untuk <b>PT</b> yang dicentang. <b>Platform</b> boleh dikosongkan = berlaku di <b>semua platform</b> PT itu; isi bila grup hanya untuk platform tertentu (pisahkan koma). Kalau sebuah platform punya grup sendiri (mis. Bank), grup umum PT tidak ikut tampil di platform itu. Satu mitra per baris.
+                            Daftar pilihan <b>Mitra/Operator</b> di form dokumen eksternal (sekaligus folder level ke-4 di Arsip Eksternal). Tiap grup berlaku untuk <b>PT</b> yang dicentang. <b>Platform</b> boleh dikosongkan = berlaku di <b>semua platform</b> PT itu; isi bila grup hanya untuk platform tertentu (pisahkan koma). Kalau sebuah platform punya grup sendiri (mis. Bank), grup umum PT tidak ikut tampil di platform itu. Tiap mitra ditambah satu per satu lewat tombol <b>Tambah Mitra/Operator</b> beserta datanya (PIC, kontak, NPWP, rekening).
                           </p>
                         </div>
                         {can("settings.manage") && (
@@ -17350,10 +17391,48 @@ export default function App() {
                                 {numberCompanies.length === 0 && <span className="text-[11px] text-slate-500 italic">Belum ada perusahaan (Kelola Perusahaan).</span>}
                               </div>
                             </div>
-                            <div className="space-y-1">
-                              <label className="text-[10px] font-semibold text-slate-400 uppercase">Mitra / Operator ({(g.operators || []).filter((x) => x.trim()).length}) — satu per baris</label>
-                              <textarea value={(g.operators || []).join("\n")} disabled={!editable} onChange={(e) => patchGroup({ operators: e.target.value.split("\n") })} rows={6}
-                                className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-[12px] text-slate-100 focus:outline-none focus:border-indigo-500 disabled:opacity-60" />
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="text-[10px] font-semibold text-slate-400 uppercase">Mitra / Operator ({(g.operators || []).filter((x) => x.trim()).length})</label>
+                                {editable && (
+                                  <button onClick={() => setOperatorForm({ groupId: g.id, origName: null, name: "" })}
+                                    className="text-[11px] px-2.5 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-bold cursor-pointer flex items-center gap-1">
+                                    <Plus className="w-3 h-3" /> Tambah Mitra/Operator
+                                  </button>
+                                )}
+                              </div>
+                              {(g.operators || []).filter((x) => x.trim()).length === 0 ? (
+                                <p className="text-[11px] text-slate-500 italic">Belum ada mitra/operator di grup ini.</p>
+                              ) : (
+                                <div className="max-h-72 overflow-y-auto border border-slate-800 rounded-lg divide-y divide-slate-800 bg-slate-900">
+                                  {(g.operators || []).filter((x) => x.trim()).map((op) => {
+                                    const d = (g.operatorDetails || {})[op] || {};
+                                    const meta = [d.picName, d.picPhone, d.email].filter(Boolean).join(" · ");
+                                    return (
+                                      <div key={op} className="px-3 py-2 flex items-center gap-2">
+                                        <div className="min-w-0 flex-1">
+                                          <p className="text-[12px] text-slate-100 font-medium truncate">{op}</p>
+                                          <p className="text-[10px] text-slate-500 truncate">{meta || "Detail belum diisi"}{d.bankName ? ` · ${d.bankName}${d.bankAccountNumber ? ` ${d.bankAccountNumber}` : ""}` : ""}</p>
+                                        </div>
+                                        {editable && (
+                                          <>
+                                            <button onClick={() => setOperatorForm({ groupId: g.id, origName: op, name: op, ...d })} className="text-[11px] text-indigo-300 hover:text-indigo-200 cursor-pointer">Edit</button>
+                                            <button
+                                              onClick={async () => {
+                                                if (!(await askConfirm(`Hapus mitra/operator "${op}" dari grup "${g.name}"? Dokumen yang sudah memakai nama ini tetap menyimpan nilainya.`, { title: "Hapus Mitra/Operator", confirmLabel: "Ya, Hapus" }))) return;
+                                                const details = { ...(g.operatorDetails || {}) }; delete details[op];
+                                                const ok = await saveOperatorGroups(operatorGroups.map((x, k) => (k === gi ? { ...x, operators: (x.operators || []).filter((o) => o !== op), operatorDetails: details } : x)));
+                                                if (ok) showToast("Mitra/Operator dihapus", "success");
+                                              }}
+                                              className="text-[11px] text-rose-400 hover:text-rose-300 cursor-pointer"
+                                            >Hapus</button>
+                                          </>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                             {editable && (
                               <button
@@ -26753,6 +26832,64 @@ export default function App() {
             <div className="p-5 border-t border-slate-800 bg-slate-900/50 flex justify-end gap-3">
               <button onClick={() => setVendorForm(null)} className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-400 text-xs font-semibold rounded-xl cursor-pointer">Batal</button>
               <button onClick={handleSaveVendor} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl cursor-pointer">Simpan</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MITRA / OPERATOR MODAL — isian sama dengan form Vendor */}
+      {operatorForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
+          <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+            <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-center">
+              <div>
+                <h3 className="font-bold text-slate-100 text-sm">{operatorForm.origName ? "Edit Mitra / Operator" : "Tambah Mitra / Operator"}</h3>
+                <p className="text-[10px] text-slate-500 mt-0.5">Grup: {operatorGroups.find((x) => x.id === operatorForm.groupId)?.name}</p>
+              </div>
+              <button onClick={() => setOperatorForm(null)} className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer">✕</button>
+            </div>
+            <div className="p-5 space-y-3 max-h-[70vh] overflow-y-auto">
+              {([
+                { k: "name", label: "Nama Mitra / Operator *" },
+                { k: "picName", label: "Nama PIC" },
+                { k: "picPhone", label: "No. WhatsApp PIC" },
+                { k: "email", label: "Email" },
+                { k: "npwp", label: "NPWP" },
+                { k: "address", label: "Alamat" },
+              ] as const).map((f) => (
+                <div key={f.k} className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">{f.label}</label>
+                  <input type="text" value={(operatorForm as any)[f.k] || ""} onChange={(e) => setOperatorForm({ ...operatorForm, [f.k]: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+                </div>
+              ))}
+              <div className="pt-2 border-t border-slate-800">
+                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wide mb-2">Info Rekening & Pajak</p>
+              </div>
+              {([
+                { k: "bankAccountNumber", label: "No. Rekening" },
+                { k: "bankAccountName", label: "Nama Rekening" },
+                { k: "bankName", label: "Bank" },
+                { k: "bankBranch", label: "Cabang" },
+                { k: "pphRatePercent", label: "PPh Dipotong (%)", type: "number" },
+              ] as const).map((f) => (
+                <div key={f.k} className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-slate-300">{f.label}</label>
+                  <input
+                    type={"type" in f ? f.type : "text"}
+                    step={"type" in f ? "0.01" : undefined}
+                    min={"type" in f ? 0 : undefined}
+                    max={"type" in f ? 100 : undefined}
+                    value={(operatorForm as any)[f.k] ?? ""}
+                    onChange={(e) => setOperatorForm({ ...operatorForm, [f.k]: "type" in f ? (e.target.value === "" ? "" : Math.min(100, Math.max(0, Number(e.target.value) || 0))) : e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="p-5 border-t border-slate-800 bg-slate-900/50 flex justify-end gap-3">
+              <button onClick={() => setOperatorForm(null)} className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-400 text-xs font-semibold rounded-xl cursor-pointer">Batal</button>
+              <button onClick={handleSaveOperatorForm} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl cursor-pointer">Simpan</button>
             </div>
           </div>
         </div>

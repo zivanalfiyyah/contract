@@ -1,5 +1,10 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #28] — Mitra/Operator: input satu per satu dengan data detail
+
+- Master Data → Mitra / Operator: daftar tidak lagi textarea satu-nama-per-baris. Tiap mitra ditambah lewat tombol **Tambah Mitra/Operator** (form seperti Vendor: nama, PIC, WhatsApp, email, NPWP, alamat, rekening, bank, cabang, PPh) dengan Edit/Hapus per baris; tersimpan langsung.
+- Detail disimpan di `operatorGroups[].operatorDetails` (kunci = nama mitra); daftar nama `operators` tidak berubah, jadi pilihan form & folder Arsip Eksternal tetap sama. Data lama otomatis tampil dengan "Detail belum diisi".
+
 ## [Unreleased #27] — Popup keterangan saat membuka notifikasi rilis
 
 - Klik notifikasi "Kontrak Telah Rilis" (Distribusi/Implementasi) kini membuka popup berisi keterangan dari pengirim (nama, waktu, catatan) dan tombol **Buka Berkas Resmi** (+ "Lihat detail kontrak"), tidak lagi langsung membuka PDF.

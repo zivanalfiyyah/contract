@@ -8,7 +8,15 @@
 // Bila ada grup yang menyebut platform terpilih secara EKSPLISIT, hanya grup
 // eksplisit itu yang dipakai (mis. platform Bank punya mitra sendiri, jadi
 // daftar GKM tidak ikut). Kalau tidak ada, dipakai grup yang platformnya kosong.
-export type OperatorGroup = { id: string; name: string; companies: string[]; platforms: string[]; operators: string[] };
+// Detail per mitra (mengikuti data Vendor). Disimpan terpisah dari `operators`
+// (yang tetap daftar NAMA) supaya semua pemakai lama (pilihan form, folder
+// Arsip Eksternal) tidak berubah. Kunci = nama mitra persis seperti di `operators`.
+export type OperatorDetail = {
+  picName?: string; picPhone?: string; email?: string; npwp?: string; address?: string;
+  bankAccountNumber?: string; bankAccountName?: string; bankName?: string; bankBranch?: string;
+  pphRatePercent?: number;
+};
+export type OperatorGroup = { id: string; name: string; companies: string[]; platforms: string[]; operators: string[]; operatorDetails?: Record<string, OperatorDetail> };
 
 export const DEFAULT_OPERATOR_GROUPS: OperatorGroup[] = [
   {
@@ -70,11 +78,34 @@ export function sanitizeOperatorGroups(input: unknown): OperatorGroup[] {
     });
     return out.slice(0, max);
   };
-  return input.slice(0, 50).map((g: any, i) => ({
-    id: String(g?.id || `og-${Date.now()}-${i}`).slice(0, 60),
-    name: String(g?.name || "").trim().slice(0, 80) || `Grup ${i + 1}`,
-    companies: clean(g?.companies, 50),
-    platforms: clean(g?.platforms, 50),
-    operators: clean(g?.operators, 1000),
-  }));
+  const txt = (v: unknown, max: number) => String(v ?? "").trim().slice(0, max);
+  return input.slice(0, 50).map((g: any, i) => {
+    const operators = clean(g?.operators, 1000);
+    const rawDetails = g?.operatorDetails && typeof g.operatorDetails === "object" ? g.operatorDetails : {};
+    const operatorDetails: Record<string, OperatorDetail> = {};
+    operators.forEach((name) => {
+      const key = Object.keys(rawDetails).find((k) => k.trim().toLowerCase() === name.toLowerCase());
+      const d = key ? rawDetails[key] : null;
+      if (!d || typeof d !== "object") return;
+      const out: OperatorDetail = {};
+      (["picName", "picPhone", "email", "npwp", "bankAccountNumber", "bankAccountName", "bankName", "bankBranch"] as const).forEach((f) => {
+        const v = txt(d[f], 120);
+        if (v) out[f] = v;
+      });
+      const addr = txt(d.address, 500);
+      if (addr) out.address = addr;
+      if (d.pphRatePercent !== "" && d.pphRatePercent != null && Number.isFinite(Number(d.pphRatePercent))) {
+        out.pphRatePercent = Math.min(100, Math.max(0, Number(d.pphRatePercent)));
+      }
+      if (Object.keys(out).length) operatorDetails[name] = out;
+    });
+    return {
+      id: String(g?.id || `og-${Date.now()}-${i}`).slice(0, 60),
+      name: String(g?.name || "").trim().slice(0, 80) || `Grup ${i + 1}`,
+      companies: clean(g?.companies, 50),
+      platforms: clean(g?.platforms, 50),
+      operators,
+      operatorDetails,
+    };
+  });
 }

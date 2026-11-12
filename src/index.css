@@ -255,17 +255,20 @@ html.dark .docx-wrapper > section.docx {
    di aplikasi. Tabel di dalam dokumen kontrak diberi kelas .plain-table agar
    tidak ikut berubah. ---- */
 table:has(> thead):not(.plain-table) { border-collapse: separate; border-spacing: 0; }
+/* Header kolom dibuat BERBEDA dari isi tabel: latar biru-ungu pucat, teks aksen
+   tebal & sedikit lebih besar, garis aksen di bawahnya — jelas terpisah dari baris data. */
 table:has(> thead):not(.plain-table) > thead > tr > th {
-  background: var(--color-slate-950);
-  color: var(--color-slate-400);
-  font-size: 11.5px;
-  font-weight: 600;
+  background: color-mix(in srgb, var(--color-indigo-600) 11%, var(--color-slate-900));
+  color: var(--color-indigo-400);
+  font-size: 12px;
+  font-weight: 700;
   text-transform: none !important;
-  letter-spacing: 0 !important;
+  letter-spacing: 0.01em !important;
   font-family: inherit;
-  border-bottom: 0 !important;
-  padding-top: 0.8rem;
-  padding-bottom: 0.8rem;
+  border-bottom: 2px solid color-mix(in srgb, var(--color-indigo-600) 28%, transparent) !important;
+  padding-top: 0.85rem;
+  padding-bottom: 0.85rem;
+  white-space: nowrap;
 }
 table:has(> thead):not(.plain-table) > thead > tr { background: transparent !important; border: 0 !important; }
 table:has(> thead):not(.plain-table) > thead > tr > th:first-child { border-top-left-radius: 14px; border-bottom-left-radius: 14px; }

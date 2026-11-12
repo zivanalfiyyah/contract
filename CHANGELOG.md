@@ -1,5 +1,9 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #31] — Header tabel dibedakan dari isi
+
+- Semua tabel ber-`<thead>` (kecuali `.plain-table`): header kolom kini berlatar biru-ungu pucat, teks aksen tebal 12px, dan garis aksen di bawahnya — terpisah jelas dari baris data (sebelumnya abu pucat nyaris sama dengan baris).
+
 ## [Unreleased #30] — Alur kerja Legal ringkas, filter PT, tombol Tidak Berlaku
 
 - Dashboard Legal & Pekerjaan Legal: 12 kartu status diganti **alur kerja ringkas** — 4 fase berurutan (Masuk & siapkan › Review › Tanda tangan › Rilis) dengan panah, hitungan per tahap, tooltip penjelasan, dan klik tahap = filter. Jauh lebih pendek dari grid kartu sebelumnya.

@@ -3,21 +3,20 @@
 // antara tombol yang tampil dan endpoint yang menerima.
 //
 // Ringkasan aturan (hasil diskusi):
-//  - Super Admin   : semua fitur, SEMUA PT dalam satu tampilan (tanpa pindah PT).
+//  - Super Admin   : semua fitur, lintas perusahaan.
 //  - IT/System     : semua PENGATURAN (user, master data, sistem), tanpa hak
 //                    bisnis (tidak buat/ajukan/approve kontrak) & tidak melihat
 //                    kontrak karyawan.
+//  - Admin         : admin per perusahaan — user & konfigurasi PT-nya + semua
+//                    dokumen di PT-nya.
 //  - Legal         : buat, ajukan & tindak lanjuti revisi, approve, kirim ke
-//                    eksternal/TTD; lihat dokumen EKSTERNAL di SEMUA PT (bisa
-//                    difilter per PT), TIDAK melihat dokumen internal/karyawan.
+//                    eksternal/TTD; lihat semua dokumen.
 //  - Manajemen     : lihat semua (baca) + approve bila dipilih di matriks.
 //  - Divisi bisnis : Marketing / Business Partnership / Account Executive /
 //                    Operasional — lihat dokumen DIVISINYA saja, mengajukan
 //                    Permintaan Kontrak ke Legal, boleh dipilih jadi reviewer.
-//  - HR/GA         : buat & ajukan sendiri kontrak karyawan (+ DCS), HANYA di
-//                    PT-nya; tidak melihat kontrak eksternal.
-//  - Approver lintas PT: pengirim boleh memilih approver dari PT mana pun; approver
-//                    hanya bisa membuka dokumen yang DITUGASKAN langsung kepadanya.
+//  - HR/GA         : buat & ajukan sendiri kontrak karyawan (+ DCS); tidak
+//                    melihat kontrak eksternal.
 //  - staff/viewer  : peran lama — hanya lihat sampai di-set ulang di Kelola
 //                    Pengguna. "manager" lama dimigrasikan ke "manajemen".
 
@@ -25,15 +24,16 @@ export const DIVISION_ROLES = ["marketing", "business_partnership", "account_exe
 export type DivisionRole = (typeof DIVISION_ROLES)[number];
 
 export const ROLE_DEFS: { value: string; label: string; desc: string; assignable: boolean }[] = [
-  { value: "super_admin", label: "Super Admin", desc: "Semua fitur di semua PT (TBK, GKM, dst.) — tanpa perlu pindah PT.", assignable: false },
+  { value: "super_admin", label: "Super Admin", desc: "Semua fitur, lintas perusahaan.", assignable: false },
   { value: "it_system", label: "IT / System", desc: "Kelola pengguna, master data & pengaturan sistem. Tidak membuat/menyetujui kontrak dan tidak melihat kontrak karyawan.", assignable: true },
-  { value: "legal", label: "Legal", desc: "Susun kontrak, ajukan review, tindak lanjuti revisi, kirim ke pihak eksternal & TTD. Melihat dokumen eksternal di semua PT (bukan dokumen internal/karyawan).", assignable: true },
+  { value: "admin", label: "Admin Perusahaan", desc: "Kelola pengguna & konfigurasi perusahaannya, serta seluruh dokumen di perusahaan itu.", assignable: true },
+  { value: "legal", label: "Legal", desc: "Susun kontrak, ajukan review, tindak lanjuti revisi, kirim ke pihak eksternal & TTD. Melihat semua dokumen.", assignable: true },
   { value: "manajemen", label: "Manajemen", desc: "Melihat semua dokumen dan menyetujui bila dipilih di matriks approval.", assignable: true },
   { value: "marketing", label: "Marketing", desc: "Melihat dokumen divisi Marketing & mengajukan Permintaan Kontrak ke Legal.", assignable: true },
   { value: "business_partnership", label: "Business Partnership", desc: "Melihat dokumen divisi Business Partnership & mengajukan Permintaan Kontrak ke Legal.", assignable: true },
   { value: "account_executive", label: "Account Executive", desc: "Melihat dokumen divisi Account Executive & mengajukan Permintaan Kontrak ke Legal.", assignable: true },
   { value: "operasional", label: "Operasional", desc: "Melihat dokumen divisi Operasional & mengajukan Permintaan Kontrak ke Legal.", assignable: true },
-  { value: "hr_ga", label: "HR / GA", desc: "Membuat & mengajukan sendiri kontrak karyawan, serta dokumen DCS — hanya di PT-nya.", assignable: true },
+  { value: "hr_ga", label: "HR / GA", desc: "Membuat & mengajukan sendiri kontrak karyawan, serta dokumen DCS.", assignable: true },
   { value: "direktur", label: "Direktur", desc: "Internal. Hanya melihat dokumen yang ditunjuk kepadanya (review/persetujuan).", assignable: true },
   { value: "finance", label: "Finance", desc: "Internal. Hanya melihat dokumen yang ditunjuk kepadanya (review/persetujuan).", assignable: true },
   { value: "tax", label: "Tax", desc: "Internal. Hanya melihat dokumen yang ditunjuk kepadanya (review/persetujuan).", assignable: true },
@@ -43,10 +43,8 @@ export const ROLE_DEFS: { value: string; label: string; desc: string; assignable
   { value: "manager", label: "Manajemen", desc: "Peran lama (otomatis jadi Manajemen).", assignable: false },
 ];
 
-/** Tim dengan akses penuh (sementara): Legal & Super Admin. Peran lain hanya melihat dokumen yang ditunjuk kepadanya. */
-export const isFullAccessRole = (role?: string) => role === "super_admin" || role === "legal";
-/** Peran yang bekerja LINTAS PT dalam satu tampilan (tanpa pindah tenant). Legal tetap hanya dokumen eksternal. */
-export const isCrossTenantRole = (role?: string) => role === "super_admin" || role === "legal";
+/** Tim dengan akses penuh (sementara): Legal, Admin, Super Admin. Peran lain hanya melihat dokumen yang ditunjuk kepadanya. */
+export const isFullAccessRole = (role?: string) => role === "super_admin" || role === "admin" || role === "legal";
 export const roleLabelOf = (role?: string) => ROLE_DEFS.find((r) => r.value === role)?.label || role || "-";
 export const isDivisionRole = (role?: string): role is DivisionRole => !!role && (DIVISION_ROLES as readonly string[]).includes(role);
 
@@ -54,22 +52,22 @@ export const isDivisionRole = (role?: string): role is DivisionRole => !!role &&
 // super_admin selalu lolos requireRole (lihat auth.ts), jadi tidak perlu ditulis.
 export const R = {
   // Pengaturan: user, registrasi, settings, master data, logo.
-  settings: ["it_system"],
+  settings: ["admin", "it_system"],
   // Template & klausul.
-  templates: ["legal"],
+  templates: ["admin", "legal"],
   // Buat/ubah/ajukan dokumen kontrak (HR/GA dibatasi ke kontrak karyawan
   // oleh canViewContract — kontrak lain "tidak ditemukan" baginya).
-  contractEditors: ["legal", "hr_ga"],
+  contractEditors: ["admin", "legal", "hr_ga"],
   // Kirim ke pihak eksternal, legal hold, pemusnahan, pengumuman.
-  legalOnly: ["legal"],
+  legalOnly: ["admin", "legal"],
   // Anggaran.
-  budgets: ["legal", "manajemen"],
+  budgets: ["admin", "legal", "manajemen"],
   // Data karyawan (modul).
-  employeeData: ["hr_ga"],
+  employeeData: ["admin", "hr_ga"],
   // Data vendor (modul).
-  vendorData: ["legal"],
+  vendorData: ["admin", "legal"],
   // Dokumen DCS (buat/ubah).
-  dcsEditors: ["legal", "hr_ga"],
+  dcsEditors: ["admin", "legal", "hr_ga"],
   // Permintaan Kontrak ke Legal (divisi bisnis).
   requesters: [...DIVISION_ROLES],
 } as const;
@@ -78,24 +76,33 @@ export const R = {
 export const canBeApprover = (role?: string) =>
   !!role && !["viewer", "staff"].includes(role);
 
-/** Hanya Super Admin yang setara "administrator sistem" (peran Admin Perusahaan sudah dihapus). */
-export const isAdminLike = (role?: string) => role === "super_admin";
+export const isAdminLike = (role?: string) => role === "admin" || role === "super_admin";
 
 // Kontrak karyawan (internal) vs eksternal — sama dengan isEmployeeContract di App.
 export const isEmployeeContractLike = (c: { party2Type?: string; employmentType?: string }) =>
   c.party2Type === "Karyawan" || c.party2Type === "Employee";
 
-type ViewUser = { id: string; role: string; tenantId?: string; actingForIds?: string[] };
-type ViewContract = {
-  tenantId?: string;
-  party2Type?: string; employmentType?: string; requestingDivision?: string;
-  createdById?: string; approvalSubmittedById?: string;
-  approvalSteps?: { approverId?: string; decidedByDelegateId?: string }[];
-  approvalHistory?: { steps?: { approverId?: string }[] }[];
-};
-
-/** Terlibat LANGSUNG di dokumen: pembuat, pengaju, atau approver/reviewer (ronde mana pun, termasuk penerima delegasi). */
-export function isDirectlyAssigned(user: ViewUser, c: ViewContract): boolean {
+// Siapa boleh MELIHAT sebuah kontrak. Orang yang terlibat langsung (pembuat,
+// pengaju, approver di ronde mana pun) selalu boleh melihat, apa pun perannya
+// — kalau tidak, approver dari divisi lain tidak bisa membuka dokumen yang
+// harus ia setujui.
+export function canViewContract(
+  user: { id: string; role: string; actingForIds?: string[] },
+  c: {
+    party2Type?: string; employmentType?: string; requestingDivision?: string;
+    createdById?: string; approvalSubmittedById?: string;
+    approvalSteps?: { approverId?: string; decidedByDelegateId?: string }[];
+    approvalHistory?: { steps?: { approverId?: string }[] }[];
+  },
+): boolean {
+  const role = user.role;
+  const employee = isEmployeeContractLike(c);
+  if (role === "super_admin" || role === "admin") return true;
+  // Legal = dokumen EKSTERNAL saja; HR = dokumen INTERNAL (karyawan) saja.
+  if (role === "legal") return !employee;
+  if (role === "hr_ga") return employee;
+  // Peran lain: hanya dokumen yang melibatkan dirinya (membuat, mengajukan, atau ditunjuk
+  // sebagai reviewer/approver di ronde mana pun, termasuk penerima delegasi).
   if (c.createdById === user.id || c.approvalSubmittedById === user.id) return true;
   const me = [user.id, ...(user.actingForIds || [])];
   if ((c.approvalSteps || []).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id)) return true;
@@ -103,40 +110,10 @@ export function isDirectlyAssigned(user: ViewUser, c: ViewContract): boolean {
   return false;
 }
 
-// Siapa boleh MELIHAT sebuah kontrak DI DALAM PT-nya sendiri (batas per peran /
-// divisi / kontrak karyawan). Orang yang terlibat langsung (pembuat, pengaju,
-// approver di ronde mana pun) selalu boleh melihat, apa pun perannya — kalau
-// tidak, approver dari divisi lain tidak bisa membuka dokumen yang harus ia
-// setujui. Batas ANTAR-PT ada di canAccessContract.
-export function canViewContract(user: ViewUser, c: ViewContract): boolean {
-  const role = user.role;
-  const employee = isEmployeeContractLike(c);
-  if (role === "super_admin") return true;
-  // Legal = dokumen EKSTERNAL saja; HR = dokumen INTERNAL (karyawan) saja.
-  if (role === "legal") return !employee;
-  if (role === "hr_ga") return employee;
-  // Peran lain: hanya dokumen yang melibatkan dirinya.
-  return isDirectlyAssigned(user, c);
-}
-
-/**
- * Batas ANTAR-PT + peran. Satu-satunya tempat aturan lintas PT ditulis:
- *  - Super Admin : semua PT, semua dokumen.
- *  - Legal       : semua PT, HANYA dokumen eksternal (bukan karyawan/HR), tanpa pindah PT.
- *  - PT sendiri  : aturan peran biasa (canViewContract) — HR/GA tetap per PT.
- *  - PT lain     : HANYA bila ditugaskan langsung (approver/reviewer). Tidak ada akses otomatis ke dokumen PT lain.
- */
-export function canAccessContract(user: ViewUser, c: ViewContract): boolean {
-  if (user.role === "super_admin") return true;
-  if (user.role === "legal") return canViewContract(user, c);
-  if (!user.tenantId || !c.tenantId || user.tenantId === c.tenantId) return canViewContract(user, c);
-  return isDirectlyAssigned(user, c);
-}
-
 // ===================== MATRIKS HAK AKSES AKSI =====================
 // SATU-SATUNYA tempat daftar izin aksi didefinisikan. Setiap izin punya
 // default (= aturan sebelum matriks ada, jadi perilaku tidak berubah sampai
-// Super Admin mengubahnya) dan bisa ditimpa per role lewat Konfigurasi > Hak Akses
+// admin mengubahnya) dan bisa ditimpa per role lewat Konfigurasi > Hak Akses
 // (disimpan di pengaturan tenant: actionPermissions). Server (requirePerm)
 // DAN frontend (tombol) membaca sumber yang sama lewat isPermAllowed().
 // Super Admin SELALU lolos semua izin (tidak bisa mengunci diri sendiri).
@@ -158,34 +135,34 @@ export const PERM_GROUPS = [
 
 export const PERMISSIONS: readonly PermDef[] = [
   // --- Dokumen ---
-  { key: "contract.edit", group: "Dokumen (Eksternal & Karyawan)", label: "Buat, ubah & ajukan dokumen", defaults: ["legal", "hr_ga"], hint: "Buat dokumen, edit draft, ajukan review internal, perpanjang, addendum, versi berkas, unggah logo, kelola sub folder. HR/GA dibatasi ke dokumen karyawan oleh aturan lihat-dokumen." },
+  { key: "contract.edit", group: "Dokumen (Eksternal & Karyawan)", label: "Buat, ubah & ajukan dokumen", defaults: ["admin", "legal", "hr_ga"], hint: "Buat dokumen, edit draft, ajukan review internal, perpanjang, addendum, versi berkas, unggah logo, kelola sub folder. HR/GA dibatasi ke dokumen karyawan oleh aturan lihat-dokumen." },
   { key: "contract.delete", group: "Dokumen (Eksternal & Karyawan)", label: "Hapus dokumen", defaults: ["legal"] },
   { key: "contract.move", group: "Dokumen (Eksternal & Karyawan)", label: "Pindahkan dokumen ke folder/kategori arsip", defaults: ["legal"] },
-  { key: "contract.classify", group: "Dokumen (Eksternal & Karyawan)", label: "Ubah klasifikasi & nomor dokumen", defaults: ["legal", "hr_ga"] },
-  { key: "contract.bulk", group: "Dokumen (Eksternal & Karyawan)", label: "Impor massal & kirim pengingat massal", defaults: ["legal", "hr_ga"] },
+  { key: "contract.classify", group: "Dokumen (Eksternal & Karyawan)", label: "Ubah klasifikasi & nomor dokumen", defaults: ["admin", "legal", "hr_ga"] },
+  { key: "contract.bulk", group: "Dokumen (Eksternal & Karyawan)", label: "Impor massal & kirim pengingat massal", defaults: ["admin", "legal", "hr_ga"] },
   // --- Review ---
-  { key: "review.access", group: "Review & Persetujuan", label: "Mode Tinjau: komentar / coret / ganti", defaults: ["legal"], hint: "Approver yang ditunjuk Legal & pembuat dokumen tetap bisa meninjau dokumen mereka walau role-nya tidak dicentang." },
-  { key: "review.markup_decide", group: "Review & Persetujuan", label: "Terima / tolak usulan coret & ganti", defaults: ["legal", "hr_ga"], hint: "Tetap hanya untuk pembuat/pengaju dokumen (atau Super Admin)." },
-  { key: "review.send_external", group: "Review & Persetujuan", label: "Kirim/buka akses review pihak kedua & lewati review", defaults: ["legal"] },
+  { key: "review.access", group: "Review & Persetujuan", label: "Mode Tinjau: komentar / coret / ganti", defaults: ["admin", "legal"], hint: "Approver yang ditunjuk Legal & pembuat dokumen tetap bisa meninjau dokumen mereka walau role-nya tidak dicentang." },
+  { key: "review.markup_decide", group: "Review & Persetujuan", label: "Terima / tolak usulan coret & ganti", defaults: ["admin", "legal", "hr_ga"], hint: "Tetap hanya untuk pembuat/pengaju dokumen (atau admin)." },
+  { key: "review.send_external", group: "Review & Persetujuan", label: "Kirim/buka akses review pihak kedua & lewati review", defaults: ["admin", "legal"] },
   // --- TTD & Arsip ---
-  { key: "signing.manage", group: "TTD & Arsip", label: "Catat pengiriman/penerimaan TTD & unggah TTD basah", defaults: ["legal", "hr_ga"] },
-  { key: "release.announce", group: "TTD & Arsip", label: "Pengumuman rilis (internal & eksternal)", defaults: ["legal"] },
-  { key: "retention.manage", group: "TTD & Arsip", label: "Legal hold & pemusnahan dokumen", defaults: ["legal"] },
+  { key: "signing.manage", group: "TTD & Arsip", label: "Catat pengiriman/penerimaan TTD & unggah TTD basah", defaults: ["admin", "legal", "hr_ga"] },
+  { key: "release.announce", group: "TTD & Arsip", label: "Pengumuman rilis (internal & eksternal)", defaults: ["admin", "legal"] },
+  { key: "retention.manage", group: "TTD & Arsip", label: "Legal hold & pemusnahan dokumen", defaults: ["admin", "legal"] },
   // --- Library ---
-  { key: "templates.manage", group: "Library & Template", label: "Kelola klausul, kategori klausul & template", defaults: ["legal"] },
+  { key: "templates.manage", group: "Library & Template", label: "Kelola klausul, kategori klausul & template", defaults: ["admin", "legal"] },
   // --- DCS ---
-  { key: "dcs.config", group: "Dokumen Terkontrol (DCS)", label: "Atur jenis dokumen, aturan nomor & klausul DCS", defaults: ["legal"] },
-  { key: "dcs.edit", group: "Dokumen Terkontrol (DCS)", label: "Buat & ubah dokumen DCS (versi, berkas, terjemahan)", defaults: ["legal", "hr_ga"] },
-  { key: "dcs.release", group: "Dokumen Terkontrol (DCS)", label: "Rilis, distribusi & tarik dokumen DCS", defaults: ["legal", "manajemen"] },
+  { key: "dcs.config", group: "Dokumen Terkontrol (DCS)", label: "Atur jenis dokumen, aturan nomor & klausul DCS", defaults: ["admin", "legal"] },
+  { key: "dcs.edit", group: "Dokumen Terkontrol (DCS)", label: "Buat & ubah dokumen DCS (versi, berkas, terjemahan)", defaults: ["admin", "legal", "hr_ga"] },
+  { key: "dcs.release", group: "Dokumen Terkontrol (DCS)", label: "Rilis, distribusi & tarik dokumen DCS", defaults: ["admin", "legal", "manajemen"] },
   // --- Pekerjaan Legal ---
-  { key: "legaljob.request", group: "Pekerjaan Legal", label: "Ajukan Pekerjaan Legal", defaults: ["legal", "marketing", "business_partnership", "account_executive", "operasional"] },
-  { key: "legaljob.process", group: "Pekerjaan Legal", label: "Setujui/tolak Pekerjaan Legal & kelola link formulir", defaults: ["legal"] },
+  { key: "legaljob.request", group: "Pekerjaan Legal", label: "Ajukan Pekerjaan Legal", defaults: ["admin", "legal", "marketing", "business_partnership", "account_executive", "operasional"] },
+  { key: "legaljob.process", group: "Pekerjaan Legal", label: "Setujui/tolak Pekerjaan Legal & kelola link formulir", defaults: ["admin", "legal"] },
   // --- Data ---
-  { key: "budgets.manage", group: "Data & Anggaran", label: "Kelola anggaran", defaults: ["legal", "manajemen"] },
-  { key: "employees.manage", group: "Data & Anggaran", label: "Kelola data karyawan", defaults: ["hr_ga"] },
-  { key: "vendors.manage", group: "Data & Anggaran", label: "Kelola data vendor", defaults: ["legal"] },
+  { key: "budgets.manage", group: "Data & Anggaran", label: "Kelola anggaran", defaults: ["admin", "legal", "manajemen"] },
+  { key: "employees.manage", group: "Data & Anggaran", label: "Kelola data karyawan", defaults: ["admin", "hr_ga"] },
+  { key: "vendors.manage", group: "Data & Anggaran", label: "Kelola data vendor", defaults: ["admin", "legal"] },
   // --- Pengaturan ---
-  { key: "settings.manage", group: "Pengaturan Sistem", label: "Kelola pengguna, pengaturan & master data", defaults: ["it_system"] },
+  { key: "settings.manage", group: "Pengaturan Sistem", label: "Kelola pengguna, pengaturan & master data", defaults: ["admin", "it_system"] },
   { key: "settings.employment_types", group: "Pengaturan Sistem", label: "Ubah Kategori Dokumen Karyawan saja", defaults: [], hint: "Khusus bagian kategori karyawan; pengaturan lain tetap butuh izin di atas." },
 ];
 
@@ -249,13 +226,13 @@ export function canReviewContract(
   return (c.approvalSteps || []).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id);
 }
 
-// Default menu sidebar per peran (dipakai bila Super Admin belum mengatur matriks
+// Default menu sidebar per peran (dipakai bila admin belum mengatur matriks
 // Hak Akses untuk peran tsb). id harus sama dengan MENU_ITEMS di App.tsx.
 export const DEFAULT_MENUS_BY_ROLE: Record<string, string[]> = {
   // Legal: semua menu EKSTERNAL (tanpa Dokumen Karyawan & Dokumen DCS yang internal/HR).
-  legal: ["dashboard", "dashboard-legal", "pekerjaan-legal", "monitoring", "clauses", "arsip", "all-docs", "audits", "audit-kontrak-dcs", "kalender-legal", "retensi-arsip", "performa-vendor", "ai-tools"],
+  legal: ["dashboard", "dashboard-legal", "pekerjaan-legal", "monitoring", "clauses", "arsip", "all-docs", "audits", "audit-kontrak-dcs", "ai-tools"],
   // HR: hanya sisi INTERNAL.
-  hr_ga: ["dashboard", "kontrak-karyawan", "clauses", "internal-docs", "arsip", "all-docs", "kalender-legal"],
+  hr_ga: ["dashboard", "kontrak-karyawan", "clauses", "internal-docs", "arsip", "all-docs"],
   // IT/System: pengaturan sistem.
   it_system: ["dashboard", "konfigurasi", "audits", "audit-kontrak-dcs"],
   // Peran lain: hanya dokumen yang ditunjuk kepadanya (daftar dokumen sudah disaring server).

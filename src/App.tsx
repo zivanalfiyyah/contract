@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from "react";
 import jsPDF from "jspdf";
 // html2canvas-pro (not the plain "html2canvas" package): Tailwind v4 emits
@@ -160,6 +161,7 @@ import {
   ContractVersion,
   AuditTrail,
   SystemNotification,
+  ReleaseAnnouncement,
   EmployeeData,
   VendorData,
   ClauseComment,
@@ -5024,6 +5026,63 @@ function WideBars({ values, labels }: { values: number[]; labels?: string[] }) {
 // luar App supaya state lokal (pencarian/centang/keterangan) tidak ter-reset.
 const releaseInitials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("");
 
+// Popup yang tampil saat penerima mengklik notifikasi "Kontrak Telah Rilis":
+// menampilkan keterangan dari pengirim lebih dulu, baru lanjut ke berkas resmi.
+function ReleaseNoticeModal({
+  contract, announcement, fallbackMessage, onClose, onOpenFile, onOpenContract,
+}: {
+  contract?: Contract;
+  announcement?: ReleaseAnnouncement;
+  fallbackMessage: string;
+  onClose: () => void;
+  onOpenFile: () => void;
+  onOpenContract?: () => void;
+}) {
+  // Data pengumuman bisa tidak ada di daftar kontrak user ini → ambil
+  // keterangan dari teks notifikasi ("... Keterangan: <catatan>").
+  const msgIdx = fallbackMessage.indexOf("Keterangan: ");
+  const note = announcement ? announcement.note?.trim() : msgIdx >= 0 ? fallbackMessage.slice(msgIdx + 12).trim() : "";
+  const byFromMsg = /Diumumkan oleh ([^.]+)\./.exec(fallbackMessage)?.[1];
+  return createPortal(
+    <div className="modal-backdrop fixed inset-0 z-[70] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-slate-900 card-soft rounded-2xl w-full max-w-lg overflow-hidden animate-fadeIn" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Pengumuman rilis kontrak">
+        <div className="px-6 pt-6 pb-4 flex items-start gap-3.5">
+          <span className="w-11 h-11 rounded-xl bg-mist flex items-center justify-center shrink-0"><CheckCircle className="w-5 h-5 text-slate-100" /></span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Pengumuman Rilis Kontrak</p>
+            <h3 className="text-[17px] font-semibold text-slate-100 leading-snug break-words">{contract?.title || "Kontrak"}</h3>
+            {contract?.contractNumber && <p className="text-xs text-slate-500 mt-0.5">{contract.contractNumber}</p>}
+          </div>
+          <button type="button" onClick={onClose} aria-label="Tutup" className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-750 cursor-pointer"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="px-6 pb-2 space-y-3">
+          <div className="text-xs text-slate-500">
+            Dikirim oleh <span className="text-slate-100 font-medium">{announcement?.byName || byFromMsg || "Tim Legal"}</span>
+            {announcement?.createdAt ? ` · ${new Date(announcement.createdAt).toLocaleString("id-ID", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}` : ""}
+          </div>
+          <div className="rounded-xl bg-slate-950 p-4">
+            <p className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5">Keterangan dari pengirim</p>
+            {note ? (
+              <p className="text-[14px] text-slate-100 whitespace-pre-wrap break-words">{note}</p>
+            ) : (
+              <p className="text-[13px] text-slate-500 italic">Pengirim tidak menambahkan keterangan.</p>
+            )}
+          </div>
+        </div>
+        <div className="px-6 py-5 flex flex-wrap items-center justify-end gap-2">
+          {onOpenContract && (
+            <button type="button" onClick={onOpenContract} className="px-4 h-10 rounded-xl text-xs font-semibold text-slate-300 hover:text-slate-100 hover:bg-slate-750 transition cursor-pointer">Lihat detail kontrak</button>
+          )}
+          <button type="button" onClick={onOpenFile} className="flex items-center gap-2 px-5 h-10 bg-soft-blue hover:opacity-90 text-white rounded-xl text-xs font-semibold transition cursor-pointer">
+            <ExternalLink className="w-4 h-4" /> Buka Berkas Resmi
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 function ReleaseAnnounceModal({
   contract, users, saving, onClose, onSend,
 }: {
@@ -5567,6 +5626,7 @@ export default function App() {
   // Popup notifikasi (ikon lonceng di navbar) + tab Semua/Belum dibaca.
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifTab, setNotifTab] = useState<"all" | "unread">("all");
+  const [releaseNotice, setReleaseNotice] = useState<any | null>(null);
   // Halaman daftar di kartu dashboard (10 item per halaman).
   const [apprPage, setApprPage] = useState(1);
   // Kartu "Info Kontrak" di dashboard → "Lihat semua" membuka daftar semua
@@ -14974,6 +15034,21 @@ export default function App() {
               )}
             </button>
 
+            {releaseNotice && (() => {
+              const c = contracts.find((x) => x.id === releaseNotice.contractId);
+              const ann = c?.releaseAnnouncements?.find((a) => a.id === releaseNotice.releaseAnnouncementId);
+              return (
+                <ReleaseNoticeModal
+                  contract={c}
+                  announcement={ann}
+                  fallbackMessage={releaseNotice.message || ""}
+                  onClose={() => setReleaseNotice(null)}
+                  onOpenFile={() => { if (releaseNotice.linkUrl) window.open(releaseNotice.linkUrl, "_blank", "noopener"); setReleaseNotice(null); }}
+                  onOpenContract={releaseNotice.contractId ? () => { const id = releaseNotice.contractId; setReleaseNotice(null); openContractById(id); } : undefined}
+                />
+              );
+            })()}
+
             {notifOpen && (() => {
               const unreadCount = notifications.filter((n) => !n.read).length;
               const list = notifTab === "unread" ? notifications.filter((n) => !n.read) : notifications;
@@ -14995,7 +15070,12 @@ export default function App() {
                   .then((r) => r.json())
                   .then((d) => { if (d?.contractActivated) fetchInitialData(); })
                   .catch(() => { /* abaikan */ });
-                if (n.linkUrl) {
+                if (n.releaseAnnouncementId) {
+                  // Pengumuman rilis → tampilkan keterangan pengirim dulu;
+                  // berkas resmi baru dibuka lewat tombol di popup.
+                  setNotifOpen(false);
+                  setReleaseNotice(n);
+                } else if (n.linkUrl) {
                   // Notifikasi dengan tautan langsung (mis. "Kontrak Telah Rilis")
                   // → buka PDF resmi di tab baru (sinkron, anti popup-blocker).
                   setNotifOpen(false);

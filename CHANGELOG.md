@@ -1,5 +1,10 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #27] — Popup keterangan saat membuka notifikasi rilis
+
+- Klik notifikasi "Kontrak Telah Rilis" (Distribusi/Implementasi) kini membuka popup berisi keterangan dari pengirim (nama, waktu, catatan) dan tombol **Buka Berkas Resmi** (+ "Lihat detail kontrak"), tidak lagi langsung membuka PDF.
+- Klik notifikasi tetap tercatat "sudah dibuka" sehingga kontrak otomatis Aktif saat semua penerima membuka.
+
 ## [Unreleased #26] — Aturan sesi review: Setujui hanya bila reviewer tidak mengubah apa pun
 
 ### Ringkasan

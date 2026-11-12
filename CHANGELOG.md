@@ -1,5 +1,29 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #26] — Aturan sesi review: Setujui hanya bila reviewer tidak mengubah apa pun
+
+### Ringkasan
+- **Reviewer internal (Review Internal & Review Final) dan pihak eksternal (link review)** hanya bisa **Setujui / Setuju-OK** bila pada **sesi review yang sedang berjalan** ia tidak menambah komentar (termasuk balasan), mengedit/mengubah komentar, menghapus komentar, membuat usulan coret/ganti, maupun Track Changes/komentar di berkas Word. Bila ada satu saja, tombol **Setujui** otomatis nonaktif dan hanya **Minta Revisi / Ajukan Revisi** yang bisa dipakai. Tanpa aktivitas, kedua tombol tetap aktif.
+- **Sesi = satu putaran review**: mulai saat pembuat mengajukan ke Review Internal (atau Review Final) / membuka link Review Pihak Kedua ronde itu, selesai saat ada keputusan. Pengajuan ulang = sesi baru, jadi markup lama (sesi/ronde sebelumnya) tidak ikut mengunci. Aktivitas dihitung **per reviewer** (aktivitas reviewer lain tidak mengunci tombol Anda).
+- **Divalidasi di server**: `POST /api/contracts/:id/approval-decision` (approved) dan `POST /api/external-review/:token/approve` menolak dengan **409** (`code: "REVIEW_ACTIVITY_DETECTED"`). Menghapus/membatalkan sendiri tidak membuka kunci kembali (riwayat tetap tercatat).
+- **Minta Revisi** tidak lagi mewajibkan catatan/komentar terpisah bila reviewer sudah punya aktivitas di sesi ini (mis. hanya mengubah berkas Word dengan Track Changes).
+- Tombol berubah otomatis: langsung saat editor Word melaporkan perubahan, setelah komentar dikirim, dan dicek berkala (10 dtk).
+- **Perubahan yang masih terbuka di editor Word**: Document Server baru mengirim berkas ke server setelah editor ditutup, jadi perubahan reviewer tidak terlihat dari berkas selama editor terbuka. Editor kini melaporkan perubahan pertama lewat `POST /api/contracts/:id/review-session/activity` (internal) dan `POST /api/external-review/:token/review-session/activity` (eksternal, dijaga token); server mencatat penanda audit **Review Editor Activity** (satu per sesi per reviewer) sehingga Setujui langsung ditolak server. Audit **Review Track Changes** (berkas tinjauan tersimpan, apa pun isinya) sengaja **tidak** dihitung sebagai aktivitas sesi: Document Server menyimpan berkas setelah editor ditutup (bisa tertunda), sehingga perubahan ronde lama bisa tercatat tersimpan di ronde baru.
+- **Tanggal di dalam berkas Word (w:date) tidak dipakai** untuk menilai sesi: ONLYOFFICE menulisnya dalam jam lokal pengguna berlabel UTC ("Z"), sehingga dibandingkan dengan jam server meleset sebesar selisih zona waktu (WIB: perubahan ronde lama tampak "baru" dan mengunci Setujui). Sebagai gantinya callback ONLYOFFICE membandingkan **isi** berkas yang baru disimpan dengan berkas sebelumnya (kunci = jenis + penulis + teks + konteks, tanpa tanggal/id) dan mencatat audit **Review Changes Saved** per penulis bila ada perubahan/komentar baru — hanya bila sesi editor itu dibuka (claim `iat`) setelah sesi review dimulai, supaya editor lama yang baru menyimpan di ronde berikutnya tidak dianggap aktivitas ronde ini.
+- Saat Setujui dinonaktifkan, UI menampilkan apa yang terdeteksi (mis. "1 komentar/usulan, perubahan di editor Word").
+
+### Riwayat tetap utuh
+- Tidak ada komentar, Track Changes, atau jejak audit yang dihapus/di-reset; mekanisme penyimpanan Track Changes tidak berubah. Deteksi hanya **membaca**.
+- Dua tambahan jejak audit supaya riwayat komentar tidak hilang: **Edit Comment** (isi sebelum & sesudah) dan **Delete Comment** (isi komentar yang dihapus) — sekaligus menjadi penanda aktivitas sesi.
+
+### Endpoint
+- Baru: `GET /api/contracts/:id/review-session` (aktivitas user yang login pada sesi internal berjalan) dan `GET /api/external-review/:token/review-session` (publik, dijaga token). Respons: `{ hasActivity, sessionStart, counts }`.
+- Tidak ada perubahan skema data & tidak perlu migrasi. Logika murni di `review-session.ts`. Uji: `npx tsx scripts/review-session-test.ts`.
+
+### Catatan
+- Track Changes di berkas Word dikenali dari nama pengubah + `w:date`. Internal: nama user yang login; eksternal: nama berakhiran "(Pihak Eksternal)". Tanggal tanpa zona waktu dianggap UTC; tanggal tak terbaca dianggap bagian sesi (lebih aman mewajibkan revisi). Jam perangkat reviewer yang melenceng jauh dari server bisa menggeser batas sesi.
+- Cakupan: dokumen kontrak. Review dokumen DCS tidak diubah.
+
 ## [Unreleased #25] — TTD Digital Pihak Pertama (opsional per dokumen)
 
 ### Ringkasan

@@ -15,12 +15,16 @@ interface Props {
   canApply?: boolean;
   onApplied?: () => void;
   onUnavailable?: (reason: string) => void;
+  /** Editor baru saja diubah reviewer (true) / perubahan sudah tersimpan di server (false). */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** Perubahan reviewer sudah tersimpan di server. */
+  onSaved?: () => void;
   showToast?: (msg: string, type?: "success" | "warning" | "info") => void;
   askConfirm?: (msg: string, opts?: { title?: string; confirmLabel?: string; danger?: boolean }) => Promise<boolean>;
   height?: string;
 }
 
-export default function ReviewTrackPanel({ contractId, mode, token, reviewerName, onUnavailable, height }: Props) {
+export default function ReviewTrackPanel({ contractId, mode, token, reviewerName, onUnavailable, onDirtyChange, onSaved, height }: Props) {
   const configUrl = mode === "external"
     ? `/api/external-review/${token}/review-doc/config?name=${encodeURIComponent(reviewerName || "")}`
     : `/api/contracts/${contractId}/review-doc/config`;
@@ -42,7 +46,7 @@ export default function ReviewTrackPanel({ contractId, mode, token, reviewerName
       <OnlyOfficeEditor
         key={`rv-${contractId}-${mode}-${reviewerName || ""}`}
         contractId={contractId} version="current" canEdit={false} configUrl={configUrl} height={height || "80vh"}
-        onUnavailable={onUnavailable}
+        onUnavailable={onUnavailable} onDirtyChange={onDirtyChange} onSaved={onSaved}
       />
     </div>
   );

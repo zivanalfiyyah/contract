@@ -494,6 +494,10 @@ export default function UploadedDocumentWorkspace({ contract, canEdit, reviewer,
               canEdit={canEditShown}
               configUrl={reviewer && !canEdit && isViewingCurrent ? `/api/contracts/${contract.id}/review-doc/config` : undefined}
               onSaved={() => { refreshVersions().catch(() => {}); }}
+              onDirtyChange={(dirty) => {
+                // Reviewer mengubah dokumen di editor → laporkan ke server (aturan sesi review: Setujui dikunci).
+                if (dirty && reviewer && !canEdit && isViewingCurrent) fetch(`/api/contracts/${contract.id}/review-session/activity`, { method: "POST" }).catch(() => {});
+              }}
               onUnavailable={() => setOoFailed(true)}
               onPartyUpdated={() => {
                 fetch(`/api/contracts/${contract.id}`).then((r) => (r.ok ? r.json() : null)).then((c) => { if (c && c.id) onContractUpdated(c); }).catch(() => {});

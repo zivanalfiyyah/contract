@@ -41,13 +41,15 @@ interface Props {
   height?: string;
   /** Dipanggil (sekali per perubahan) setelah editor melaporkan dokumen sudah tersimpan. */
   onSaved?: () => void;
+  /** Dipanggil setiap kali status "ada perubahan belum tersimpan" berubah (true = editor baru saja diubah). */
+  onDirtyChange?: (dirty: boolean) => void;
   /** Dipanggil bila editor tidak bisa dimuat — pemanggil beralih ke editor cadangan. */
   onUnavailable?: (reason: string) => void;
   /** Plugin "Panel CLM" mengubah data pihak/kontrak di database — pemanggil mengambil ulang kontrak. */
   onPartyUpdated?: () => void;
 }
 
-export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onUnavailable, onPartyUpdated }: Props) {
+export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onDirtyChange, onUnavailable, onPartyUpdated }: Props) {
   const holderId = useRef(`oo-${Math.random().toString(36).slice(2, 10)}`).current;
   const editorRef = useRef<any>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
@@ -55,6 +57,8 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
   const onSavedRef = useRef(onSaved);
   const onUnavailableRef = useRef(onUnavailable);
   onSavedRef.current = onSaved;
+  const onDirtyRef = useRef(onDirtyChange);
+  onDirtyRef.current = onDirtyChange;
   onUnavailableRef.current = onUnavailable;
   const onPartyUpdatedRef = useRef(onPartyUpdated);
   onPartyUpdatedRef.current = onPartyUpdated;
@@ -88,7 +92,8 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
             onAppReady: () => { if (!cancelled) setState("ready"); },
             onDocumentStateChange: (e: { data: boolean }) => {
               // true = ada perubahan belum tersimpan, false = sudah tersimpan di server.
-              if (e.data) { modified = true; return; }
+              if (e.data) { modified = true; onDirtyRef.current?.(true); return; }
+              onDirtyRef.current?.(false);
               if (modified) { modified = false; setTimeout(() => { if (!cancelled) onSavedRef.current?.(); }, 1500); }
             },
             onError: (e: any) => {

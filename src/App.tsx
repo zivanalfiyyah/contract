@@ -1732,6 +1732,18 @@ function ExternalChangesPanel({ previous, currentClauses, currentDoc }: {
 
 // PUBLIC external-review page (no login) — the counterparty opens the token link,
 // previews clauses, highlights text to comment or strike, or clicks OK/Setuju.
+// Alasan Setujui dinonaktifkan (hasil /review-session) dalam bahasa manusia — supaya reviewer tahu apa yang terdeteksi.
+function describeReviewActivity(counts?: Record<string, number>): string {
+  if (!counts) return "";
+  const parts: string[] = [];
+  if (counts.comments) parts.push(`${counts.comments} komentar/usulan`);
+  if (counts.commentEdits) parts.push(`${counts.commentEdits} komentar diubah`);
+  if (counts.commentDeletions) parts.push(`${counts.commentDeletions} komentar dihapus`);
+  if (counts.editorChanges) parts.push("perubahan di editor Word");
+  if (counts.savedChanges) parts.push("Track Changes/komentar di berkas Word");
+  return parts.length ? `Terdeteksi: ${parts.join(", ")}.` : "";
+}
+
 function ExternalReviewPage({ token }: { token: string }) {
   const [data, setData] = useState<any>(null);
   // Tinjau dengan Track Changes (editor Word): hanya setelah tamu mengisi nama & menekan mulai.
@@ -1759,17 +1771,54 @@ function ExternalReviewPage({ token }: { token: string }) {
   const [mkReplacement, setMkReplacement] = useState("");
   const { notice, notify, dismissNotice } = useGuestNotice();
 
+  // ATURAN SESI REVIEW: "Setuju / OK" nonaktif bila pihak eksternal sudah menambah komentar / coret / ganti /
+  // Track Changes pada ronde review ini. Hanya "Ajukan Revisi" yang boleh. Server tetap memvalidasi (409).
+  const [sessionActivity, setSessionActivity] = useState<{ hasActivity: boolean; counts?: Record<string, number> } | null>(null);
+  // Editor Word melaporkan perubahan belum/baru tersimpan → tombol langsung nonaktif tanpa menunggu server.
+  const [editorTouched, setEditorTouched] = useState(false);
+  const refreshActivity = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/external-review/${token}/review-session`);
+      if (r.ok) setSessionActivity(await r.json());
+    } catch { /* jaringan putus: server tetap memvalidasi saat Setuju */ }
+  }, [token]);
+  const approveBlocked = !!sessionActivity?.hasActivity || editorTouched;
+  const APPROVE_BLOCKED_HINT = "Anda sudah menambah komentar/perubahan pada review ini — dokumen tidak bisa disetujui. Gunakan Ajukan Revisi.";
+
   const load = async () => {
     setLoading(true);
     try {
       const res = await fetch(`/api/external-review/${token}`);
       const j = await res.json();
       if (!res.ok) { setErr(j.error || "Link tidak valid."); setPaused(res.status === 423 || !!j.paused); setData(null); }
-      else { setData(j); setErr(""); setPaused(false); }
+      else { setData(j); setErr(""); setPaused(false); refreshActivity(); }
     } catch { setErr("Gagal memuat. Periksa koneksi."); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [token]);
+  const reviewOpen = !!data && !data.locked;
+  useEffect(() => {
+    // Perubahan di editor Word baru terbaca server setelah tersimpan → cek berkala selama review terbuka.
+    if (!reviewOpen) return;
+    const t = setInterval(() => { refreshActivity(); }, 10000);
+    return () => clearInterval(t);
+  }, [reviewOpen, refreshActivity]);
+  const onEditorDirty = useCallback(async (dirty: boolean) => {
+    if (!dirty) return;
+    setEditorTouched(true);
+    // Server baru menerima berkas setelah editor ditutup → laporkan perubahan SEKARANG supaya server juga menolak Setuju.
+    try {
+      await fetch(`/api/external-review/${token}/review-session/activity`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }),
+      });
+    } catch { /* jaringan putus: kunci lokal tetap berlaku; server menilai lagi saat berkas tersimpan */ }
+    refreshActivity();
+  }, [token, name, refreshActivity]);
+  const onEditorSaved = useCallback(async () => {
+    await refreshActivity();
+    // Callback simpan di server bisa selesai sedikit setelah editor melapor → cek sekali lagi sebelum membuka kunci.
+    setTimeout(async () => { await refreshActivity(); setEditorTouched(false); }, 4000);
+  }, [refreshActivity]);
 
   // Dipicu toolbar mini yang muncul saat pihak eksternal menyorot kalimat.
   const startAnchor = (seed: MarginDraftSeed) => {
@@ -1862,6 +1911,7 @@ function ExternalReviewPage({ token }: { token: string }) {
   };
   const approve = async () => {
     if (!name.trim()) { notify("Isi nama Anda dulu."); return; }
+    if (approveBlocked) { notify(APPROVE_BLOCKED_HINT); return; }
     setConfirmApprove(true);
   };
   const doRequestRevision = async () => {
@@ -1884,7 +1934,11 @@ function ExternalReviewPage({ token }: { token: string }) {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
       });
       const j = await res.json();
-      if (!res.ok) notify(j.error || "Gagal mengirim persetujuan.");
+      if (!res.ok) {
+        notify(j.error || "Gagal mengirim persetujuan.");
+        // Server menolak karena ada aktivitas reviewer → samakan tampilan tombol.
+        if (j.code === "REVIEW_ACTIVITY_DETECTED") { setSessionActivity({ hasActivity: true, counts: j.activity?.counts }); setConfirmApprove(false); }
+      }
       else { setOkDone(true); setConfirmApprove(false); await load(); }
     } catch { notify("Gagal mengirim persetujuan."); }
     finally { setBusy(false); }
@@ -2043,7 +2097,8 @@ function ExternalReviewPage({ token }: { token: string }) {
           <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama Anda (wajib untuk komentar/persetujuan)" disabled={data.locked}
               className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
-            <button onClick={approve} disabled={busy || okDone || data.locked}
+            <button onClick={approve} disabled={busy || okDone || data.locked || approveBlocked}
+              title={approveBlocked && !data.locked ? APPROVE_BLOCKED_HINT : undefined}
               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
               {okDone || data.locked ? "✓ Sudah Disetujui" : "Setuju / OK"}
             </button>
@@ -2055,6 +2110,12 @@ function ExternalReviewPage({ token }: { token: string }) {
               </button>
             )}
           </div>
+          {approveBlocked && !data.locked && (
+            <p className="text-[11px] text-amber-400 mt-2">
+              Anda sudah menambah komentar/perubahan pada review ini, jadi <b>Setuju / OK</b> dinonaktifkan. Gunakan <b>Ajukan Revisi</b>.{" "}
+              {describeReviewActivity(sessionActivity?.counts) || (editorTouched ? "Editor Word melaporkan Anda mengubah dokumen." : "")}
+            </p>
+          )}
           {data.locked ? (
             <p className="text-[11px] text-indigo-400 mt-2 flex items-center gap-1.5">
               🔒 <b>Review ini sudah terkunci</b> sejak disetujui — komentar/persetujuan baru butuh akses dibuka kembali oleh pemilik dokumen.
@@ -2111,7 +2172,7 @@ function ExternalReviewPage({ token }: { token: string }) {
                 </div>
               )}
               {trackStarted && !trackOff && (
-                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }} height="75vh" />
+                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }} onDirtyChange={onEditorDirty} onSaved={onEditorSaved} height="75vh" />
               )}
               <div className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start ${c.documentMarkup && !trackOff && !data.locked ? "hidden" : ""}`}>
               <div className="min-w-0">
@@ -7054,6 +7115,52 @@ export default function App() {
   // Mode Tinjau dokumen Word: Track Changes (editor Word) atau komentar margin (cara lama).
   const [reviewTrackMode, setReviewTrackMode] = useState(true);
   const [reviewTrackOff, setReviewTrackOff] = useState(false);
+  // ATURAN SESI REVIEW: "Setujui" nonaktif bila reviewer (user ini) sudah menambah komentar / mengubah /
+  // menghapus / membuat Track Changes pada sesi review berjalan (sejak dokumen diajukan). Hanya aktivitas
+  // MILIK user ini dan hanya sesi ini; riwayat lama tidak dihitung dan tidak pernah dihapus. Ini cermin UI —
+  // yang memutuskan tetap server (POST approval-decision menolak dengan 409).
+  const [reviewActivity, setReviewActivity] = useState<{ hasActivity: boolean; counts?: Record<string, number> } | null>(null);
+  // Editor Word melaporkan ada perubahan yang belum/baru tersimpan → tombol langsung nonaktif tanpa menunggu server.
+  const [reviewEditorTouched, setReviewEditorTouched] = useState(false);
+  const refreshReviewActivity = useCallback(async () => {
+    const c = selectedContract;
+    if (!c || (c.status !== "OnReview" && c.status !== "FinalReview")) { setReviewActivity(null); return; }
+    try {
+      const res = await fetch(`/api/contracts/${c.id}/review-session`);
+      if (res.ok) { const j = await res.json(); setReviewActivity(j.active === false ? null : j); }
+    } catch { /* jaringan putus: pertahankan keadaan terakhir; server tetap memvalidasi saat Setujui */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContract?.id, selectedContract?.status, selectedContract?.approvalRound]);
+  useEffect(() => { refreshReviewActivity(); }, [refreshReviewActivity, clauseComments]);
+  useEffect(() => { setReviewEditorTouched(false); }, [selectedContract?.id, selectedContract?.approvalRound]);
+  useEffect(() => {
+    // Perubahan di editor Word baru terbaca server setelah tersimpan → cek berkala selama masa review.
+    if (selectedContract?.status !== "OnReview" && selectedContract?.status !== "FinalReview") return;
+    const t = setInterval(() => { refreshReviewActivity(); }, 10000);
+    return () => clearInterval(t);
+  }, [refreshReviewActivity, selectedContract?.status]);
+  useEffect(() => {
+    // Mode Tinjau ditutup: perubahan yang masih tersimpan di latar belakang ikut terbaca.
+    if (!reviewModeOpen) refreshReviewActivity().then(() => setReviewEditorTouched(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reviewModeOpen]);
+  const contractIdForReview = selectedContract?.id;
+  const onReviewEditorDirty = useCallback(async (dirty: boolean) => {
+    if (!dirty) return;
+    setReviewEditorTouched(true);
+    // Server baru menerima berkas setelah editor ditutup → laporkan perubahan SEKARANG supaya server juga menolak Setujui.
+    if (contractIdForReview) {
+      try { await fetch(`/api/contracts/${contractIdForReview}/review-session/activity`, { method: "POST" }); } catch { /* lihat catatan di atas */ }
+    }
+    refreshReviewActivity();
+  }, [contractIdForReview, refreshReviewActivity]);
+  const onReviewEditorSaved = useCallback(async () => {
+    await refreshReviewActivity();
+    // Callback simpan di server bisa selesai sedikit setelah editor melapor → cek sekali lagi sebelum membuka kunci.
+    setTimeout(async () => { await refreshReviewActivity(); setReviewEditorTouched(false); }, 4000);
+  }, [refreshReviewActivity]);
+  const approveBlockedByActivity = !!reviewActivity?.hasActivity || reviewEditorTouched;
+  const APPROVE_BLOCKED_HINT = "Anda sudah menambah komentar/perubahan pada sesi review ini — dokumen tidak bisa disetujui. Gunakan Minta Revisi.";
   // Komentar umum (tanpa sorotan kalimat) di Mode Tinjau kontrak "Upload Dokumen".
   const [docCommentText, setDocCommentText] = useState("");
   // Markup dokumen upload (.docx): usulan yg sedang ditulis + pemicu muat-ulang dokumen.
@@ -9234,8 +9341,13 @@ export default function App() {
   const handleApprovalDecision = async (decision: "approved" | "rejected") => {
     if (!selectedContract) return;
     const openInternal = clauseComments.filter((c) => c.contractId === selectedContract.id && !c.parentId && !c.resolved && !c.external);
-    if (decision === "rejected" && !approvalDecisionComment.trim() && openInternal.length === 0) {
+    // Perubahan/Track Changes reviewer pada sesi ini sudah cukup sebagai isi revisi (tanpa catatan terpisah).
+    if (decision === "rejected" && !approvalDecisionComment.trim() && openInternal.length === 0 && !approveBlockedByActivity) {
       showToast("Tandai dulu bagian yang perlu direvisi di Mode Tinjau (komentar / coret / ganti), atau isi catatan revisi.", "warning");
+      return;
+    }
+    if (decision === "approved" && approveBlockedByActivity) {
+      showToast(APPROVE_BLOCKED_HINT, "warning");
       return;
     }
     if (decision === "approved" && openInternal.length > 0) {
@@ -9265,7 +9377,11 @@ export default function App() {
         setRevisionRequestOpen(false);
         if (decision === "rejected") setReviewModeOpen(false);
         fetchInitialData();
-      } else showToast(data.error || "Gagal memproses keputusan", "warning");
+      } else {
+        showToast(data.error || "Gagal memproses keputusan", "warning");
+        // Server menolak Setujui karena ada aktivitas reviewer → samakan tampilan tombol.
+        if (data.code === "REVIEW_ACTIVITY_DETECTED") setReviewActivity({ hasActivity: true, counts: data.activity?.counts });
+      }
     } catch {
       showToast("Gagal memproses keputusan", "warning");
     } finally {
@@ -22884,6 +23000,12 @@ export default function App() {
                                   <MessageSquare className="w-3.5 h-3.5" /> Buka Mode Tinjau &amp; Komentar
                                 </button>
                                 )}
+                                {approveBlockedByActivity && (
+                                  <p className="text-[10px] text-amber-600 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1.5">
+                                    Anda sudah menambah komentar/perubahan pada sesi review ini, jadi <b>Setujui</b> dinonaktifkan. Gunakan <b>Minta Revisi</b>.{" "}
+                                    {describeReviewActivity(reviewActivity?.counts) || (reviewEditorTouched ? "Editor Word melaporkan Anda mengubah dokumen." : "")}
+                                  </p>
+                                )}
                                 <div className="grid grid-cols-2 gap-2">
                                   <button
                                     onClick={() => setRevisionRequestOpen(true)}
@@ -22894,7 +23016,8 @@ export default function App() {
                                   </button>
                                   <button
                                     onClick={() => handleApprovalDecision("approved")}
-                                    disabled={isDecidingApproval}
+                                    disabled={isDecidingApproval || approveBlockedByActivity}
+                                    title={approveBlockedByActivity ? APPROVE_BLOCKED_HINT : undefined}
                                     className="py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-600/30 transition cursor-pointer disabled:opacity-50"
                                   >
                                     Setujui
@@ -26951,7 +27074,7 @@ export default function App() {
                 )}
                 <button
                   onClick={() => handleApprovalDecision("rejected")}
-                  disabled={isDecidingApproval || (openInternal.length === 0 && !approvalDecisionComment.trim())}
+                  disabled={isDecidingApproval || (openInternal.length === 0 && !approvalDecisionComment.trim() && !approveBlockedByActivity)}
                   className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                 >{isDecidingApproval ? "Memproses…" : "Kirim Permintaan Revisi"}</button>
               </div>
@@ -28584,7 +28707,8 @@ export default function App() {
                   >Minta Revisi</button>
                   <button
                     onClick={() => handleApprovalDecision("approved")}
-                    disabled={isDecidingApproval}
+                    disabled={isDecidingApproval || approveBlockedByActivity}
+                    title={approveBlockedByActivity ? APPROVE_BLOCKED_HINT : undefined}
                     className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer whitespace-nowrap disabled:opacity-50"
                   >✓ Setujui</button>
                 </div>
@@ -28703,6 +28827,8 @@ export default function App() {
                 askConfirm={askConfirm}
                 onApplied={() => { setDocReloadKey((k) => k + 1); fetchInitialData(); }}
                 onUnavailable={() => setReviewTrackOff(true)}
+                onDirtyChange={onReviewEditorDirty}
+                onSaved={onReviewEditorSaved}
                 height="calc(100vh - 230px)"
               />
             )}

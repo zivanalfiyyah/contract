@@ -10,10 +10,9 @@ import {
   ContractPaymentTerm, ContractObligation, StoredDocumentRef, ContractVendorEvaluation, BudgetEntry,
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
-  SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo, ContractTermination, TerminationTarget,
+  SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
 } from "./src/types";
-import { buildTerminationLetter, tanggalPanjang } from "./termination-letter.js";
-import { isFullAccessRole, isCrossTenantRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canAccessContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
+import { isFullAccessRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
 import { startReminderScheduler, runReminderCheck } from "./reminders.js";
@@ -30,15 +29,8 @@ import {
   onlyOfficeSettings, signLink, verifyLink, verifyDsRequest, signDsPayload, isAllowedDsDownloadUrl, rewriteDsUrlToInternal, buildEditorConfig,
 } from "./onlyoffice.js";
 import { clauseToPluginBlocks, extractImageSrcs } from "./clause-html.js";
-import { valueToEnglish, imageInfo } from "./template-docx.js";
-import {
-  ISO_DATE, formatShortDateId, partyWordValues, reconcileCore, buildPartyView, normalizePartyPatch, applyPartyPatch,
-  partyEditability, partyFormOf, partyFieldLabel, clearStaleEnglish, englishInvalidationBetween,
-  PARTY_TEXT_KEYS, PARTY_FIELDS, type PartyCompany,
-} from "./party-fields.js";
 import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap, type LetterheadInput, type SignatureInput, type SignatureOptions, type DigitalSignatureInput, readLayout, patchLayout, type LayoutPatch, listVariables, setVariables, listTranslatable, applyTranslations, setLanguageMode, readLanguage, refreshEnglishVars, refreshRangkapTail, signaturePageText, hasTwoCopies, type DocLanguage, type BilingualLayoutMode, type LangStash, unhideLegacyLanguage } from "./template-docx.js";
 import { readChangeHistory, acceptAllChanges, hasTrackedChanges, originalTextOf } from "./review-changes.js";
-import { summarizeReviewActivity, EMPTY_ACTIVITY, EXTERNAL_AUTHOR_SUFFIX, COMMENT_EDIT_AUDIT_ACTION, COMMENT_DELETE_AUDIT_ACTION, REVIEW_EDITOR_AUDIT_ACTION, REVIEW_SAVED_AUDIT_ACTION, addedByAuthor, authorIsReviewer, savedChangesDetails, type ReviewSessionActivity, type SessionReviewer } from "./review-session.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
@@ -57,7 +49,7 @@ import { ai, isGeminiConfigured, parseAiJson, aiErrorResponse } from "./ai-clien
 import { renderMask, validateMask, suggestDocTypeCode } from "./numbering-utils.js";
 import { DEFAULT_OPERATOR_GROUPS, sanitizeOperatorGroups } from "./operatorDefaults.js";
 import {
-  requireAuth, requireRole, requirePerm, hasPerm, actionOverridesFor, tenantOf, resolveUser, AuthedRequest,
+  requireAuth, requireRole, requirePerm, hasPerm, actionOverridesFor, tenantOf, AuthedRequest,
   hashPassword, verifyPassword, signToken, AUTH_COOKIE, setAuthCookie, clearAuthCookie, stripUser,
   generateResetToken, hashResetToken, signTotpChallenge, verifyTotpChallenge,
 } from "./auth.js";
@@ -196,31 +188,6 @@ const apiLimiter = rateLimit({
 });
 app.use("/api/", apiLimiter);
 
-// KONTEKS TENANT PER DOKUMEN (lintas PT). Untuk /api/contracts/:id/* dan /api/legal-jobs/:id/*,
-// bila user BOLEH mengakses dokumen itu walau milik PT lain (Super Admin: semua; Legal: dokumen
-// eksternal; peran lain: hanya yang ditugaskan langsung), tenantOf() diarahkan ke PT dokumen
-// tersebut. Bila tidak berhak, konteks tidak diubah → handler memakai PT sendiri → 404 (tanpa bocor).
-app.param("id", (req, _res, next) => {
-  try {
-    const url = req.originalUrl.split("?")[0];
-    const m = url.match(/^\/api\/(contracts|legal-jobs)\/([^/]+)/);
-    if (!m || decodeURIComponent(m[2]) !== req.params.id) return next();
-    const user = resolveUser(req);
-    if (!user) return next();
-    const db = loadDB();
-    if (m[1] === "contracts") {
-      const c = (db.contracts as Contract[]).find((x) => x.id === req.params.id);
-      if (c && c.tenantId !== user.tenantId && canAccessContract({ id: user.id, role: user.role as string, tenantId: user.tenantId, actingForIds: actingForIdsOf(db, user.id) }, c)) {
-        (req as any).tenantCtx = c.tenantId;
-      }
-    } else if (isCrossTenantRole(user.role as string)) {
-      const j = ((db.legalJobs || []) as LegalJob[]).find((x) => x.id === req.params.id);
-      if (j && j.tenantId !== user.tenantId) (req as any).tenantCtx = j.tenantId;
-    }
-  } catch { /* konteks default */ }
-  next();
-});
-
 // AI calls cost real money per request — cap them tighter than the general
 // API limit so one compromised/misbehaving account can't run up the bill.
 const aiLimiter = rateLimit({
@@ -334,56 +301,6 @@ function openReviewCommentIds(db: any, contractId: string, filter: (c: ClauseCom
     .filter((c) => c.contractId === contractId && !c.parentId && !c.resolved && filter(c))
     .map((c) => c.id);
 }
-// ----- AKTIVITAS REVIEWER PADA SESI REVIEW AKTIF (aturan Setujui vs Ajukan Revisi) -----
-// Reviewer hanya boleh "Setujui" bila pada sesi review ini ia tidak menambah komentar, mengedit, menghapus/
-// mencoret, atau membuat markup/Track Changes. Logika murni ada di review-session.ts; di sini hanya
-// mengumpulkan datanya. Fungsi ini HANYA MEMBACA — riwayat komentar/Track Changes tidak pernah diubah.
-//
-// Awal sesi INTERNAL = saat pembuat mengajukan (langkah approval pertama mulai: submit-review /
-// startFinalInternalReview mengisi steps[0].startedAt). Awal sesi EKSTERNAL = saat link ronde ini dibuka
-// (externalRounds[ronde aktif].sentAt). Pengajuan ulang membuat ronde baru → sesi baru.
-function internalReviewSessionStart(contract: Contract): string | null {
-  const first = (contract.approvalSteps || []).slice().sort((a, b) => a.order - b.order).find((s) => s.startedAt)?.startedAt;
-  if (first) return first;
-  const lastRound = (contract.approvalHistory || []).slice(-1)[0];
-  return lastRound?.resolvedAt || null;
-}
-function externalReviewSessionStart(contract: Contract): string | null {
-  const cur = (contract.externalRounds || []).find((r) => r.round === contract.externalRoundCount);
-  return cur?.sentAt || null;
-}
-// Bukti aktivitas memakai JAM SERVER (komentar, audit). Tanggal di dalam berkas Word tidak dipakai: ONLYOFFICE
-// menulisnya dalam jam lokal pengguna berlabel UTC, sehingga perbandingannya meleset sebesar selisih zona waktu.
-// Perubahan di berkas Word terdeteksi lewat (1) penanda editor (recordEditorActivity) dan (2) isi berkas yang
-// disimpan callback ONLYOFFICE (recordSavedReviewChanges) — keduanya dicatat sebagai audit berjam server.
-async function loadReviewActivity(db: any, contract: Contract, reviewer: SessionReviewer): Promise<ReviewSessionActivity> {
-  const sessionStart = reviewer.kind === "external" ? externalReviewSessionStart(contract) : internalReviewSessionStart(contract);
-  return summarizeReviewActivity({
-    reviewer, sessionStart,
-    comments: ((db.clauseComments as ClauseComment[]) || []).filter((c) => c.contractId === contract.id),
-    audits: ((db.audits as AuditTrail[]) || []).filter((a) => a.contractId === contract.id),
-  });
-}
-const internalReviewer = (u: { id: string; name: string }): SessionReviewer => ({ kind: "internal", userId: u.id, name: u.name });
-// Editor Word (ONLYOFFICE) baru mengirim berkasnya ke server setelah editor ditutup, jadi perubahan reviewer
-// yang MASIH TERBUKA di editor belum terlihat dari berkas. Editor melaporkan perubahan pertama lewat endpoint
-// "review-session/activity"; di sini dicatat sebagai penanda audit (satu per sesi per reviewer) supaya Setujui
-// langsung ditolak server tanpa menunggu berkas tersimpan. Penanda hanya bisa MENGUNCI Setujui milik pelapornya
-// sendiri (tidak ada untungnya dipalsukan) dan tidak mengubah riwayat apa pun.
-function recordEditorActivity(db: any, actor: AuthedRequest, contract: Contract, sessionStart: string | null, who: string): boolean {
-  const startMs = sessionStart ? Date.parse(sessionStart) : Number.NEGATIVE_INFINITY;
-  const uid = actor.user!.id;
-  const exists = ((db.audits as AuditTrail[]) || []).some((a) =>
-    a.contractId === contract.id && a.userId === uid && Date.parse(a.timestamp) >= startMs && a.action === REVIEW_EDITOR_AUDIT_ACTION);
-  if (exists) return false;
-  pushAudit(db, actor, {
-    contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_EDITOR_AUDIT_ACTION,
-    details: `${who} mengubah dokumen di editor Word pada sesi review ini (Track Changes/komentar). Setujui dinonaktifkan; gunakan revisi.`,
-  });
-  saveDB(db);
-  return true;
-}
-
 // Mulai Review Final Internal setelah pihak eksternal menyetujui. Approver
 // otomatis = approver ronde acc internal TERAKHIR (yang masih aktif), supaya
 // pihak internal yang sama mengonfirmasi versi yang disetujui eksternal.
@@ -394,7 +311,7 @@ function startFinalInternalReview(db: any, contract: Contract): ContractApproval
   const lastApproved = (contract.approvalHistory || []).slice().reverse().find((r) => r.outcome === "approved");
   const approvers = (lastApproved?.steps || [])
     .slice().sort((a, b) => a.order - b.order)
-    .map((st) => (db.users as User[]).find((u) => u.id === st.approverId && u.active))   // approver boleh dari PT mana pun
+    .map((st) => (db.users as User[]).find((u) => u.id === st.approverId && u.tenantId === tid && u.active))
     .filter((u): u is User => !!u && canBeApprover(u.role));
   const now = new Date().toISOString();
   const steps: ContractApprovalStep[] = approvers.map((u, i) => ({
@@ -492,11 +409,10 @@ function activeDelegateIdOf(user: User | undefined, onDate?: string): string | n
 }
 /** Boleh-kah `actorId` memutuskan atas nama `approverId` karena delegasi? */
 function canActAsDelegate(db: any, tid: string, approverId: string, actorId: string): boolean {
-  // Approver bisa dari PT lain (approval lintas PT); pengganti harus se-PT dengan approver-nya.
-  const approver = (db.users as User[]).find((u) => u.id === approverId);
+  const approver = (db.users as User[]).find((u) => u.id === approverId && u.tenantId === tid);
   const delegateId = activeDelegateIdOf(approver);
   if (!delegateId || delegateId !== actorId) return false;
-  const pengganti = (db.users as User[]).find((u) => u.id === actorId && u.tenantId === approver!.tenantId);
+  const pengganti = (db.users as User[]).find((u) => u.id === actorId && u.tenantId === tid);
   return !!pengganti?.active; // pengganti nonaktif tidak mewarisi apa pun
 }
 
@@ -555,9 +471,6 @@ app.post("/api/auth/login", loginLimiter, (req, res) => {
       code: "EMAIL_UNVERIFIED",
       error: "Email Anda belum diverifikasi. Masukkan kode verifikasi 6 angka yang kami kirim ke email Anda.",
     });
-  }
-  if (user.pendingRoleMapping) {
-    return res.status(403).json({ error: "Akun Anda bekas Admin Perusahaan (peran sudah dihapus) dan menunggu pemetaan role oleh Super Admin. Hubungi Super Admin." });
   }
   if (!user.active) {
     return res.status(401).json({ error: "Email atau kata sandi salah." });
@@ -786,7 +699,7 @@ app.post("/api/auth/reset-password", loginLimiter, (req, res) => {
 // Peran yang boleh dipilih sendiri saat mendaftar.
 const SELF_REGISTER_ROLES: UserRole[] = ["viewer", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga"];
 // Peran yang bisa diberikan lewat Kelola Pengguna (super_admin tidak).
-const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "direktur", "finance", "tax", "viewer"];
+const ASSIGNABLE_ROLES: UserRole[] = ["it_system", "admin", "legal", "manajemen", ...DIVISION_ROLES, "hr_ga", "direktur", "finance", "tax", "viewer"];
 const OTP_TTL_MS = 10 * 60 * 1000;     // kode berlaku 10 menit
 const OTP_MAX_ATTEMPTS = 5;            // lebih dari ini → kode hangus, minta baru
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
@@ -821,9 +734,8 @@ function pruneStaleRegistrations(db: any): boolean {
   return (db.users as User[]).length !== before;
 }
 
-// Pengelola pengguna di sebuah PT (penerima kabar pendaftar baru): IT/System PT itu.
 function tenantAdminsOf(db: any, tid: string): User[] {
-  return (db.users as User[]).filter((u) => u.tenantId === tid && u.active && u.role === "it_system");
+  return (db.users as User[]).filter((u) => u.tenantId === tid && u.active && u.role === "admin");
 }
 
 // Endpoint pendaftaran tidak lewat requireAuth, jadi audit ditulis manual
@@ -888,7 +800,7 @@ app.post("/api/auth/register", registerLimiter, async (req, res) => {
   if (password.length < 8) return res.status(400).json({ error: "Kata sandi minimal 8 karakter." });
   if (password.length > 200) return res.status(400).json({ error: "Kata sandi terlalu panjang." });
   if (!SELF_REGISTER_ROLES.includes(role)) {
-    return res.status(400).json({ error: "Peran tidak valid. Pilih Viewer, Staff, Legal, atau Manager." });
+    return res.status(400).json({ error: "Peran tidak valid. Pilih Viewer, Staff, Legal, atau Manager. Peran Admin hanya bisa diberikan oleh admin perusahaan." });
   }
 
   const db = loadDB();
@@ -1081,7 +993,7 @@ app.get("/api/users", requireAuth, requirePerm("settings.manage"), (req: AuthedR
 
 // Minimal colleague directory (id/name/role only) for the @mention picker in
 // comments — any authenticated tenant member needs this, not just admins,
-// so it's intentionally not behind requirePerm("settings.manage") like /api/users.
+// so it's intentionally not behind requireRole("admin") like /api/users.
 app.get("/api/users/mentionable", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
@@ -1089,18 +1001,6 @@ app.get("/api/users/mentionable", requireAuth, (req: AuthedRequest, res) => {
     scoped(db.users as User[], tid)
       .filter((u) => u.active)
       .map((u) => ({ id: u.id, name: u.name, role: u.role })),
-  );
-});
-
-// Daftar calon approver LINTAS PT (id/nama/role/PT saja — tanpa email). Dipakai pemilih approver.
-// Memilih approver dari PT lain TIDAK memberi dia akses ke dokumen PT itu selain yang ditugaskan.
-app.get("/api/users/approver-candidates", requireAuth, (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const tn = new Map((db.tenants as any[]).map((t) => [t.id, t.name] as const));
-  res.json(
-    (db.users as User[])
-      .filter((u) => u.active && u.tenantId && !(u as any).pendingRoleMapping && canBeApprover(u.role))
-      .map((u) => ({ id: u.id, name: u.name, role: u.role, tenantId: u.tenantId, tenantName: tn.get(u.tenantId) || u.tenantId })),
   );
 });
 
@@ -1206,11 +1106,17 @@ app.put("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: Aut
     return res.status(400).json({ error: "Akun ini belum memverifikasi email. Gunakan tombol Aktifkan atau Hapus." });
   }
 
-  // Akun ex-"Admin Perusahaan" (peran dihapus) ditahan nonaktif sampai Super Admin memetakan role barunya.
-  if (user.pendingRoleMapping) {
-    const mapped = req.body.role && ASSIGNABLE_ROLES.includes(req.body.role);
-    if (req.body.active === true && !mapped) {
-      return res.status(400).json({ error: "Akun ini bekas Admin Perusahaan (peran sudah dihapus). Pilih role barunya dulu sebelum mengaktifkan." });
+  // A tenant with zero active admins can no longer manage its own users —
+  // that's a support-ticket-only dead end, not just an inconvenience.
+  const wouldLoseAdminStatus =
+    (typeof req.body.active === "boolean" && !req.body.active && user.role === "admin") ||
+    (req.body.role && req.body.role !== "admin" && user.role === "admin");
+  if (wouldLoseAdminStatus) {
+    const otherActiveAdmins = (db.users as User[]).some(
+      (u) => u.tenantId === tid && u.id !== user.id && u.role === "admin" && u.active,
+    );
+    if (!otherActiveAdmins) {
+      return res.status(400).json({ error: "Tidak bisa menonaktifkan/mengubah peran admin terakhir di perusahaan ini." });
     }
   }
   if (req.params.id === req.user!.id && typeof req.body.active === "boolean" && !req.body.active) {
@@ -1218,10 +1124,7 @@ app.put("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: Aut
   }
 
   if (req.body.name) user.name = req.body.name;
-  if (req.body.role && ASSIGNABLE_ROLES.includes(req.body.role)) {
-    user.role = req.body.role;
-    if (user.pendingRoleMapping) { user.pendingRoleMapping = false; pushAudit(db, req, { action: "Petakan Role Admin Lama", details: `Akun "${user.name}" (bekas Admin Perusahaan) dipetakan ke ${roleLabelOf(req.body.role)}` }); }
-  }
+  if (req.body.role && ASSIGNABLE_ROLES.includes(req.body.role)) user.role = req.body.role;
   if (typeof req.body.active === "boolean") user.active = req.body.active;
   if (req.body.newPassword) {
     if (String(req.body.newPassword).length < 8) return res.status(400).json({ error: "Kata sandi minimal 8 karakter" });
@@ -1241,7 +1144,7 @@ app.put("/api/users/:id/delegation", requireAuth, (req: AuthedRequest, res) => {
   const user = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
   if (!user) return res.status(404).json({ error: "User tidak ditemukan" });
   const isSelf = req.params.id === req.user!.id;
-  const isAdmin = req.user!.role === "super_admin";
+  const isAdmin = req.user!.role === "admin" || req.user!.role === "super_admin";
   if (!isSelf && !isAdmin) {
     return res.status(403).json({ error: "Hanya bisa mengatur delegasi milik sendiri." });
   }
@@ -1299,6 +1202,14 @@ app.delete("/api/users/:id", requireAuth, requirePerm("settings.manage"), (req: 
   if (req.params.id === req.user!.id) return res.status(400).json({ error: "Tidak bisa menghapus akun sendiri" });
   const target = (db.users as User[]).find((u) => u.id === req.params.id && u.tenantId === tid);
   if (!target) return res.status(404).json({ error: "User tidak ditemukan" });
+  if (target.role === "admin") {
+    const otherActiveAdmins = (db.users as User[]).some(
+      (u) => u.tenantId === tid && u.id !== target.id && u.role === "admin" && u.active,
+    );
+    if (!otherActiveAdmins) {
+      return res.status(400).json({ error: "Tidak bisa menghapus admin terakhir di perusahaan ini." });
+    }
+  }
   db.users = (db.users as User[]).filter((u) => u.id !== req.params.id);
   pushAudit(db, req, { action: "Delete User", details: `Menghapus pengguna "${target.name}"` });
   saveDB(db);
@@ -1347,7 +1258,7 @@ app.post("/api/tenants", requireAuth, requireRole("super_admin"), (req: AuthedRe
   db.tenants.push({ id: tid, name, branch: branch || "", code: sanitizeCompanyCode(req.body.code) || undefined, active: true, platforms: normalizePlatformList(req.body.platforms), createdAt: new Date().toISOString() });
   const adminUser: User = {
     id: "usr-" + Date.now(), tenantId: tid, name: adminName || "Admin " + name,
-    email: adminEmail, passwordHash: hashPassword(adminPassword), role: "it_system", active: true,
+    email: adminEmail, passwordHash: hashPassword(adminPassword), role: "admin", active: true,
     createdAt: new Date().toISOString(),
   };
   db.users.push(adminUser);
@@ -2047,22 +1958,6 @@ export async function initFirebaseDB() {
     }
     if (changed) { saveDB(db); logger.info({ changed }, "Peran manager dimigrasikan ke manajemen"); }
   }
-  // Migrasi peran "Admin Perusahaan" (peran dihapus). TIDAK diubah otomatis ke role lain: akun lama hanya
-  // dinonaktifkan & ditandai (pendingRoleMapping); role aslinya dicatat di previousRole. Super Admin
-  // memetakan role barunya di Kelola Pengguna, baru akun bisa diaktifkan lagi. Data & histori dokumen utuh.
-  {
-    const db = loadDB();
-    let changed = 0;
-    for (const u of db.users as User[]) {
-      if ((u.role as string) === "admin") {
-        u.previousRole = "admin";
-        u.pendingRoleMapping = true;
-        u.active = false;
-        changed++;
-      }
-    }
-    if (changed) { saveDB(db); logger.warn({ changed }, "Akun bekas Admin Perusahaan dinonaktifkan — menunggu pemetaan role oleh Super Admin"); }
-  }
 }
 
 // REST APIs
@@ -2267,8 +2162,8 @@ app.put("/api/settings", requireAuth, requirePerm("settings.manage", "settings.e
     const before = JSON.stringify(rawSettingsFor(db, tid)?.actionPermissions || {});
     const cleaned = sanitizeActionPermissions(patch.actionPermissions);
     if (JSON.stringify(cleaned) !== before) {
-      if (req.user!.role !== "super_admin") {
-        return res.status(403).json({ error: "Hanya Super Admin yang dapat mengubah matriks hak akses." });
+      if (req.user!.role !== "admin" && req.user!.role !== "super_admin") {
+        return res.status(403).json({ error: "Hanya Admin atau Super Admin yang dapat mengubah matriks hak akses." });
       }
       pushAudit(db, req, { action: "Update Hak Akses Aksi", details: "Memperbarui matriks hak akses aksi per role" });
     }
@@ -2389,8 +2284,8 @@ app.put("/api/clauses/:id", requireAuth, requirePerm("templates.manage"), (req: 
   const idx = db.clauses.findIndex((c: Clause) => c.id === req.params.id && c.tenantId === tid);
   if (idx !== -1) {
     // Klausul terproteksi hanya boleh diubah oleh legal/admin.
-    if (db.clauses[idx].isProtected && !["legal", "super_admin"].includes(req.user!.role)) {
-      return res.status(403).json({ error: "Klausul ini terproteksi — hanya Legal/Super Admin yang boleh mengubah." });
+    if (db.clauses[idx].isProtected && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
+      return res.status(403).json({ error: "Klausul ini terproteksi — hanya Legal/Admin yang boleh mengubah." });
     }
     db.clauses[idx] = {
       ...db.clauses[idx],
@@ -2679,17 +2574,13 @@ function actingForIdsOf(db: any, userId: string): string[] {
     .map((u) => u.id);
 }
 function viewerOf(db: any, req: AuthedRequest) {
-  return { id: req.user!.id, role: req.user!.role as string, tenantId: req.user!.tenantId, actingForIds: actingForIdsOf(db, req.user!.id) };
+  return { id: req.user!.id, role: req.user!.role as string, actingForIds: actingForIdsOf(db, req.user!.id) };
 }
 // Kontrak yang boleh DILIHAT pengguna ini (batas per divisi / kontrak
 // karyawan — lihat canViewContract di src/roles.ts).
-// LINTAS PT: Super Admin = semua dokumen semua PT; Legal = dokumen EKSTERNAL semua PT; HR/GA & peran lain
-// = PT sendiri (+ dokumen PT lain HANYA bila ditugaskan langsung kepadanya sebagai approver/reviewer).
-// ?tenantId=<PT> menyaring ke satu PT (filter PT di tampilan Super Admin/Legal).
 function visibleContracts(db: any, req: AuthedRequest): Contract[] {
   const viewer = viewerOf(db, req);
-  const pt = isCrossTenantRole(viewer.role) && typeof req.query.tenantId === "string" && req.query.tenantId ? req.query.tenantId : "";
-  return (db.contracts as Contract[]).filter((c) => (!pt || c.tenantId === pt) && canAccessContract(viewer, c));
+  return scoped(db.contracts as Contract[], tenantOf(req)).filter((c) => canViewContract(viewer, c));
 }
 // Dipakai hampir semua endpoint /api/contracts/:id — kontrak di luar
 // jangkauan pengguna dianggap "tidak ditemukan" (404), sama seperti kontrak
@@ -2698,12 +2589,11 @@ function findOwnedContract(db: any, req: AuthedRequest, id: string): Contract | 
   const tid = tenantOf(req);
   const c = (db.contracts as Contract[]).find((x) => x.id === id && x.tenantId === tid);
   if (!c) return undefined;
-  return canAccessContract(viewerOf(db, req), c) ? c : undefined;
+  return canViewContract(viewerOf(db, req), c) ? c : undefined;
 }
 
 app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
-  if (applyDueTerminations(db) > 0) saveDB(db);
   // unifiedStatus TIDAK menggantikan `status` (banyak logic lain di app masih
   // pakai `status` asli) — cuma field tambahan utk badge tabel Monitoring
   // Kontrak, dihitung dari fungsi yang SAMA dipakai linkedContract di
@@ -2751,18 +2641,41 @@ const CONTRACT_MASK_TOKENS = ["Prefix", "Category", "DocType", "DocTypeCode", "P
 
 const CONTRACT_CODE_SEP = "/"; // pemisah antar kode tambahan (extraCodes) di {Codes}
 
-function contractScopeKey(tid: string, category: string, docType: string | undefined, year: string): string {
+// Urutan nomor dipisah per: tenant, Jenis Dokumen, tahun, PLATFORM (selalu ada di nomor) dan PT/{Company}
+// (hanya bila format nomor memuat token {Company}; kalau tidak, dua PT akan menghasilkan nomor kembar).
+// Tanpa platform/PT, kuncinya sama dengan kunci lama, jadi counter yang sudah berjalan tetap dipakai.
+function contractScopeKey(tid: string, category: string, docType: string | undefined, year: string, platform?: string, company?: string): string {
   const dtKey = (docType || "").trim() || (category || "default").trim();
-  return `${tid}|${dtKey}|${year}`;
+  const pc = platformCode(platform);
+  const cc = sanitizeCompanyCode(company);
+  return `${tid}|${dtKey}|${year}${pc ? `|p:${pc}` : ""}${cc ? `|c:${cc}` : ""}`;
 }
 
+// Format nomor yang berlaku untuk sebuah jenis dokumen (dipakai generate, release & klaim nomor manual).
+function contractMaskFor(db: any, tid: string, docType: string | undefined): { mask: string; dtObj: any; prefix: string; dtCode: string } {
+  const md = withSettingsDefaults(rawSettingsFor(db, tid)).masterData;
+  const dtObj = docType ? (md.docTypes || []).find((d: any) => d.name === docType) : undefined;
+  const explicitCode = String(dtObj?.code || "").trim().toUpperCase();
+  const dtCode = explicitCode || (docType ? suggestDocTypeCode(docType) : "");
+  const prefix = dtCode || md.defaultNumberPrefix || "GA-AGR";
+  let mask = dtObj?.numberMask || md.defaultNumberMask || REFERENCE_DEFAULT_MASK;
+  if (mask === LEGACY_DEFAULT_MASK || mask === PREVIOUS_REFERENCE_MASK) mask = REFERENCE_DEFAULT_MASK;
+  return { mask: ensurePlatformToken(mask), dtObj, prefix, dtCode };
+}
+// PT hanya ikut memecah urutan bila token {Company} ada di format nomor.
+const scopeCompany = (mask: string, company?: string) => (/\{Company\}/.test(mask) ? sanitizeCompanyCode(company) : "");
+
 // Baseline saat sebuah scope PERTAMA kali dipakai counter persisten: hitung per
-// Jenis Dokumen (docType) + tahun (atau kategori jika docType tidak ada).
-function contractScopeBaseline(db: any, tid: string, category: string, docType: string | undefined, year: string): number {
+// Jenis Dokumen (docType) + tahun (atau kategori jika docType tidak ada) [+ platform / PT bila memecah urutan].
+function contractScopeBaseline(db: any, tid: string, category: string, docType: string | undefined, year: string, platform?: string, company?: string): number {
   const dtKey = (docType || "").trim();
+  const pc = platformCode(platform);
+  const cc = sanitizeCompanyCode(company);
   const inScope = scoped(db.contracts as Contract[], tid).filter((c) => {
     const cYear = (c.createdAt || "").slice(0, 4);
     if (cYear !== year) return false;
+    if (pc && platformCode((c as any).platform) !== pc) return false;
+    if (cc && sanitizeCompanyCode((c as any).companyCode) !== cc) return false;
     if (dtKey) return (c.docType || "").trim() === dtKey;
     return (c.category || "").trim() === (category || "").trim();
   });
@@ -2771,7 +2684,7 @@ function contractScopeBaseline(db: any, tid: string, category: string, docType: 
     const s = (c as any).numberSeq;
     if (typeof s === "number" && s > maxSeq) maxSeq = s;
   }
-  return Math.max(maxSeq, inScope.length);
+  return Math.max(maxSeq, inScope.filter((c) => typeof (c as any).numberSeq === "number").length);
 }
 
 /**
@@ -2795,46 +2708,96 @@ function captureTemplateSnapshot(db: any, tid: string, templateId: string | unde
   };
 }
 
+// ---- Nomor MANUAL (dokumen upload) ikut tercatat di urutan otomatis ----
+// Mengambil angka urut dari nomor yang diketik manual, memakai format nomor jenis dokumennya
+// (mis. "023/PKS/TBK/XI/2026" -> 23). Cadangan: hanya angka ("23"), atau angka di depan sebelum pemisah ("23/…").
+function parseManualSeq(db: any, tid: string, docType: string | undefined, manual: string, opts?: { platform?: string; company?: string; year?: string }): number | null {
+  const text = String(manual || "").trim();
+  if (!text) return null;
+  try {
+    const { mask, prefix, dtCode, dtObj } = contractMaskFor(db, tid, docType);
+    const SENT = 987654321;
+    const codes = Array.isArray(dtObj?.extraCodes)
+      ? dtObj.extraCodes.map((c: any) => String(c?.value || "").trim().toUpperCase()).filter(Boolean).join(CONTRACT_CODE_SEP) : "";
+    const now = new Date();
+    const yr = Number(opts?.year) || now.getFullYear();
+    const sample = renderMask(mask, {
+      Prefix: prefix, Category: "", DocType: docType || "", DocTypeCode: dtCode || prefix, Platform: platformCode(opts?.platform),
+      Company: sanitizeCompanyCode(opts?.company), Codes: codes, Year: yr, Month: now.getMonth() + 1, Day: now.getDate(),
+    }, SENT);
+    const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const [pre, post] = sample.split(String(SENT)).length === 2 ? sample.split(String(SENT)) : [null, null];
+    if (pre !== null) {
+      const re = new RegExp("^" + esc(pre) + "0*(\\d{1,9})" + esc(post as string) + "$", "i");
+      const m = text.match(re);
+      if (m) return Number(m[1]) || null;
+    }
+  } catch { /* format tak cocok / token kurang -> pakai cadangan */ }
+  let m = text.match(/^0*(\d{1,9})$/);
+  if (m) return Number(m[1]) || null;
+  m = text.match(/^0*(\d{1,6})\s*[\/\-.]/);
+  return m ? Number(m[1]) || null : null;
+}
+
+// Catat angka urut nomor manual sebagai "terpakai" di scope urutan otomatisnya. Mengembalikan angkanya (atau null).
+function claimManualNumber(db: any, tid: string, category: string, docType: string | undefined, year: string, manual: string, opts?: { platform?: string; company?: string }): number | null {
+  const seq = parseManualSeq(db, tid, docType, manual, { ...opts, year });
+  if (!seq) return null;
+  const { mask } = contractMaskFor(db, tid, docType);
+  const company = scopeCompany(mask, opts?.company);
+  const key = contractScopeKey(tid, category, docType, year, opts?.platform, company);
+  if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
+  let rec = (db.numberCounters as any[]).find((r) => r.id === key);
+  if (!rec) {
+    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year, opts?.platform, company) };
+    db.numberCounters.push(rec);
+  }
+  const used: number[] = Array.isArray(rec.used) ? rec.used : [];
+  if (!used.includes(seq)) rec.used = [...used, seq].sort((a, b) => a - b);
+  if (Array.isArray(rec.released)) rec.released = rec.released.filter((n: number) => n !== seq);
+  return seq;
+}
+
+// Dokumen bernomor manual dihapus -> angkanya bebas lagi di urutan otomatis.
+function unclaimManualNumber(db: any, tid: string, c: Contract): void {
+  const seq = (c as any).manualSeq;
+  if (typeof seq !== "number") return;
+  const year = (c.createdAt || new Date().toISOString()).slice(0, 4);
+  const key = contractScopeKey(tid, c.category, c.docType, year, c.platform, scopeCompany(contractMaskFor(db, tid, c.docType).mask, c.companyCode));
+  const rec = (db.numberCounters as any[] | undefined)?.find((r) => r.id === key);
+  if (rec && Array.isArray(rec.used)) rec.used = rec.used.filter((n: number) => n !== seq);
+}
+
 // Auto agreement number, format token dinamis (lihat numbering-utils.ts).
 // Penomoran berpatokan tunggal pada Jenis Dokumen (docType) jika dipilih.
 // Nomor urut memakai COUNTER PERSISTEN per (tenant|jenis|tahun) di db.numberCounters.
-// `platform` (opsional) hanya mengisi segmen {Platform} — TIDAK memecah urutan:
-// Asmat & Tiketux berbagi satu nomor urut per jenis dokumen per tahun.
+// Urutan dipisah per jenis dokumen + tahun + platform (+ PT bila format nomor memuat {Company}).
+// Nomor manual (dokumen upload) yang sudah dipakai dilewati saat urutan sampai ke angka itu.
 function generateContractNumber(
   db: any, tid: string, category: string, docType: string | undefined, year: string,
   opts?: { consume?: boolean; platform?: string; company?: string },
 ): { number: string; seq: number } {
   const consume = opts?.consume !== false;
-  const md = withSettingsDefaults(rawSettingsFor(db, tid)).masterData;
-  const dtObj = docType ? (md.docTypes || []).find((d: any) => d.name === docType) : undefined;
-  
-  // Single Source of Truth untuk Kode Dokumen: diambil dari dtObj.code jika ada.
-  // Kalau kolom Kode dibiarkan kosong, JANGAN jatuh ke defaultNumberPrefix —
-  // semua jenis tanpa kode akan memakai prefix yang sama sehingga dua jenis
-  // berbeda menghasilkan nomor yang terlihat kembar (mis. dua-duanya
-  // "001/GA-AGR/VII/2026") walau counter-nya terpisah. Turunkan singkatan dari
-  // nama jenisnya dulu; defaultNumberPrefix hanya untuk kontrak tanpa jenis.
-  const explicitCode = String(dtObj?.code || "").trim().toUpperCase();
-  const dtCode = explicitCode || (docType ? suggestDocTypeCode(docType) : "");
-  const prefix = dtCode || md.defaultNumberPrefix || "GA-AGR";
-  let mask = dtObj?.numberMask || md.defaultNumberMask || REFERENCE_DEFAULT_MASK;
-  if (mask === LEGACY_DEFAULT_MASK || mask === PREVIOUS_REFERENCE_MASK) mask = REFERENCE_DEFAULT_MASK;
-  mask = ensurePlatformToken(mask);
+  const { mask, dtObj, prefix, dtCode } = contractMaskFor(db, tid, docType);
 
   if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
-  const key = contractScopeKey(tid, category, docType, year);
+  const key = contractScopeKey(tid, category, docType, year, opts?.platform, scopeCompany(mask, opts?.company));
   let rec = (db.numberCounters as any[]).find((r) => r.id === key);
   if (!rec) {
-    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year) };
+    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year, opts?.platform, scopeCompany(mask, opts?.company)) };
     db.numberCounters.push(rec);
   }
+  // `used` = nomor yang sudah dipakai dokumen dengan nomor MANUAL (upload). Urutan otomatis tidak
+  // melompat saat nomor itu dimasukkan; ia baru dilewati ketika urutan sampai ke angka tersebut.
+  const used = new Set<number>(Array.isArray(rec.used) ? rec.used : []);
   // Nomor yang DILEPAS (dokumen batal terbit) dipakai ulang lebih dulu, dari
   // yang terkecil — supaya tidak ada lubang di urutan. Baru kalau kolamnya
   // kosong, counter naik seperti biasa. Pelepasan sendiri dijaga ketat di
   // endpoint release-number (hanya dokumen yang belum pernah beredar).
-  const released: number[] = Array.isArray(rec.released) ? rec.released : [];
+  const released: number[] = (Array.isArray(rec.released) ? rec.released : []).filter((n: number) => !used.has(n));
   const recycled = released.length > 0 ? Math.min(...released) : null;
-  const seq = recycled !== null ? recycled : rec.seq + 1;
+  let seq = recycled !== null ? recycled : rec.seq + 1;
+  if (recycled === null) while (used.has(seq)) seq++;
   if (consume) {
     if (recycled !== null) rec.released = released.filter((n) => n !== recycled);
     else rec.seq = seq;
@@ -3440,10 +3403,12 @@ app.post("/api/contracts", requireAuth, requirePerm("contract.edit"), async (req
   // "Lainnya" (platformCustom), yang otomatis jadi folder & segmen nomor baru.
   const platformErr = validateContractPlatform(db, tid, numberCompany?.id, platform, req.body.platformCustom === true);
   if (platformErr) return res.status(400).json({ error: platformErr });
-  let contractNumber: string, numberSeq: number | undefined;
+  let contractNumber: string, numberSeq: number | undefined, manualSeq: number | undefined;
   if (manualNumber) {
     contractNumber = manualNumber.slice(0, 80);
     numberSeq = undefined;
+    // Nomor manual ikut tercatat di urutan otomatis (scope: jenis + tahun + platform [+ PT]) sebagai "terpakai".
+    manualSeq = claimManualNumber(db, tid, req.body.category || "General", req.body.docType, currentYear, contractNumber, { platform, company: numberCompany?.code }) ?? undefined;
   } else {
     const gen = generateContractNumber(db, tid, req.body.category, req.body.docType, currentYear, { platform, company: numberCompany?.code });
     contractNumber = gen.number;
@@ -3463,6 +3428,7 @@ app.post("/api/contracts", requireAuth, requirePerm("contract.edit"), async (req
     templateSnapshot: captureTemplateSnapshot(db, tid, req.body.templateId),
     contractNumber,
     numberSeq,
+    manualSeq,
     title: req.body.title || `Dokumen Baru ${req.body.docType || req.body.category || ""}`.trim(),
     category: req.body.category || "General",
     party1Name: company,
@@ -3642,300 +3608,19 @@ const CONTRACT_PUT_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   // Arsip→Distribusi→Aktif hanya lewat pengumuman rilis & pembukaan notifikasi
   // (POST /:id/announce-release, POST /api/notifications/:id/open) — tidak
   // lewat PUT. Penutupan manual tetap boleh dari tahap mana pun yang berlaku.
-  // Penutupan (Tidak Aktif / Tidak Berlaku / Diakhiri) HANYA lewat alur
-  // /api/contracts/:id/termination (form + surat + approval) — bukan PUT.
-  Arsip: [],
-  Distribusi: [],
-  Aktif: [],
-  TidakAktif: [],
+  Arsip: ["TidakAktif", "Archived", "Terminated"],
+  Distribusi: ["TidakAktif", "Archived", "Terminated"],
+  Aktif: ["TidakAktif", "Archived", "Terminated"],
+  TidakAktif: ["Archived", "Terminated"],
   Archived: [],
   Terminated: [],
 };
-
-
-// ---------------------------------------------------------------------------
-// PROSES PENGAKHIRAN KONTRAK — Nonaktifkan / Tidak Berlaku / Akhiri Kontrak.
-// Form (tanggal efektif, alasan) → surat di editor Word → approval Legal/Admin →
-// ditandai terkirim → status final otomatis pada tanggal efektif. "Tidak Aktif"
-// tidak butuh surat: langsung terjadwal. Riwayat lengkap di Audit Trail.
-// ---------------------------------------------------------------------------
-const TERMINATION_TARGETS = ["TidakAktif", "Archived", "Terminated"] as const;
-const TERMINATION_ACTIVE_STAGES = ["surat", "approval", "siap_kirim", "terjadwal"];
-const TERMINATION_REASONS = ["Kesepakatan bersama", "Wanprestasi / pelanggaran", "Force majeure", "Kontrak digantikan / addendum", "Pembatalan / tidak sah", "Alasan bisnis", "Lainnya"];
-const TERMINATION_TARGET_LABEL: Record<string, string> = { TidakAktif: "Tidak Aktif", Archived: "Tidak Berlaku", Terminated: "Diakhiri" };
-const todayJakarta = () => new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
-const systemActor = (contract: Contract) => ({ user: { id: "system", name: "Sistem", role: "System" }, ip: "-", query: { tenantId: contract.tenantId }, body: {} } as unknown as AuthedRequest);
-
-function finalizeTermination(db: any, contract: Contract, actor?: AuthedRequest) {
-  const t = contract.termination!;
-  const now = new Date().toISOString();
-  const a = actor || systemActor(contract);
-  contract.status = t.target;
-  contract.updatedAt = now;
-  t.stage = "selesai";
-  t.finishedAt = now;
-  pushAudit(db, a, {
-    contractId: contract.id, contractNumber: contract.contractNumber, action: "Contract Terminated",
-    details: `Kontrak "${contract.title}" kini berstatus ${TERMINATION_TARGET_LABEL[t.target]} (efektif ${t.effectiveDate}). Alasan: ${t.reasonType}${t.reason ? ` — ${t.reason}` : ""}`,
-  });
-  pushLinkedJobTimeline(db, contract, a, `Status → ${TERMINATION_TARGET_LABEL[t.target]}`, `Efektif ${t.effectiveDate} · ${t.reasonType}`);
-  pushNotif(db, contract.tenantId, {
-    title: `Kontrak ${TERMINATION_TARGET_LABEL[t.target]}`,
-    message: `Kontrak "${contract.title}" (${contract.contractNumber}) kini ${TERMINATION_TARGET_LABEL[t.target]} (efektif ${tanggalPanjang(t.effectiveDate)}).`,
-    type: "warning", contractId: contract.id, targetUserIds: [t.requestedById],
-  });
-}
-
-// Terapkan semua pengakhiran terjadwal yang tanggal efektifnya sudah tiba.
-function applyDueTerminations(db: any): number {
-  const today = todayJakarta();
-  let n = 0;
-  for (const c of (db.contracts || []) as Contract[]) {
-    if (c.termination?.stage === "terjadwal" && c.termination.effectiveDate <= today) { finalizeTermination(db, c); n++; }
-  }
-  return n;
-}
-function sweepTerminations() {
-  try { const db = loadDB(); if (applyDueTerminations(db) > 0) saveDB(db); }
-  catch (err) { logger.warn({ err }, "Sweep pengakhiran kontrak gagal"); }
-}
-if (!process.env.VERCEL) { setTimeout(sweepTerminations, 5_000); setInterval(sweepTerminations, 60 * 60 * 1000); }
-
-function terminationOf(db: any, req: AuthedRequest, res: express.Response): Contract | null {
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) { res.status(404).json({ error: "Contract not found" }); return null; }
-  if (!contract.termination || !TERMINATION_ACTIVE_STAGES.includes(contract.termination.stage)) {
-    res.status(409).json({ error: "Tidak ada proses pengakhiran yang sedang berjalan." }); return null;
-  }
-  return contract;
-}
-
-// Mulai proses pengakhiran (isi form).
-app.post("/api/contracts/:id/termination", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Contract not found" });
-  const target = String(req.body.target || "") as TerminationTarget;
-  if (!(TERMINATION_TARGETS as readonly string[]).includes(target)) return res.status(400).json({ error: "Jenis pengakhiran tidak valid." });
-  if (contract.termination && TERMINATION_ACTIVE_STAGES.includes(contract.termination.stage)) {
-    return res.status(409).json({ error: "Sudah ada proses pengakhiran yang berjalan untuk kontrak ini. Batalkan dulu bila ingin mengulang." });
-  }
-  const okFrom = target === "TidakAktif" ? ["Arsip", "Distribusi", "Aktif"] : ["Arsip", "Distribusi", "Aktif", "TidakAktif"];
-  if (!okFrom.includes(contract.status)) return res.status(400).json({ error: `Kontrak berstatus ${contract.status} tidak bisa diproses menjadi ${TERMINATION_TARGET_LABEL[target]}.` });
-  const effectiveDate = isoDateOnly(req.body.effectiveDate);
-  if (!effectiveDate) return res.status(400).json({ error: "Tanggal efektif wajib diisi." });
-  if (effectiveDate < todayJakarta()) return res.status(400).json({ error: "Tanggal efektif tidak boleh di masa lalu." });
-  const reasonType = String(req.body.reasonType || "").trim().slice(0, 80);
-  const reason = String(req.body.reason || "").trim().slice(0, 2000);
-  if (!reasonType) return res.status(400).json({ error: "Jenis alasan wajib dipilih." });
-  if (!reason) return res.status(400).json({ error: "Alasan / keterangan wajib diisi." });
-  const now = new Date().toISOString();
-  const t: ContractTermination = {
-    id: "trm-" + Date.now(), target, prevStatus: contract.status, reasonType, reason, effectiveDate,
-    stage: target === "TidakAktif" ? "terjadwal" : "surat",
-    requestedById: req.user!.id, requestedByName: req.user!.name, requestedAt: now,
-  };
-  try {
-    if (target !== "TidakAktif") {
-      const buf = await buildTerminationLetter({
-        kind: target === "Terminated" ? "Terminated" : "Archived",
-        contractTitle: contract.title, contractNumber: contract.contractNumber,
-        party1Name: contract.companyName || contract.party1Name || "Pihak Pertama", party2Name: contract.party2Name,
-        startDate: contract.startDate, endDate: contract.endDate, reasonType, reason, effectiveDate,
-      });
-      const key = `termletter-${contract.id.replace(/[^\w-]/g, "")}-${Date.now()}.docx`;
-      const stored = await storeFile(buf, key, DOCX_MIME);
-      t.letter = buildDocumentRef(buf, stored, `${target === "Terminated" ? "Surat Pemutusan" : "Surat Pembatalan"} - ${contract.contractNumber}.docx`, "docx", req.user!.name);
-    }
-  } catch (err: any) {
-    logger.error({ err, contractId: contract.id }, "Gagal membuat surat pengakhiran");
-    return res.status(500).json({ error: "Gagal membuat dokumen surat." });
-  }
-  contract.termination = t;
-  contract.updatedAt = now;
-  pushAudit(db, req, {
-    contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Started",
-    details: `Memulai proses ${TERMINATION_TARGET_LABEL[target]} · efektif ${effectiveDate} · ${reasonType}: ${reason}`,
-  });
-  pushLinkedJobTimeline(db, contract, req, `Proses ${TERMINATION_TARGET_LABEL[target]} dimulai`, `Efektif ${effectiveDate} · ${reasonType}`);
-  if (t.stage === "terjadwal" && effectiveDate <= todayJakarta()) finalizeTermination(db, contract, req);
-  saveDB(db);
-  res.json({ success: true, contract });
-});
-
-// Konfigurasi editor surat (ONLYOFFICE). Bisa diedit selama tahap "surat"; selebihnya lihat saja.
-app.get("/api/contracts/:id/termination/editor-config", requireAuth, async (req: AuthedRequest, res) => {
-  const oo = onlyOfficeSettings();
-  if (!oo.enabled) return res.json({ enabled: false });
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  const t = contract?.termination;
-  if (!contract || !t?.letter) return res.status(404).json({ error: "Surat pengakhiran tidak ditemukan." });
-  const canEdit = t.stage === "surat" && hasPerm(req, "contract.edit");
-  const session = randomUUID();
-  const claims = { contractId: contract.id, version: 1, userId: req.user!.id, tenantId: contract.tenantId, session, termination: t.id };
-  const fileUrl = `${oo.appUrl}/api/onlyoffice/termination-file/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "tfile" }, OO_FILE_TTL))}`;
-  const callbackUrl = `${oo.appUrl}/api/onlyoffice/termination-callback/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "tcallback" }, OO_FILE_TTL))}`;
-  const config = buildEditorConfig(oo, {
-    contractId: contract.id, fileName: t.letter.fileName, version: 1, sha256: t.letter.sha256,
-    canEdit, keyVariant: "term", user: { id: req.user!.id, name: req.user!.name }, fileUrl, callbackUrl,
-  });
-  res.json({ enabled: true, documentServerUrl: oo.publicUrl, config, canEdit, version: 1 });
-});
-
-app.get("/api/onlyoffice/termination-file/:id", async (req, res) => {
-  const oo = onlyOfficeSettings();
-  if (!oo.enabled) return res.status(404).end();
-  const claims = verifyLink(oo, req.query.t, "tfile", req.params.id);
-  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
-  const db = loadDB();
-  const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
-  const letter = contract?.termination?.letter;
-  if (!letter) return res.status(404).end();
-  try {
-    const buf = await readStoredDocument(letter, uploadDir);
-    res.setHeader("Content-Type", DOCX_MIME);
-    res.setHeader("Content-Length", buf.length);
-    res.setHeader("Cache-Control", "private, no-store");
-    res.send(buf);
-  } catch (err) {
-    logger.error({ err, contractId: req.params.id }, "ONLYOFFICE: gagal membaca surat pengakhiran");
-    res.status(500).end();
-  }
-});
-
-app.post("/api/onlyoffice/termination-callback/:id", async (req, res) => {
-  const oo = onlyOfficeSettings();
-  const fail = (msg: string) => { logger.warn({ contractId: req.params.id, msg }, "ONLYOFFICE termination-callback: simpan ditolak"); return res.json({ error: 1, message: msg }); };
-  if (!oo.enabled) return fail("ONLYOFFICE tidak aktif");
-  const claims = verifyLink(oo, req.query.t, "tcallback", req.params.id);
-  if (!claims) return res.status(401).json({ error: 1, message: "Tautan tidak valid atau kedaluwarsa." });
-  const ds = verifyDsRequest(oo, req.headers, req.body);
-  if (!ds) return res.status(403).json({ error: 1, message: "Tanda tangan Document Server tidak valid." });
-  const status = Number(ds.status);
-  if (status !== 2 && status !== 6) return res.json({ error: 0 });
-  if (!isAllowedDsDownloadUrl(oo, ds.url)) return fail("Alamat hasil edit tidak diizinkan");
-  try {
-    const dl = await fetch(rewriteDsUrlToInternal(oo, ds.url));
-    if (!dl.ok) return fail(`Gagal mengunduh hasil edit (${dl.status})`);
-    const buf = Buffer.from(await dl.arrayBuffer());
-    if (buf.length > 40 * 1024 * 1024) return fail("Berkas terlalu besar");
-    if (sniffFormat(buf, "x.docx") !== "docx") return fail("Hasil edit bukan berkas Word yang valid");
-    const db = loadDB();
-    const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
-    const t = contract?.termination;
-    if (!contract || !t?.letter || t.id !== (claims as any).termination) return fail("Proses pengakhiran tidak ditemukan");
-    if (t.stage !== "surat") return fail("Surat hanya bisa diubah selagi tahap penyusunan surat.");
-    const user = (db.users as User[]).find((u) => u.id === claims.userId && u.active);
-    if (!user) return fail("Pengguna tidak aktif");
-    const key = `termletter-${contract.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
-    const stored = await storeFile(buf, key, DOCX_MIME);
-    const file = buildDocumentRef(buf, stored, t.letter.fileName, "docx", user.name);
-    if (file.sha256 === t.letter.sha256) return res.json({ error: 0 });
-    t.letter = file;
-    contract.updatedAt = file.uploadedAt;
-    saveDB(db);
-    res.json({ error: 0 });
-  } catch (err: any) {
-    logger.error({ err, contractId: claims.contractId }, "ONLYOFFICE: gagal menyimpan surat pengakhiran");
-    fail(err?.message || "Gagal menyimpan");
-  }
-});
-
-// Unduh surat (.docx) versi terkini.
-app.get("/api/contracts/:id/termination/letter", requireAuth, async (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  const letter = contract?.termination?.letter;
-  if (!contract || !letter) return res.status(404).json({ error: "Surat tidak ditemukan." });
-  try {
-    const buf = await readStoredDocument(letter, uploadDir);
-    res.setHeader("Content-Type", DOCX_MIME);
-    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(letter.fileName)}"`);
-    res.send(buf);
-  } catch { res.status(500).json({ error: "Gagal membaca surat." }); }
-});
-
-// Ajukan surat untuk approval internal.
-app.post("/api/contracts/:id/termination/submit", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = terminationOf(db, req, res); if (!contract) return;
-  const t = contract.termination!;
-  if (t.stage !== "surat") return res.status(409).json({ error: "Surat sudah diajukan." });
-  t.stage = "approval"; t.submittedAt = new Date().toISOString();
-  contract.updatedAt = t.submittedAt;
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Submitted", details: `Surat ${TERMINATION_TARGET_LABEL[t.target]} diajukan untuk approval.` });
-  const approvers = (db.users as User[]).filter((u) => u.active && u.tenantId === contract.tenantId && isFullAccessRole(u.role)).map((u) => u.id);
-  pushNotif(db, contract.tenantId, {
-    title: "Approval Pengakhiran Kontrak", type: "warning", contractId: contract.id, targetUserIds: approvers,
-    message: `${req.user!.name} mengajukan surat ${TERMINATION_TARGET_LABEL[t.target]} untuk kontrak "${contract.title}". Mohon ditinjau.`,
-  });
-  saveDB(db);
-  res.json({ success: true, contract });
-});
-
-// Approval (Legal/Admin): disetujui → siap kirim; ditolak → kembali ke penyusunan surat.
-app.post("/api/contracts/:id/termination/decision", requireAuth, (req: AuthedRequest, res) => {
-  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Hanya Legal/Admin yang dapat menyetujui pengakhiran kontrak." });
-  const db = loadDB();
-  const contract = terminationOf(db, req, res); if (!contract) return;
-  const t = contract.termination!;
-  if (t.stage !== "approval") return res.status(409).json({ error: "Surat tidak sedang menunggu approval." });
-  const decision = String(req.body.decision || "");
-  const note = String(req.body.note || "").trim().slice(0, 1000);
-  if (decision !== "approved" && decision !== "rejected") return res.status(400).json({ error: "Keputusan tidak valid." });
-  if (decision === "rejected" && !note) return res.status(400).json({ error: "Catatan wajib diisi saat meminta revisi surat." });
-  t.decidedByName = req.user!.name; t.decidedAt = new Date().toISOString(); t.decisionNote = note || undefined;
-  t.stage = decision === "approved" ? "siap_kirim" : "surat";
-  contract.updatedAt = t.decidedAt;
-  pushAudit(db, req, {
-    contractId: contract.id, contractNumber: contract.contractNumber,
-    action: decision === "approved" ? "Termination Approved" : "Termination Revision Requested",
-    details: `${decision === "approved" ? "Menyetujui" : "Meminta revisi"} surat ${TERMINATION_TARGET_LABEL[t.target]}${note ? ` — ${note}` : ""}`,
-  });
-  pushNotif(db, contract.tenantId, {
-    title: decision === "approved" ? "Surat Pengakhiran Disetujui" : "Surat Pengakhiran Perlu Revisi", type: decision === "approved" ? "success" : "warning",
-    contractId: contract.id, targetUserIds: [t.requestedById],
-    message: decision === "approved"
-      ? `Surat ${TERMINATION_TARGET_LABEL[t.target]} kontrak "${contract.title}" disetujui ${req.user!.name}. Silakan kirim ke pihak lawan.`
-      : `Surat ${TERMINATION_TARGET_LABEL[t.target]} kontrak "${contract.title}" perlu revisi: ${note}`,
-  });
-  saveDB(db);
-  res.json({ success: true, contract });
-});
-
-// Surat sudah dikirim ke pihak lawan (& ditandatangani) → status final berlaku pada tanggal efektif.
-app.post("/api/contracts/:id/termination/send", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = terminationOf(db, req, res); if (!contract) return;
-  const t = contract.termination!;
-  if (t.stage !== "siap_kirim") return res.status(409).json({ error: "Surat belum disetujui." });
-  t.sentAt = new Date().toISOString(); t.sentNote = String(req.body.note || "").trim().slice(0, 500) || undefined;
-  t.stage = "terjadwal";
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Letter Sent", details: `Surat ${TERMINATION_TARGET_LABEL[t.target]} dikirim ke ${contract.party2Name}${t.sentNote ? ` — ${t.sentNote}` : ""}. Efektif ${t.effectiveDate}.` });
-  if (t.effectiveDate <= todayJakarta()) finalizeTermination(db, contract, req);
-  contract.updatedAt = new Date().toISOString();
-  saveDB(db);
-  res.json({ success: true, contract });
-});
-
-// Batalkan proses (sebelum efektif). Riwayat tetap di Audit Trail.
-app.post("/api/contracts/:id/termination/cancel", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = terminationOf(db, req, res); if (!contract) return;
-  const t = contract.termination!;
-  t.stage = "dibatalkan"; t.cancelledAt = new Date().toISOString(); t.cancelledByName = req.user!.name;
-  contract.updatedAt = t.cancelledAt;
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Cancelled", details: `Proses ${TERMINATION_TARGET_LABEL[t.target]} dibatalkan.` });
-  saveDB(db);
-  res.json({ success: true, contract });
-});
 
 app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const idx = (db.contracts as Contract[]).findIndex((c) => c.id === req.params.id && c.tenantId === tid);
-  if (idx === -1 || !canAccessContract(viewerOf(db, req), db.contracts[idx])) return res.status(404).json({ error: "Contract not found" });
+  if (idx === -1 || !canViewContract(viewerOf(db, req), db.contracts[idx])) return res.status(404).json({ error: "Contract not found" });
   const oldContract = db.contracts[idx];
 
   if (req.body.status !== undefined && req.body.status !== oldContract.status) {
@@ -4033,7 +3718,7 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
     status: req.body.status !== undefined ? req.body.status : oldContract.status,
     // Divisi peminta — hanya Legal/Admin yang menandai (menentukan divisi
     // mana yang ikut melihat dokumen ini).
-    requestingDivision: req.body.requestingDivision !== undefined && ["legal", "super_admin"].includes(req.user!.role)
+    requestingDivision: req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)
       ? (isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined)
       : oldContract.requestingDivision,
     // category/subFolderId: dipakai fitur "Pindahkan ke Arsip" (handleBulkMove
@@ -4434,7 +4119,7 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requirePerm("contract.bulk
     const langkah = (c.approvalSteps || []).find((s) => s.decision === "pending");
     if (isInternalApprovalStage(c.status) && langkah) {
       penerima.add(langkah.approverId);
-      const approver = (db.users as User[]).find((u) => u.id === langkah.approverId);
+      const approver = (db.users as User[]).find((u) => u.id === langkah.approverId && u.tenantId === tid);
       const pengganti = activeDelegateIdOf(approver);
       if (pengganti) penerima.add(pengganti);
     }
@@ -4471,7 +4156,7 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requirePerm("contract.bulk
 // Peninjau yang meminta revisi tidak ikut menerima/menolak usulan atau
 // mengajukan ulang. Dokumen lama tanpa data pembuat → semua staf berwenang.
 function isDocumentOwnerSide(c: Contract, user: { id: string; role: string }) {
-  if (user.role === "super_admin") return true;
+  if (user.role === "admin" || user.role === "super_admin") return true;
   const owner = c.approvalSubmittedById || c.createdById;
   if (!owner) return true;
   return owner === user.id;
@@ -4507,9 +4192,7 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
   if (new Set(approverIds).size !== approverIds.length) {
     return res.status(400).json({ error: "Penanggung jawab tidak boleh sama/berulang dalam satu matriks." });
   }
-  // Approver boleh dipilih dari PT MANA PUN (TBK, GKM, dst.) — tidak ada lagi syarat satu PT dengan pengirim.
-  // Akses dokumennya tetap hanya untuk yang ditugaskan langsung (lihat canAccessContract).
-  const approvers = approverIds.map((id) => (db.users as User[]).find((u) => u.id === id && u.active && u.tenantId));
+  const approvers = approverIds.map((id) => (db.users as User[]).find((u) => u.id === id && u.tenantId === tid && u.active));
   if (approvers.some((u) => !u)) {
     return res.status(400).json({ error: "Salah satu penanggung jawab tidak valid/tidak aktif." });
   }
@@ -4554,16 +4237,6 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
     message: `Kontrak ${contract.contractNumber} diajukan untuk persetujuan — menunggu ${steps[0].approverName}.`,
     type: "info", contractId: contract.id,
   });
-  // Approver dari PT lain: notifikasi ditujukan langsung kepadanya (disimpan di PT dokumen,
-  // hanya dia yang bisa melihat — lihat GET /api/notifications).
-  if (approvers.some((u) => u!.tenantId !== tid)) {
-    pushNotif(db, tid, {
-      title: "Kontrak Menunggu Persetujuan Anda",
-      message: `Kontrak ${contract.contractNumber} ("${contract.title}") ditugaskan kepada Anda untuk review.`,
-      type: "info", contractId: contract.id,
-      targetUserIds: approvers.filter((u) => u!.tenantId !== tid).map((u) => u!.id),
-    });
-  }
   saveDB(db);
   sendPushToUser(steps[0].approverId, {
     title: "Menunggu Persetujuan Anda",
@@ -4576,7 +4249,7 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
 });
 
 // Approve/reject step approval matrix yang sedang giliran approver ybs.
-app.post("/api/contracts/:id/approval-decision", requireAuth, async (req: AuthedRequest, res) => {
+app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const tid = tenantOf(req);
   const contract = findOwnedContract(db, req, req.params.id);
@@ -4600,17 +4273,7 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, async (req: Authed
   const revisionCommentIds = decision === "rejected"
     ? openReviewCommentIds(db, contract.id, (c) => !c.external)
     : [];
-  // Perubahan/komentar reviewer pada sesi ini (mis. Track Changes di berkas Word) sudah merupakan isi revisi,
-  // jadi tidak lagi mewajibkan catatan/komentar terpisah — kalau tidak, reviewer yang hanya mengubah dokumen
-  // tidak bisa memilih satu-satunya tombol yang boleh dipakainya (Minta Revisi).
-  let revisionActivity: ReviewSessionActivity | null = null;
-  if (decision === "rejected") {
-    revisionActivity = await loadReviewActivity(db, contract, internalReviewer(req.user!)).catch((err) => {
-      logger.warn({ err, contractId: contract.id }, "Gagal membaca aktivitas reviewer untuk permintaan revisi");
-      return null;
-    });
-  }
-  if (decision === "rejected" && !comment && revisionCommentIds.length === 0 && !revisionActivity?.hasActivity) {
+  if (decision === "rejected" && !comment && revisionCommentIds.length === 0) {
     return res.status(400).json({ error: "Tandai dulu bagian yang perlu direvisi di Mode Tinjau (komentar / coret / ganti), atau isi catatan revisi." });
   }
 
@@ -4630,31 +4293,9 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, async (req: Authed
   const isOwnTurn = currentStep.approverId === req.user!.id;
   const isDelegate = !isOwnTurn && canActAsDelegate(db, tid, currentStep.approverId, req.user!.id);
   const isAdminOverride = !isOwnTurn && !isDelegate
-    && req.user!.role === "super_admin";
+    && (req.user!.role === "admin" || req.user!.role === "super_admin");
   if (!isOwnTurn && !isDelegate && !isAdminOverride) {
     return res.status(403).json({ error: "Bukan giliran Anda menyetujui dokumen ini." });
-  }
-
-  // ATURAN SESI REVIEW: "Setujui" hanya boleh bila reviewer TIDAK melakukan perubahan apa pun pada sesi ini
-  // (komentar, edit, hapus/coret, markup/Track Changes). Divalidasi di server — menonaktifkan tombol di UI saja
-  // tidak cukup. Yang dinilai adalah orang yang menekan tombol (juga untuk delegasi / override admin).
-  if (decision === "approved") {
-    let act: ReviewSessionActivity;
-    try { act = await loadReviewActivity(db, contract, internalReviewer(req.user!)); }
-    catch (err) {
-      logger.error({ err, contractId: contract.id }, "Gagal memeriksa aktivitas reviewer sebelum menyetujui");
-      return res.status(503).json({ error: "Gagal memeriksa aktivitas review. Coba lagi sebentar." });
-    }
-    if (act.hasActivity) {
-      return res.status(409).json({
-        error: "Anda sudah menambah komentar/perubahan pada sesi review ini, jadi dokumen tidak bisa disetujui. Gunakan Minta Revisi.",
-        code: "REVIEW_ACTIVITY_DETECTED", activity: act,
-      });
-    }
-    // Keadaan bisa berubah selama berkas dibaca (keputusan lain masuk bersamaan).
-    if (currentStep.decision !== "pending" || !isInternalApprovalStage(contract.status)) {
-      return res.status(409).json({ error: "Langkah persetujuan ini sudah diputuskan. Muat ulang halaman." });
-    }
   }
 
   const overrideNote = isDelegate
@@ -4699,8 +4340,7 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, async (req: Authed
       stage: "internal", note: comment, requestedBy: req.user!.name, requestedAt: new Date().toISOString(),
       fromStatus, commentIds: revisionCommentIds,
     });
-    const docEdited = (revisionActivity?.counts.savedChanges || 0) + (revisionActivity?.counts.editorChanges || 0) > 0;
-    const revSummary = `${revisionCommentIds.length} komentar/usulan di Mode Tinjau${docEdited ? " + perubahan/komentar Track Changes di berkas Word" : ""}${comment ? ` — "${comment}"` : ""}`;
+    const revSummary = `${revisionCommentIds.length} komentar/usulan di Mode Tinjau${comment ? ` — "${comment}"` : ""}`;
     pushAudit(db, req, {
       contractId: contract.id, contractNumber: contract.contractNumber,
       action: isFinalStage ? "Revisi dari Review Final Internal" : "Revisi Internal (Approval Matrix)",
@@ -4816,6 +4456,7 @@ app.delete("/api/contracts/:id", requireAuth, requirePerm("contract.delete"), (r
     if (!gate.ok) return res.status(400).json({ error: gate.reason });
     numberReleased = releaseContractNumber(db, tid, target);
   }
+  unclaimManualNumber(db, tid, target);
   db.contracts = (db.contracts as Contract[]).filter((c) => !(c.id === req.params.id && c.tenantId === tid));
   pushAudit(db, req, {
     contractId: target.id, contractNumber: target.contractNumber, action: "Delete Contract",
@@ -4847,7 +4488,7 @@ function canReleaseContractNumber(c: Contract): { ok: boolean; reason?: string }
 function releaseContractNumber(db: any, tid: string, c: Contract): boolean {
   if (typeof c.numberSeq !== "number") return false;
   const year = (c.createdAt || new Date().toISOString()).slice(0, 4);
-  const key = contractScopeKey(tid, c.category, c.docType, year);
+  const key = contractScopeKey(tid, c.category, c.docType, year, c.platform, scopeCompany(contractMaskFor(db, tid, c.docType).mask, c.companyCode));
   if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
   const rec = (db.numberCounters as any[]).find((r) => r.id === key);
   if (!rec) return false;
@@ -4910,7 +4551,7 @@ app.post("/api/contracts/:id/classify", requireAuth, requirePerm("contract.class
   contract.category = category;
   contract.docType = docType;
   contract.updatedAt = new Date().toISOString();
-  if (req.body.requestingDivision !== undefined && ["legal", "super_admin"].includes(req.user!.role)) {
+  if (req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)) {
     contract.requestingDivision = isDivisionRole(req.body.requestingDivision) ? req.body.requestingDivision : undefined;
   }
   pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Klasifikasi Arsip", details: `${before} → ${company.name} / ${docType} / ${platform} / ${operator || "-"} (nomor dokumen tidak berubah)` });
@@ -5299,70 +4940,6 @@ function getAddendumInfoServer(db: any, contract: Contract): { parent: Contract 
   const sequence = myIndex >= 0 ? myIndex + 1 : siblings.length + 1;
   const previous = myIndex > 0 ? siblings[myIndex - 1] : null;
   return { parent, previous, ordinal: addendumOrdinal(sequence) };
-}
-
-// Teks sumber utk terjemahan paragraf RECITAL addendum ("Bahwa PARA PIHAK
-// telah membuat dan menandatangani ... Nomor ... tanggal ..., yang telah
-// diubah terakhir kali melalui Addendum ... (selanjutnya disebut
-// "Perjanjian")..."). undefined kalau kontrak ini BUKAN addendum (tidak ada
-// yang perlu diterjemahkan). Beda dari closing paragraph di bawah: token
-// ParentDocType/ParentNumber/dll di sini DIBEKUKAN (disubstitusi nilai
-// asli) di sini — sama seperti composeContractPreambleForTranslation
-// membekukan StartDate/Party1Name dst — karena nilainya berasal dari
-// kontrak INDUK/SEBELUMNYA (bukan dari selectedContract.variables), fakta
-// historis yang jarang berubah setelah addendum ini final, jadi hasil
-// terjemahannya aman disimpan sebagai teks jadi (frontend render dgn tokens
-// kosong, persis preambleEn — lihat addendumRecitalEn di src/App.tsx).
-function composeAddendumRecitalForTranslation(db: any, contract: Contract, sourceLang: "id" | "en"): string | undefined {
-  if (!contract.amendsContractId) return undefined;
-  const info = getAddendumInfoServer(db, contract);
-  if (!info) return undefined;
-  const template =
-    contract.templateSnapshot?.addendumRecitalParagraph ||
-    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.addendumRecitalParagraph;
-  const previousOrdinal = info.previous ? (getAddendumInfoServer(db, info.previous)?.ordinal || "") : "";
-  // Sama seperti composeContractPreambleForTranslation: format tanggal jadi
-  // kalimat panjang (bukan ISO mentah "2026-07-01") SEBELUM dikirim ke AI,
-  // supaya AI ikut menerjemahkan/melokalkan tanggalnya juga — kalau dikirim
-  // mentah, prompt yang minta AI "mempertahankan tanggal apa adanya" bikin
-  // tanggalnya nyangkut ISO di kedua bahasa (baik ID maupun EN).
-  const fmtDate = (d?: string) =>
-    d ? new Date(d).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { day: "numeric", month: "long", year: "numeric" }) : "";
-  if (template) {
-    const tokens: Record<string, string> = {
-      ParentDocType: info.parent?.docType || info.parent?.category || "Perjanjian",
-      ParentNumber: info.parent?.contractNumber || "",
-      ParentDate: fmtDate(info.parent?.startDate),
-      ParentEndDate: fmtDate(info.parent?.endDate),
-      PreviousOrdinal: previousOrdinal,
-      PreviousNumber: info.previous?.contractNumber || "",
-      PreviousDate: fmtDate(info.previous?.startDate),
-    };
-    return template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
-  }
-  // Sama persis dgn default JSX di src/App.tsx (blok selectedContractAddendumInfo)
-  // — kalau JSX itu diubah, sinkronkan juga di sini.
-  const parentLabel = info.parent?.docType || info.parent?.category || "Perjanjian";
-  const previousClause = info.previous
-    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${fmtDate(info.previous.startDate)}**`
-    : "";
-  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${fmtDate(info.parent?.startDate)}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${fmtDate(info.parent?.endDate)}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
-}
-
-// Teks sumber utk terjemahan paragraf PENUTUP addendum ("Demikian Addendum
-// ini dibuat dan ditandatangani..."). undefined kalau bukan addendum. Beda
-// dari recital di atas: token {{Variabel}} di sini (kalau ada, dari
-// template kustom) TIDAK dibekukan — dikirim mentah ke AI (sama seperti
-// clause.content) supaya tetap sinkron kalau selectedContract.variables
-// diedit belakangan; frontend mensubstitusinya ulang saat render (lihat
-// closingParagraphEn di src/App.tsx), bukan dibekukan sekali di sini.
-function composeAddendumClosingForTranslation(db: any, contract: Contract): string | undefined {
-  if (!contract.amendsContractId) return undefined;
-  const template =
-    contract.templateSnapshot?.closingParagraph ||
-    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.closingParagraph;
-  if (template) return template;
-  return 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.';
 }
 
 app.get("/api/contracts/:id/addendum-context", requireAuth, (req: AuthedRequest, res) => {
@@ -6235,8 +5812,21 @@ function clausePolicyMap(db: any, tenantId: string): PolicyMap {
 const OO_FILE_TTL = 60 * 60 * 12; // 12 jam: tautan berkas & callback hidup selama sesi edit
 
 // ---- Sinkron data sistem <-> variabel di dokumen Word (gabungan tiga arah dgn potret terakhir) ----
-// ISO_DATE, formatShortDateId, parseIdDate: lihat party-fields.ts (satu definisi, dipakai juga Panel CLM).
-const companyOf = (st: any): PartyCompany => ({ name: st.companyName, address: st.companyAddress, repTitle: st.companyRepresentativeTitle });
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const formatShortDateId = (iso: string) => {
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? iso : d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+};
+const ID_MONTHS: Record<string, string> = { januari: "01", februari: "02", maret: "03", april: "04", mei: "05", juni: "06", juli: "07", agustus: "08", september: "09", oktober: "10", november: "11", desember: "12" };
+/** "Rabu, 1 Juli 2026" / "31 Desember 2026" -> "2026-07-01"; null bila tidak terbaca. */
+function parseIdDate(text: string): string | null {
+  const m = /(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/.exec(text || "");
+  if (!m) return null;
+  const mm = ID_MONTHS[m[2].toLowerCase()];
+  const d = Number(m[1]);
+  if (!mm || d < 1 || d > 31) return null;
+  return `${m[3]}-${mm}-${String(d).padStart(2, "0")}`;
+}
 /** Nilai yang SEHARUSNYA tampil di variabel dokumen, menurut data sistem saat ini. */
 function desiredWordValues(db: any, c: Contract): Record<string, string> {
   const st = withSettingsDefaults(rawSettingsFor(db, c.tenantId));
@@ -6253,9 +5843,6 @@ function desiredWordValues(db: any, c: Contract): Record<string, string> {
     Party2Name: c.party2Name,
     Party2Address: c.party2Address || (c.variables as any)?.Address || "[Alamat belum diisi]",
   });
-  // Field modal "Edit Data Pihak & Kontrak" lainnya (jabatan, label/nomor identitas, tipe, judul, jenis dokumen).
-  // Kunci BARU, jadi variabel lama di dokumen tidak berubah artinya; hanya terpakai bila dokumen memuat variabelnya.
-  Object.assign(vals, partyWordValues(c, companyOf(st)));
   if (c.endDate) vals.EndDate = formatShortDateId(c.endDate);
   return vals;
 }
@@ -6270,8 +5857,33 @@ async function reconcileWordValues(db: any, c: Contract, docx: Buffer): Promise<
   const inDoc = await listVariables(docx);
   const want = desiredWordValues(db, c);
   const snap: Record<string, string> = { ...(c.wordSync || {}) };
-  // Logika tiga arah ada di party-fields.ts (reconcileCore) — dipakai juga Panel CLM saat sinkron langsung dari editor.
-  const { push, pushed, pulled } = reconcileCore({ contract: c, inDoc, want, snap, company: companyOf(withSettingsDefaults(rawSettingsFor(db, c.tenantId))) });
+  const push: Record<string, string> = {};
+  const pushed: string[] = [], pulled: string[] = [];
+  for (const [key, docVal] of Object.entries(inDoc)) {
+    const sys = want[key];
+    if (sys === undefined) continue;
+    if (snap[key] === undefined) { snap[key] = docVal; continue; } // pertama kali: catat saja
+    if (sys !== snap[key]) {
+      if (sys !== docVal) { push[key] = sys; pushed.push(key); }
+      snap[key] = sys;
+    } else if (docVal !== snap[key]) {
+      // Isi dokumen berubah, data sistem tidak: salin balik bila bisa dibaca dengan aman.
+      const identity: Record<string, () => void> = {
+        Party2Name: () => { if (docVal.trim()) c.party2Name = docVal.trim(); },
+        Party2Address: () => { if (docVal.trim() && !docVal.startsWith("[")) c.party2Address = docVal.trim(); },
+      };
+      const iso = parseIdDate(docVal);
+      if (key === "StartDate" && iso) { c.startDate = iso; pulled.push(key); snap[key] = docVal; }
+      else if (key === "EndDate" && iso) { c.endDate = iso; if (typeof c.variables?.EndDate === "string") (c.variables as any).EndDate = iso; pulled.push(key); snap[key] = docVal; }
+      else if (identity[key]) { identity[key](); pulled.push(key); snap[key] = docVal; }
+      else if (typeof c.variables?.[key] === "string" && ISO_DATE.test(c.variables[key] as string)) {
+        if (iso) { (c.variables as any)[key] = iso; pulled.push(key); }
+        snap[key] = docVal;
+      } else if (typeof c.variables?.[key] === "string" && !(key in { StartDate: 1, EndDate: 1, Party1Name: 1, Party1Address: 1, Party1Representative: 1, Party1RepTitle: 1 })) {
+        (c.variables as any)[key] = docVal; pulled.push(key); snap[key] = docVal;
+      } else snap[key] = docVal; // tidak bisa dibaca aman (mis. identitas Pihak Pertama dari pengaturan): dibiarkan
+    }
+  }
   c.wordSync = snap;
   if (!pushed.length) return { pushed, pulled };
   const out = await setVariables(docx, push);
@@ -6303,10 +5915,8 @@ async function syncWordDocument(req: AuthedRequest, contractId: string): Promise
   contract.wordSync = work.wordSync;
   if (r.pulled.length) {
     contract.variables = { ...(contract.variables || {}), ...(work.variables || {}) };
-    // Salin HANYA field data pihak yang benar-benar diubah rekonsiliasi (jangan menimpa perubahan lain yang masuk bersamaan).
-    const before = partyFormOf(c0), after = partyFormOf(work);
-    for (const k of PARTY_TEXT_KEYS) if (before[k] !== after[k]) (contract as any)[k] = (work as any)[k];
-    clearStaleEnglish(contract, englishInvalidationBetween(c0, work));
+    contract.startDate = work.startDate; contract.endDate = work.endDate;
+    contract.party2Name = work.party2Name; contract.party2Address = work.party2Address;
   }
   let made = false;
   if (outDocx && stored) {
@@ -6412,121 +6022,6 @@ app.get("/api/onlyoffice/plugin/clauses/:id", (req, res) => {
 // Plugin "Panel CLM": data/bahasa/tata letak dari dalam editor. Tautan bertoken (kind "plugin"); aksi diteruskan ke
 // endpoint yang sama dengan UI utama (word-layout / word-language) atas nama pengguna pembuka editor.
 const OO_PANEL_GUID = "asc.{5B2E8C41-7D3A-4F96-A1C8-3E9D0B6F2A57}";
-
-// ---- Panel CLM: "Data Pihak & Kontrak" (padanan modal "Edit Data Pihak & Kontrak" di aplikasi utama) ----
-// Aturan field, validasi & pemetaan variabel Word ada di party-fields.ts. Dipanggil LANGSUNG (bukan lewat
-// loopback seperti layout/bahasa): panel menyinkron berkala, dan semua panggilan loopback berbagi satu IP
-// (127.0.0.1) sehingga akan menghabiskan batas permintaan semua pengguna sekaligus.
-type PanelResult = { status: number; body: any };
-const partyCtx = (db: any, c: Contract) => {
-  const st = withSettingsDefaults(rawSettingsFor(db, c.tenantId));
-  const types = Array.isArray(st.masterData?.partyTypes) ? (st.masterData.partyTypes as string[]) : [];
-  return { st, company: companyOf(st), types };
-};
-const partyViewOf = (db: any, c: Contract) => { const x = partyCtx(db, c); return buildPartyView(c, x.company, x.types); };
-const wordPushOf = (db: any, c: Contract, keys: string[]) => {
-  const want = desiredWordValues(db, c);
-  const out: Record<string, { id: string; en: string }> = {};
-  for (const k of keys) if (want[k] !== undefined) out[k] = { id: want[k], en: valueToEnglish(want[k]) };
-  return out;
-};
-
-function panelPartyGet(actor: AuthedRequest, id: string): PanelResult {
-  const db = loadDB();
-  const c = findOwnedContract(db, actor, id);
-  if (!c) return { status: 404, body: { error: "Contract not found" } };
-  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
-  return { status: 200, body: { available: true, ...ed, status: c.status, view: partyViewOf(db, c) } };
-}
-
-function panelPartySave(actor: AuthedRequest, id: string, body: any): PanelResult {
-  if (!body || typeof body.fields !== "object" || body.fields === null || Array.isArray(body.fields)) {
-    return { status: 400, body: { error: "Data yang dikirim tidak valid." } };
-  }
-  const db = loadDB();
-  const c = findOwnedContract(db, actor, id);
-  if (!c) return { status: 404, body: { error: "Contract not found" } };
-  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
-  if (!ed.editable) return { status: 403, body: { error: ed.reason } };
-  const { types } = partyCtx(db, c);
-  const base = body.base && typeof body.base === "object" && !Array.isArray(body.base) ? body.base : undefined;
-  const r = normalizePartyPatch(c, body.fields, { partyTypes: types, base });
-  if (r.ok === false) {
-    return { status: r.status, body: { error: r.error, field: r.field, ...(r.status === 409 ? { view: partyViewOf(db, c) } : {}) } };
-  }
-  if (!r.changed.length) return { status: 200, body: { success: true, changed: [], push: {}, view: partyViewOf(db, c) } };
-  applyPartyPatch(c, r);
-  c.updatedAt = new Date().toISOString();
-  // Hanya NAMA field yang dicatat (bukan nilainya) — nomor identitas (NPWP/NIK) bersifat pribadi.
-  const labels = Array.from(new Set(r.changed.map((k) => partyFieldLabel(k)))).join(", ");
-  pushAudit(db, actor, {
-    contractId: c.id, contractNumber: c.contractNumber, action: "Modify Clause / Details",
-    details: `${actor.user!.name} mengubah data pihak & kontrak lewat Panel CLM (ONLYOFFICE): ${labels}.`,
-  });
-  saveDB(db);
-  // Dorong ke dokumen HANYA variabel yang berasal dari field yang diubah (jangan menimpa isian dokumen yang tidak disentuh).
-  const wordKeys = r.changed.map((k) => PARTY_FIELDS.find((f) => f.key === k)?.word).filter((w): w is string => !!w);
-  return { status: 200, body: { success: true, changed: r.changed, push: wordPushOf(db, c, wordKeys), view: partyViewOf(db, c) } };
-}
-
-/** Sinkron langsung dari editor yang sedang terbuka: `docValues` = isi variabel di dokumen sekarang. */
-function panelPartySync(actor: AuthedRequest, id: string, body: any): PanelResult {
-  const strMap = (v: unknown): Record<string, string> => {
-    const out: Record<string, string> = {};
-    if (v && typeof v === "object" && !Array.isArray(v)) {
-      for (const [k, x] of Object.entries(v as Record<string, unknown>).slice(0, 400)) if (typeof x === "string") out[k.slice(0, 120)] = x.slice(0, 5000);
-    }
-    return out;
-  };
-  const docValues = strMap(body?.docValues);
-  const pullKeys = new Set<string>(Array.isArray(body?.pullKeys) ? body.pullKeys.filter((k: unknown) => typeof k === "string") : []);
-  const db = loadDB();
-  const c = findOwnedContract(db, actor, id);
-  if (!c) return { status: 404, body: { error: "Contract not found" } };
-  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
-  // Tidak boleh diubah (bukan Draft dst.): hanya kembalikan tampilan, jangan menarik/mendorong apa pun.
-  if (!ed.editable) return { status: 200, body: { ...ed, push: {}, pulled: [], view: partyViewOf(db, c) } };
-  const before = JSON.parse(JSON.stringify(c)) as Contract;
-  const work = JSON.parse(JSON.stringify(c)) as Contract;
-  const snap: Record<string, string> = { ...(work.wordSync || {}) };
-  const { company } = partyCtx(db, c);
-  const out = reconcileCore({
-    contract: work, inDoc: docValues, want: desiredWordValues(db, work), snap, company,
-    live: { pullable: (k) => pullKeys.has(k) },
-  });
-  let dirty = JSON.stringify(snap) !== JSON.stringify(c.wordSync || {});
-  c.wordSync = snap;
-  if (out.pulled.length) {
-    c.variables = { ...(c.variables || {}), ...(work.variables || {}) };
-    const a = partyFormOf(before), b = partyFormOf(work);
-    for (const k of PARTY_TEXT_KEYS) if (a[k] !== b[k]) (c as any)[k] = (work as any)[k];
-    clearStaleEnglish(c, englishInvalidationBetween(before, work));
-    c.updatedAt = new Date().toISOString();
-    pushAudit(db, actor, { contractId: c.id, contractNumber: c.contractNumber, action: "Word Sync", details: `Variabel diubah di dokumen Word dan disalin ke data sistem: ${out.pulled.join(", ")}.` });
-    dirty = true;
-  }
-  if (dirty) saveDB(db);
-  return { status: 200, body: { editable: true, push: wordPushOf(db, c, out.pushed), pulled: out.pulled, view: partyViewOf(db, c) } };
-}
-
-/** Logo Pihak Kedua: hanya mengunggah berkas & mengembalikan url/key-nya (disimpan ke kontrak lewat "Simpan"), sama dgn modal. */
-async function panelPartyLogo(actor: AuthedRequest, id: string, body: any): Promise<PanelResult> {
-  const db = loadDB();
-  const c = findOwnedContract(db, actor, id);
-  if (!c) return { status: 404, body: { error: "Contract not found" } };
-  const ed = partyEditability(c, actor.user!, hasPerm(actor, "contract.edit"));
-  if (!ed.editable) return { status: 403, body: { error: ed.reason } };
-  const dataUrl = typeof body?.dataUrl === "string" ? body.dataUrl : "";
-  const m = /^data:(image\/(?:png|jpe?g));base64,/i.exec(dataUrl);
-  const buf = decodeDataUrl(dataUrl);
-  if (!m || !buf) return { status: 400, body: { error: "Logo harus berformat PNG atau JPEG (maks 5 MB)" } };
-  const mime = m[1].toLowerCase();
-  if (!imageInfo(buf, mime)) return { status: 400, body: { error: "Berkas bukan gambar PNG/JPEG yang valid" } };
-  const safeName = String(body?.fileName || "logo").replace(/[^\w.\-]/g, "_").slice(0, 60);
-  const stored = await storeFile(buf, `party2-logo-${id}-${Date.now()}-${safeName}`, mime);
-  return { status: 200, body: { url: stored.url, key: stored.key, mimeType: mime } };
-}
-
 app.options("/api/onlyoffice/plugin/panel/:id/:action?", (_req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Headers", "content-type"); res.status(204).end();
 });
@@ -6540,22 +6035,6 @@ async function panelProxy(req: express.Request, res: express.Response) {
   const user = (db.users as any[]).find((u) => u.id === claims.userId && u.tenantId === claims.tenantId);
   if (!user) return res.status(401).json({ error: "Pengguna tidak ditemukan." });
   const action = req.params.action || "";
-  if (action === "party" || action === "party-sync" || action === "party-logo") {
-    if ((user as any).active === false) return res.status(401).json({ error: "Pengguna tidak aktif." });
-    const actor = { user: stripUser(user), ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest;
-    const post = req.method === "POST";
-    try {
-      let out: PanelResult;
-      if (action === "party") out = post ? panelPartySave(actor, claims.contractId, req.body) : panelPartyGet(actor, claims.contractId);
-      else if (!post) return res.status(405).json({ error: "Gunakan POST." });
-      else if (action === "party-sync") out = panelPartySync(actor, claims.contractId, req.body);
-      else out = await panelPartyLogo(actor, claims.contractId, req.body);
-      return res.status(out.status).json(out.body);
-    } catch (err: any) {
-      logger.error({ err, contractId: claims.contractId, action }, "Panel CLM: gagal memproses data pihak");
-      return res.status(500).json({ error: "Gagal memproses data pihak." });
-    }
-  }
   if (action && !["layout", "language"].includes(action)) return res.status(404).json({ error: "Aksi tidak dikenal." });
   const target = `http://127.0.0.1:${PORT}/api/contracts/${encodeURIComponent(claims.contractId)}/${action === "language" ? "word-language" : "word-layout"}`;
   const isPost = req.method === "POST";
@@ -6836,11 +6315,6 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
   // diterjemahkan AI sesudahnya (satu jalur yang sama dengan tombol bahasa di toolbar).
   const wantLang: DocLanguage = c0.documentLanguage === "en" || c0.documentLanguage === "bilingual" ? c0.documentLanguage : "id";
   const wantLayout: BilingualLayoutMode = c0.bilingualLayout === "stacked" ? "stacked" : "side";
-  // Addendum: narasi pembuka (para pihak) + recital rujukan ke perjanjian induk di awal, paragraf penutup
-  // ("Demikian Addendum ini ...") setelah pasal. Disusun di server dari data induk supaya selalu konsisten.
-  const isAddendumDoc = !!c0.amendsContractId;
-  const addendumRecital = isAddendumDoc ? composeAddendumRecitalForTranslation(pre, c0, "id") : undefined;
-  const addendumTail = isAddendumDoc ? composeAddendumClosingForTranslation(pre, c0) : undefined;
   const policy = clausePolicyMap(pre, c0.tenantId);
   const clauses = [...(c0.clauses || [])].sort((a, b) => a.order - b.order).map((cl) => ({
     id: cl.id,
@@ -6861,12 +6335,7 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
       signatureOptions,
       digitalSignature: digital,
       images,
-      opening,
-      // Recital addendum sudah berakhir dengan "...pasal-pasal berikut:", jadi kalimat penutup pembuka kontrak biasa dilewati.
-      closing: isAddendumDoc ? "" : closing,
-      recital: addendumRecital,
-      tail: addendumTail,
-      clauses,
+      opening, closing, clauses,
       values: { ...(c0.variables || {}), ...tokens, ...desiredWordValues(pre, c0) },
     });
     let langNote = "";
@@ -6900,7 +6369,7 @@ app.post("/api/contracts/:id/convert-to-word", requireAuth, requirePerm("contrac
     });
     pushAudit(db, req, {
       contractId: contract.id, contractNumber: contract.contractNumber, action: "Convert To Word",
-      details: `${req.user!.name} mengubah ${isAddendumDoc ? "addendum" : "kontrak template"} menjadi dokumen Word (${clauses.length} pasal) · SHA-256 ${file.sha256.slice(0, 16)}…`,
+      details: `${req.user!.name} mengubah kontrak template menjadi dokumen Word (${clauses.length} pasal) · SHA-256 ${file.sha256.slice(0, 16)}…`,
     });
     contract.documentLanguage = finalLang;
     await saveLangStash(contract, convStash);
@@ -7548,24 +7017,6 @@ app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
       const actor = { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: claims.userId === "external" ? "External" : "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest;
       pushDocumentVersion(db, actor, contract, file, { comment: "Tinjauan (Track Changes)", basedOnVersion: base.version, editMethod: "review" });
     }
-    // Aturan sesi review: catat perubahan/komentar BARU per penulis (selisih isi vs berkas sebelumnya). Hanya bila
-    // sesi editor ini dibuka pada sesi review yang sedang berjalan — editor lama yang tertinggal terbuka dan baru
-    // menyimpan sekarang membawa perubahan ronde sebelumnya, bukan aktivitas sesi ini. Gagal mencatat tidak boleh
-    // menggagalkan penyimpanan.
-    try {
-      const openedMs = Number((claims as any).iat) * 1000;
-      const added = addedByAuthor(await readChangeHistory(base.buf), await readChangeHistory(buf));
-      for (const [author, n] of added) {
-        const startIso = authorIsReviewer(author, { kind: "external" }) ? externalReviewSessionStart(contract) : internalReviewSessionStart(contract);
-        const startMs = startIso ? Date.parse(startIso) : Number.NEGATIVE_INFINITY;
-        if (Number.isFinite(openedMs) && openedMs < startMs) continue;
-        pushAudit(db, { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: claims.userId === "external" ? "External" : "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest, {
-          contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_SAVED_AUDIT_ACTION, details: savedChangesDetails(author, n),
-        });
-      }
-    } catch (err) {
-      logger.warn({ err, contractId: contract.id }, "Gagal mencatat perubahan tinjauan untuk aturan sesi review");
-    }
     pushAudit(db, { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: claims.userId === "external" ? "External" : "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest, {
       contractId: contract.id, contractNumber: contract.contractNumber, action: "Review Track Changes",
       details: `${claims.reviewer || "Peninjau"} menyimpan perubahan tinjauan (Track Changes) · SHA-256 ${file.sha256.slice(0, 16)}…`,
@@ -7593,28 +7044,6 @@ app.get("/api/contracts/:id/review-changes", requireAuth, async (req: AuthedRequ
   if (!contract) return res.status(404).json({ error: "Contract not found" });
   try { res.json(await changeHistoryOf(contract)); }
   catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
-});
-
-// Status aktivitas reviewer (user yang login) pada sesi review berjalan — dipakai UI untuk menonaktifkan
-// tombol Setujui. Hanya aktivitas MILIK user ini; markup lama/sesi lalu/reviewer lain tidak dihitung.
-app.get("/api/contracts/:id/review-session", requireAuth, async (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Contract not found" });
-  if (!isInternalApprovalStage(contract.status)) return res.json({ ...EMPTY_ACTIVITY(null), active: false });
-  try { res.json({ ...(await loadReviewActivity(db, contract, internalReviewer(req.user!))), active: true }); }
-  catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca aktivitas review." }); }
-});
-
-// Editor Word melaporkan reviewer (user yang login) baru mengubah dokumen → catat penanda aktivitas sesi.
-app.post("/api/contracts/:id/review-session/activity", requireAuth, async (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Contract not found" });
-  if (!isInternalApprovalStage(contract.status)) return res.json({ success: true, recorded: false });
-  if (!canReviewContract(viewerOf(db, req), contract, actionOverridesFor(db, contract.tenantId))) return res.status(403).json({ error: "Anda belum ditunjuk untuk meninjau dokumen ini." });
-  const recorded = recordEditorActivity(db, req, contract, internalReviewSessionStart(contract), req.user!.name);
-  res.json({ success: true, recorded });
 });
 
 // Unduh: marked = berkas apa adanya (penuh coretan), clean = salinan dengan semua perubahan diterima.
@@ -7823,35 +7252,19 @@ app.post("/api/contracts/:id/renew", requireAuth, requirePerm("contract.edit"), 
 // terkait kontrak tetap tampil seperti biasa.
 function contractVisibilityFilter(db: any, req: AuthedRequest) {
   const viewer = viewerOf(db, req);
-  const byId = new Map((db.contracts as Contract[]).map((c) => [c.id, c] as const));
+  const byId = new Map(scoped(db.contracts as Contract[], tenantOf(req)).map((c) => [c.id, c] as const));
   return (contractId?: string) => {
     if (!contractId) return true;
     const c = byId.get(contractId);
-    return !c || canAccessContract(viewer, c);
+    return !c || canViewContract(viewer, c);
   };
 }
 
 app.get("/api/audits", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
   const ok = contractVisibilityFilter(db, req);
-  const privileged = ["super_admin", "legal", "manajemen", "it_system"].includes(req.user!.role);
-  const viewer = viewerOf(db, req);
-  const home = tenantOf(req);
-  const cross = isCrossTenantRole(viewer.role);
-  const pt = cross && typeof req.query.tenantId === "string" ? req.query.tenantId : "";
-  const contractById = new Map((db.contracts as Contract[]).map((c) => [c.id, c] as const));
-  res.json((db.audits as AuditTrail[]).filter((a) => {
-    const t = (a as any).tenantId as string | undefined;
-    if (pt && t !== pt) return false;
-    // Super Admin/Legal: jejak SEMUA PT, tapi hanya yang menyangkut dokumen yang boleh mereka akses.
-    if (cross && t !== home) {
-      if (!a.contractId) return false;
-      const c = contractById.get(a.contractId);
-      return !!c && canAccessContract(viewer, c);
-    }
-    if (!pt && t !== home) return false;
-    return ok(a.contractId) && (privileged || a.contractId || a.userId === req.user!.id);
-  }));
+  const privileged = ["super_admin", "admin", "legal", "manajemen", "it_system"].includes(req.user!.role);
+  res.json(scoped(db.audits as AuditTrail[], tenantOf(req)).filter((a) => ok(a.contractId) && (privileged || a.contractId || a.userId === req.user!.id)));
 });
 
 app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
@@ -7862,13 +7275,9 @@ app.get("/api/notifications", requireAuth, (req: AuthedRequest, res) => {
   // sekantor.
   const ok = contractVisibilityFilter(db, req);
   const uid = req.user!.id;
-  const home = tenantOf(req);
-  // Notifikasi PT lain hanya bila DITUJUKAN langsung ke user ini (mis. penugasan approval lintas PT).
-  const mine = (db.notifications as SystemNotification[])
-    .filter((n) => n.tenantId === home || !!n.targetUserIds?.includes(uid))
+  const mine = scoped(db.notifications as SystemNotification[], tenantOf(req))
     .filter((n) => !n.targetUserIds?.length || n.targetUserIds.includes(uid))
-    .filter((n) => n.tenantId !== home || ok(n.contractId))
-    .filter((n) => n.tenantId === home || !n.contractId || ok(n.contractId))
+    .filter((n) => ok(n.contractId))
     // Status baca PER ORANG (readBy). Notifikasi lama tanpa readBy memakai
     // `read` global seperti dulu.
     .map((n) => ({ ...n, read: n.readBy ? !!n.readBy[uid] : !!n.read, readBy: undefined }));
@@ -7885,7 +7294,7 @@ app.post("/api/notifications/read-all", requireAuth, (req: AuthedRequest, res) =
     // DIA (readBy) — bukan menandai terbaca untuk seluruh perusahaan.
     // Catatan: ini TIDAK dihitung "membuka" pengumuman rilis — untuk itu
     // penerima harus mengklik notifikasinya (lihat /:id/open).
-    if ((n.tenantId === tid || n.targetUserIds?.includes(uid)) && (!n.targetUserIds?.length || n.targetUserIds.includes(uid))) {
+    if (n.tenantId === tid && (!n.targetUserIds?.length || n.targetUserIds.includes(uid))) {
       n.readBy = { ...(n.readBy || {}), [uid]: n.readBy?.[uid] || now };
     }
   });
@@ -7900,7 +7309,7 @@ app.post("/api/notifications/:id/open", requireAuth, (req: AuthedRequest, res) =
   const db = loadDB();
   const tid = tenantOf(req);
   const uid = req.user!.id;
-  const n = (db.notifications as SystemNotification[]).find((x) => x.id === req.params.id && (x.tenantId === tid || !!x.targetUserIds?.includes(uid)));
+  const n = (db.notifications as SystemNotification[]).find((x) => x.id === req.params.id && x.tenantId === tid);
   if (!n || (n.targetUserIds?.length && !n.targetUserIds.includes(uid))) return res.status(404).json({ error: "Notifikasi tidak ditemukan" });
   const now = new Date().toISOString();
   n.readBy = { ...(n.readBy || {}), [uid]: n.readBy?.[uid] || now };
@@ -9168,7 +8577,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   );
   if (!comment) return res.status(404).json({ error: "Komentar tidak ditemukan" });
 
-  const isOwnerOrPrivileged = comment.userId === req.user!.id || ["legal", "super_admin"].includes(req.user!.role);
+  const isOwnerOrPrivileged = comment.userId === req.user!.id || ["admin", "legal", "super_admin"].includes(req.user!.role);
 
   // Editing the actual comment text stays owner/admin/legal-only, but
   // resolving a thread is a collaborative action (Google-Docs style: anyone
@@ -9176,16 +8585,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   // whoever originally wrote it) — gating both the same way blocked that.
   if (req.body.text !== undefined) {
     if (!isOwnerOrPrivileged) return res.status(403).json({ error: "Tidak dapat mengedit teks komentar orang lain" });
-    const before = comment.text;
     comment.text = req.body.text.trim();
-    // Teks lama ditimpa di tempat — jejak audit menjaga isi sebelumnya (riwayat tidak hilang) sekaligus
-    // menjadi penanda "reviewer mengubah komentar" untuk aturan Setujui vs Ajukan Revisi.
-    if (before !== comment.text) {
-      pushAudit(db, req, {
-        contractId: comment.contractId, action: COMMENT_EDIT_AUDIT_ACTION,
-        details: `Mengubah komentar ${comment.id} (penulis ${comment.userName}) pada "${comment.clauseTitle}". Sebelumnya: "${before.slice(0, 500)}" → Sekarang: "${comment.text.slice(0, 500)}"`,
-      });
-    }
   }
   if (typeof req.body.resolved === "boolean") {
     comment.resolved = req.body.resolved;
@@ -9238,15 +8638,9 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
   );
   if (idx === -1) return res.status(404).json({ error: "Komentar tidak ditemukan" });
   const comment = db.clauseComments[idx];
-  if (comment.userId !== req.user!.id && !["legal", "super_admin"].includes(req.user!.role)) {
+  if (comment.userId !== req.user!.id && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
     return res.status(403).json({ error: "Tidak dapat menghapus komentar orang lain" });
   }
-  // Komentar yang dihapus hilang dari daftar, jadi isinya dicatat di audit (riwayat tidak hilang) — sekaligus
-  // menandai bahwa penghapusan ini bagian dari aktivitas reviewer pada sesi review berjalan.
-  pushAudit(db, req, {
-    contractId: comment.contractId, action: COMMENT_DELETE_AUDIT_ACTION,
-    details: `Menghapus komentar ${comment.id} (penulis ${comment.userName}, dibuat ${comment.createdAt}) pada "${comment.clauseTitle}"${comment.kind && comment.kind !== "comment" ? ` [${comment.kind}]` : ""}: "${comment.text.slice(0, 500)}"${comment.replacement ? ` → "${comment.replacement.slice(0, 300)}"` : ""}`,
-  });
   db.clauseComments.splice(idx, 1);
   saveDB(db);
   res.json({ success: true });
@@ -9578,6 +8972,70 @@ function composeContractPreambleForTranslation(db: any, contract: Contract, sour
 // cuma tanda bintangnya). Dipaksa benar di sini, terlepas dari perilaku
 // model, karena frasa ini SELALU berasal dari template baku (bukan input
 // bebas pengguna) sehingga aman dipetakan langsung tanpa AI.
+// Teks sumber utk terjemahan paragraf RECITAL addendum ("Bahwa PARA PIHAK
+// telah membuat dan menandatangani ... Nomor ... tanggal ..., yang telah
+// diubah terakhir kali melalui Addendum ... (selanjutnya disebut
+// "Perjanjian")..."). undefined kalau kontrak ini BUKAN addendum (tidak ada
+// yang perlu diterjemahkan). Beda dari closing paragraph di bawah: token
+// ParentDocType/ParentNumber/dll di sini DIBEKUKAN (disubstitusi nilai
+// asli) di sini — sama seperti composeContractPreambleForTranslation
+// membekukan StartDate/Party1Name dst — karena nilainya berasal dari
+// kontrak INDUK/SEBELUMNYA (bukan dari selectedContract.variables), fakta
+// historis yang jarang berubah setelah addendum ini final, jadi hasil
+// terjemahannya aman disimpan sebagai teks jadi (frontend render dgn tokens
+// kosong, persis preambleEn — lihat addendumRecitalEn di src/App.tsx).
+function composeAddendumRecitalForTranslation(db: any, contract: Contract, sourceLang: "id" | "en"): string | undefined {
+  if (!contract.amendsContractId) return undefined;
+  const info = getAddendumInfoServer(db, contract);
+  if (!info) return undefined;
+  const template =
+    contract.templateSnapshot?.addendumRecitalParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.addendumRecitalParagraph;
+  const previousOrdinal = info.previous ? (getAddendumInfoServer(db, info.previous)?.ordinal || "") : "";
+  // Sama seperti composeContractPreambleForTranslation: format tanggal jadi
+  // kalimat panjang (bukan ISO mentah "2026-07-01") SEBELUM dikirim ke AI,
+  // supaya AI ikut menerjemahkan/melokalkan tanggalnya juga — kalau dikirim
+  // mentah, prompt yang minta AI "mempertahankan tanggal apa adanya" bikin
+  // tanggalnya nyangkut ISO di kedua bahasa (baik ID maupun EN).
+  const fmtDate = (d?: string) =>
+    d ? new Date(d).toLocaleDateString(sourceLang === "en" ? "en-US" : "id-ID", { day: "numeric", month: "long", year: "numeric" }) : "";
+  if (template) {
+    const tokens: Record<string, string> = {
+      ParentDocType: info.parent?.docType || info.parent?.category || "Perjanjian",
+      ParentNumber: info.parent?.contractNumber || "",
+      ParentDate: fmtDate(info.parent?.startDate),
+      ParentEndDate: fmtDate(info.parent?.endDate),
+      PreviousOrdinal: previousOrdinal,
+      PreviousNumber: info.previous?.contractNumber || "",
+      PreviousDate: fmtDate(info.previous?.startDate),
+    };
+    return template.replace(/\{\{([^}]+)\}\}/g, (_m: string, k: string) => tokens[k] ?? `{{${k}}}`);
+  }
+  // Sama persis dgn default JSX di src/App.tsx (blok selectedContractAddendumInfo)
+  // — kalau JSX itu diubah, sinkronkan juga di sini.
+  const parentLabel = info.parent?.docType || info.parent?.category || "Perjanjian";
+  const previousClause = info.previous
+    ? `, yang telah diubah terakhir kali melalui Addendum ${previousOrdinal} Nomor **${info.previous.contractNumber}** tanggal **${fmtDate(info.previous.startDate)}**`
+    : "";
+  return `Bahwa PARA PIHAK telah membuat dan menandatangani ${parentLabel} Nomor **${info.parent?.contractNumber || ""}** tanggal **${fmtDate(info.parent?.startDate)}**${previousClause} (selanjutnya disebut "Perjanjian"). Bahwa Perjanjian tersebut akan berakhir pada tanggal **${fmtDate(info.parent?.endDate)}**. Sehubungan dengan hal tersebut, PARA PIHAK sepakat untuk mengubah ketentuan Perjanjian sebagaimana diatur dalam pasal-pasal berikut:`;
+}
+
+// Teks sumber utk terjemahan paragraf PENUTUP addendum ("Demikian Addendum
+// ini dibuat dan ditandatangani..."). undefined kalau bukan addendum. Beda
+// dari recital di atas: token {{Variabel}} di sini (kalau ada, dari
+// template kustom) TIDAK dibekukan — dikirim mentah ke AI (sama seperti
+// clause.content) supaya tetap sinkron kalau selectedContract.variables
+// diedit belakangan; frontend mensubstitusinya ulang saat render (lihat
+// closingParagraphEn di src/App.tsx), bukan dibekukan sekali di sini.
+function composeAddendumClosingForTranslation(db: any, contract: Contract): string | undefined {
+  if (!contract.amendsContractId) return undefined;
+  const template =
+    contract.templateSnapshot?.closingParagraph ||
+    (db.templates as Template[]).find((t) => t.id === contract.templateId)?.closingParagraph;
+  if (template) return template;
+  return 'Demikian Addendum ini dibuat dan ditandatangani oleh PARA PIHAK, addendum ini menjadi bagian yang tidak terpisahkan dari Perjanjian tersebut di atas.';
+}
+
 function fixFixedPartyLabels(text: string | undefined, targetLang: "id" | "en"): string | undefined {
   if (!text) return text;
   const pairs: [RegExp, string][] =
@@ -9897,7 +9355,7 @@ app.get("/api/external-review/:token/review-doc/config", apiLimiter, async (req,
   const db = loadDB();
   const base = await reviewBaseBuffer(db, contract);
   if (!base) return res.json({ enabled: false });
-  const config = reviewEditorConfig(oo, contract, base, { id: "external", name: `${name} ${EXTERNAL_AUTHOR_SUFFIX}` });
+  const config = reviewEditorConfig(oo, contract, base, { id: "external", name: `${name} (Pihak Eksternal)` });
   res.json({ enabled: true, documentServerUrl: oo.publicUrl, config });
 });
 
@@ -9909,32 +9367,10 @@ app.get("/api/external-review/:token/review-changes", apiLimiter, async (req, re
   catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
 });
 
-// PUBLIK — status aktivitas pihak eksternal pada ronde review ini (untuk menonaktifkan tombol Setuju / OK).
-app.get("/api/external-review/:token/review-session", apiLimiter, async (req, res) => {
-  const contract = resolveExternalReview(req.params.token);
-  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
-  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
-  try { res.json(await loadReviewActivity(loadDB(), contract, { kind: "external" })); }
-  catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca aktivitas review." }); }
-});
-
-// PUBLIK — editor Word melaporkan tamu eksternal baru mengubah dokumen → catat penanda aktivitas ronde ini.
-app.post("/api/external-review/:token/review-session/activity", apiLimiter, async (req, res) => {
-  const contract = resolveExternalReview(req.params.token);
-  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
-  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
-  if (contract.status !== "ReviewEksternal" || contract.externalReviewLocked) return res.json({ success: true, recorded: false });
-  const name = String(req.body?.name || "").replace(/[<>"]/g, "").trim().slice(0, 60) || "Pihak Eksternal";
-  const actor = { user: { id: "external", name: `${name} ${EXTERNAL_AUTHOR_SUFFIX}`, role: "External" }, ip: req.ip, query: { tenantId: contract.tenantId }, body: {} } as unknown as AuthedRequest;
-  const db = loadDB();
-  const recorded = recordEditorActivity(db, actor, contract, externalReviewSessionStart(contract), `${name} (pihak eksternal)`);
-  res.json({ success: true, recorded });
-});
-
 // PUBLIK — tamu eksternal klik "OK / Setuju" (klausul sudah sesuai). Sekali
 // disetujui, sesi ini TERKUNCI (tak bisa komentar/setuju lagi lewat token yang
 // sama) sampai pemilik dokumen membuka akses kembali (endpoint /unlock di atas).
-app.post("/api/external-review/:token/approve", apiLimiter, async (req, res) => {
+app.post("/api/external-review/:token/approve", apiLimiter, (req, res) => {
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
   if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
@@ -9944,26 +9380,7 @@ app.post("/api/external-review/:token/approve", apiLimiter, async (req, res) => 
   const name = String(req.body?.name || "").trim();
   if (!name) return res.status(400).json({ error: "Nama wajib diisi." });
   const db = loadDB();
-  // ATURAN SESI REVIEW (sama dengan reviewer internal): "Setuju / OK" hanya boleh bila pihak eksternal TIDAK
-  // melakukan perubahan apa pun pada ronde review ini (komentar, coret/ganti, Track Changes). Divalidasi di
-  // server — tombol yang dinonaktifkan di halaman publik saja tidak cukup.
-  let act: ReviewSessionActivity;
-  try { act = await loadReviewActivity(db, contract, { kind: "external" }); }
-  catch (err) {
-    logger.error({ err, contractId: contract.id }, "Gagal memeriksa aktivitas review eksternal sebelum menyetujui");
-    return res.status(503).json({ error: "Gagal memeriksa aktivitas review. Coba lagi sebentar." });
-  }
-  if (act.hasActivity) {
-    return res.status(409).json({
-      error: "Anda sudah menambah komentar/perubahan pada review ini, jadi dokumen tidak bisa disetujui. Gunakan Ajukan Revisi.",
-      code: "REVIEW_ACTIVITY_DETECTED", activity: act,
-    });
-  }
   const live = (db.contracts as Contract[]).find((c) => c.id === contract.id)!;
-  // Keadaan bisa berubah selama berkas dibaca (klik ganda / persetujuan bersamaan).
-  if (live.externalReviewLocked || live.status !== contract.status) {
-    return res.status(409).json({ error: "Review ini sudah berubah status. Muat ulang halaman." });
-  }
   if (!live.externalApprovals) live.externalApprovals = [];
   live.externalApprovals.push({ name: name.slice(0, 80), approvedAt: new Date().toISOString(), note: String(req.body?.note || "").slice(0, 300) || undefined });
   live.externalReviewLocked = true;
@@ -10151,7 +9568,7 @@ const DIVISION_PIC_LABEL: Record<string, string> = {
   account_executive: "Account Executive", operasional: "Operasional",
 };
 function canViewLegalJob(user: { id: string; role: string }, job: LegalJob): boolean {
-  if (["super_admin", "legal", "manajemen"].includes(user.role)) return true;
+  if (["super_admin", "admin", "legal", "manajemen"].includes(user.role)) return true;
   if (job.requesterId === user.id) return true;
   if (isDivisionRole(user.role)) return job.requestingDivision === user.role || job.picName === DIVISION_PIC_LABEL[user.role];
   return false;
@@ -10161,17 +9578,10 @@ function findVisibleLegalJob(db: any, req: AuthedRequest, id: string): LegalJob 
   return job && canViewLegalJob(req.user!, job) ? job : undefined;
 }
 
-// Pekerjaan Legal lintas PT: Legal & Super Admin melihat semua PT (bisa disaring ?tenantId=<PT>).
-function legalJobsForViewer(db: any, req: AuthedRequest): LegalJob[] {
-  if (!db.legalJobs) db.legalJobs = [];
-  if (!isCrossTenantRole(req.user!.role)) return legalJobTenantList(db, tenantOf(req));
-  const pt = typeof req.query.tenantId === "string" ? req.query.tenantId : "";
-  return (db.legalJobs as LegalJob[]).filter((j) => !pt || j.tenantId === pt);
-}
 app.get("/api/legal-jobs", requireAuth, (req: AuthedRequest, res) => {
-  if (!isFullAccessRole(req.user!.role)) return res.json([]); // Pekerjaan Legal: hanya Legal/Super Admin
+  if (!isFullAccessRole(req.user!.role)) return res.json([]); // Pekerjaan Legal: hanya Legal/Admin/Super Admin
   const db = loadDB();
-  const list = legalJobsForViewer(db, req).filter((j) => canViewLegalJob(req.user!, j)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  const list = legalJobTenantList(db, tenantOf(req)).filter((j) => canViewLegalJob(req.user!, j)).slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
   res.json(list.map((j) => withLinkedContract(db, j)));
 });
 
@@ -10258,7 +9668,7 @@ app.post("/api/legal-jobs", requireAuth, requirePerm("legaljob.request"), upload
       title: "Permintaan Kontrak Baru",
       message: `${req.user!.name} (${picName}) meminta: "${title}" — ${partnerName}, deadline ${deadline}.`,
       type: "info", legalJobId: job.id,
-      targetUserIds: ((db.users as User[]) || []).filter((u) => u.tenantId === tid && u.active && u.role === "legal").map((u) => u.id),
+      targetUserIds: ((db.users as User[]) || []).filter((u) => u.tenantId === tid && u.active && (u.role === "legal" || u.role === "admin")).map((u) => u.id),
     });
     pushAudit(db, req, { action: "Permintaan Kontrak", details: `${picName} meminta "${title}" (${partnerName}).` });
     saveDB(db);
@@ -10573,17 +9983,17 @@ app.post("/api/legal-form/:token/submit", apiLimiter, uploadLegalDoc.single("fil
 // ----- Dashboard Legal: agregasi ringkasan real-time -----
 
 app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
-  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Dashboard Legal hanya untuk tim Legal dan Super Admin." });
+  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Dashboard Legal hanya untuk tim Legal, Admin, dan Super Admin." });
   const db = loadDB();
   const tid = tenantOf(req);
-  const jobs = legalJobsForViewer(db, req);
+  const jobs = legalJobTenantList(db, tid);
   const contracts = visibleContracts(db, req);
   const now = Date.now();
 
   // Hitungan per TAHAP alur (src/workflow.ts) — pekerjaan yang sudah punya
   // kontrak mengikuti status kontraknya (dulu memakai job.status mentah yang
   // berhenti di "draft" begitu kontrak dibuat, sehingga angkanya basi).
-  const contractById = new Map((db.contracts as Contract[]).map((c) => [c.id, c]));
+  const contractById = new Map((db.contracts as Contract[]).filter((c) => c.tenantId === tid).map((c) => [c.id, c]));
   const stageOf = (j: LegalJob) => jobStage(j, j.linkedContractId ? contractById.get(j.linkedContractId) : null);
   const statusCounts: Record<string, number> = {};
   for (const j of jobs) { const st = stageOf(j); statusCounts[st] = (statusCounts[st] || 0) + 1; }

@@ -17,12 +17,13 @@ export interface Tenant {
   createdAt?: string;
 }
 
-// Peran pengguna (RBAC). super_admin lintas-tenant (semua PT, satu tampilan); legal lintas-PT
-// hanya untuk dokumen eksternal; sisanya tercakup dalam satu tenant/perusahaan.
+// Peran pengguna (RBAC). super_admin lintas-tenant (operator SaaS);
+// sisanya tercakup dalam satu tenant/perusahaan.
 // Detail hak tiap peran: lihat src/roles.ts.
 export type UserRole =
   | "super_admin"          // semua fitur, lintas perusahaan
   | "it_system"            // pengaturan & sistem, tanpa hak bisnis
+  | "admin"                // admin per perusahaan
   | "legal"                // susun, ajukan, kirim eksternal, TTD
   | "manajemen"            // lihat semua + approve
   | "marketing"            // divisi bisnis — Permintaan Kontrak ke Legal
@@ -47,10 +48,6 @@ export interface User {
   active: boolean;
   createdAt: string;
   lastLoginAt?: string;
-  // Migrasi peran "Admin Perusahaan" (dihapus): akun lama DINONAKTIFKAN & ditandai di sini, rolenya
-  // tidak diubah otomatis. Super Admin memetakan role barunya di Kelola Pengguna, baru bisa diaktifkan.
-  pendingRoleMapping?: boolean;
-  previousRole?: string;
   // Lupa password: hash (bukan token mentah) + waktu kadaluarsa token reset.
   // Token mentah hanya pernah ada di email yang dikirim & di request user —
   // tidak pernah disimpan mentah agar kebocoran DB tidak otomatis membuka akun.
@@ -337,33 +334,9 @@ export interface ReleaseAnnouncement {
   notificationId?: string;
 }
 
-// Proses pengakhiran kontrak (Nonaktifkan / Tidak Berlaku / Akhiri Kontrak):
-// bukan lagi satu klik — isi form (tanggal efektif + alasan), susun surat di
-// editor Word, approval, kirim ke pihak lawan, baru status final berlaku pada
-// tanggal efektif. "Tidak Aktif" tanpa surat (langsung terjadwal).
-export type TerminationTarget = "TidakAktif" | "Archived" | "Terminated";
-export type TerminationStage = "surat" | "approval" | "siap_kirim" | "terjadwal" | "selesai" | "dibatalkan";
-export interface ContractTermination {
-  id: string;
-  target: TerminationTarget;
-  prevStatus: ContractStatus;
-  reasonType: string;
-  reason: string;
-  effectiveDate: string; // YYYY-MM-DD
-  stage: TerminationStage;
-  letter?: StoredDocumentRef; // surat pemutusan/pembatalan (.docx) — tidak ada untuk Tidak Aktif
-  requestedById: string; requestedByName: string; requestedAt: string;
-  submittedAt?: string;
-  decidedByName?: string; decidedAt?: string; decisionNote?: string; // approval (terakhir)
-  sentAt?: string; sentNote?: string;
-  finishedAt?: string;
-  cancelledAt?: string; cancelledByName?: string;
-}
-
 export interface Contract {
   id: string;
   tenantId: string;
-  termination?: ContractTermination;
   // Pengumuman rilis kontrak (setelah Aktif): tim Legal/Admin memilih penerima
   // PER NAMA user (bukan role/departemen) + keterangan bebas. Terbaru di depan.
   releaseAnnouncements?: ReleaseAnnouncement[];
@@ -469,6 +442,7 @@ export interface Contract {
   currentDocument?: StoredDocumentRef;
   currentDocumentVersion?: number;
   masterPdfUrl?: string; // Optional URL for uploaded master contract PDF
+  manualSeq?: number; // Angka urut dari nomor MANUAL (dokumen upload) yang dicatat "terpakai" di urutan otomatis
   numberSeq?: number; // Nomor urut yang dikonsumsi dari counter persisten (per jenis+tahun) — dipakai sbg baseline anti-duplikat
   docType?: string; // Jenis dokumen saat pendaftaran arsip (Perjanjian, MOU, Addendum, dll)
   // Perusahaan pilihan form (Kelola Perusahaan) — snapshot id/nama/kode saat

@@ -337,9 +337,33 @@ export interface ReleaseAnnouncement {
   notificationId?: string;
 }
 
+// Proses pengakhiran kontrak (Nonaktifkan / Tidak Berlaku / Akhiri Kontrak):
+// bukan lagi satu klik — isi form (tanggal efektif + alasan), susun surat di
+// editor Word, approval, kirim ke pihak lawan, baru status final berlaku pada
+// tanggal efektif. "Tidak Aktif" tanpa surat (langsung terjadwal).
+export type TerminationTarget = "TidakAktif" | "Archived" | "Terminated";
+export type TerminationStage = "surat" | "approval" | "siap_kirim" | "terjadwal" | "selesai" | "dibatalkan";
+export interface ContractTermination {
+  id: string;
+  target: TerminationTarget;
+  prevStatus: ContractStatus;
+  reasonType: string;
+  reason: string;
+  effectiveDate: string; // YYYY-MM-DD
+  stage: TerminationStage;
+  letter?: StoredDocumentRef; // surat pemutusan/pembatalan (.docx) — tidak ada untuk Tidak Aktif
+  requestedById: string; requestedByName: string; requestedAt: string;
+  submittedAt?: string;
+  decidedByName?: string; decidedAt?: string; decisionNote?: string; // approval (terakhir)
+  sentAt?: string; sentNote?: string;
+  finishedAt?: string;
+  cancelledAt?: string; cancelledByName?: string;
+}
+
 export interface Contract {
   id: string;
   tenantId: string;
+  termination?: ContractTermination;
   // Pengumuman rilis kontrak (setelah Aktif): tim Legal/Admin memilih penerima
   // PER NAMA user (bukan role/departemen) + keterangan bebas. Terbaru di depan.
   releaseAnnouncements?: ReleaseAnnouncement[];

@@ -1,5 +1,18 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #30] — Alur kerja Legal ringkas, filter PT, tombol Tidak Berlaku
+
+- Dashboard Legal & Pekerjaan Legal: 12 kartu status diganti **alur kerja ringkas** — 4 fase berurutan (Masuk & siapkan › Review › Tanda tangan › Rilis) dengan panah, hitungan per tahap, tooltip penjelasan, dan klik tahap = filter. Jauh lebih pendek dari grid kartu sebelumnya.
+- Dokumen Eksternal: filter PT tidak lagi memakai `tenantId` (salah bandingkan dengan id PT) — kini mencocokkan `companyId`/kode/nama PT, sehingga memilih PT GKM menampilkan dokumennya.
+- Tombol "Tidak Berlaku" dihapus dari panel Status & Siklus Kontrak (tersisa Nonaktifkan dan Akhiri Kontrak).
+
+## [Unreleased #29] — Proses pengakhiran kontrak + folder Tidak Aktif
+
+- Tombol Nonaktifkan / Tidak Berlaku / Akhiri Kontrak tidak lagi mengubah status langsung. Klik → form (tanggal efektif, jenis alasan, keterangan) → untuk Tidak Berlaku/Diakhiri dibuat draf surat (.docx) yang disunting di editor ONLYOFFICE → approval Legal/Admin (bisa minta revisi) → ditandai terkirim → status final otomatis pada tanggal efektif (reminder berhenti). Tidak Aktif tanpa surat (langsung terjadwal). Proses bisa dibatalkan; semua langkah masuk Audit Trail.
+- Server: endpoint `/api/contracts/:id/termination/*`, penerapan otomatis per jam + saat daftar kontrak dimuat. `PUT /api/contracts/:id` tidak lagi boleh menutup kontrak (harus lewat alur ini).
+- Halaman pengakhiran: kartu **Tabel Pengakhiran** muncul tepat di bawah Tabel Addendum; klik Tinjau membuka halaman khusus (ringkasan, tahap, editor surat inline, approval/kirim/batal) seperti membuka addendum.
+- Arsip Eksternal: folder ketiga **Tidak Aktif** di level Draft/Aktif (Tidak Aktif, Tidak Berlaku, Diakhiri); folder Aktif kini hanya kontrak yang masih berlaku.
+
 ## [Unreleased #28] — Mitra/Operator: input satu per satu dengan data detail
 
 - Master Data → Mitra / Operator: daftar tidak lagi textarea satu-nama-per-baris. Tiap mitra ditambah lewat tombol **Tambah Mitra/Operator** (form seperti Vendor: nama, PIC, WhatsApp, email, NPWP, alamat, rekening, bank, cabang, PPh) dengan Edit/Hapus per baris; tersimpan langsung.

@@ -10,8 +10,9 @@ import {
   ContractPaymentTerm, ContractObligation, StoredDocumentRef, ContractVendorEvaluation, BudgetEntry,
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
-  SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
+  SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo, ContractTermination, TerminationTarget,
 } from "./src/types";
+import { buildTerminationLetter, tanggalPanjang } from "./termination-letter.js";
 import { isFullAccessRole, isCrossTenantRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canAccessContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
 import { loadDB, saveDB, initDB, DEFAULT_TENANT_ID, makeDefaultUsers } from "./db.js";
@@ -2702,6 +2703,7 @@ function findOwnedContract(db: any, req: AuthedRequest, id: string): Contract | 
 
 app.get("/api/contracts", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
+  if (applyDueTerminations(db) > 0) saveDB(db);
   // unifiedStatus TIDAK menggantikan `status` (banyak logic lain di app masih
   // pakai `status` asli) — cuma field tambahan utk badge tabel Monitoring
   // Kontrak, dihitung dari fungsi yang SAMA dipakai linkedContract di
@@ -3640,13 +3642,294 @@ const CONTRACT_PUT_TRANSITIONS: Record<ContractStatus, ContractStatus[]> = {
   // Arsip→Distribusi→Aktif hanya lewat pengumuman rilis & pembukaan notifikasi
   // (POST /:id/announce-release, POST /api/notifications/:id/open) — tidak
   // lewat PUT. Penutupan manual tetap boleh dari tahap mana pun yang berlaku.
-  Arsip: ["TidakAktif", "Archived", "Terminated"],
-  Distribusi: ["TidakAktif", "Archived", "Terminated"],
-  Aktif: ["TidakAktif", "Archived", "Terminated"],
-  TidakAktif: ["Archived", "Terminated"],
+  // Penutupan (Tidak Aktif / Tidak Berlaku / Diakhiri) HANYA lewat alur
+  // /api/contracts/:id/termination (form + surat + approval) — bukan PUT.
+  Arsip: [],
+  Distribusi: [],
+  Aktif: [],
+  TidakAktif: [],
   Archived: [],
   Terminated: [],
 };
+
+
+// ---------------------------------------------------------------------------
+// PROSES PENGAKHIRAN KONTRAK — Nonaktifkan / Tidak Berlaku / Akhiri Kontrak.
+// Form (tanggal efektif, alasan) → surat di editor Word → approval Legal/Admin →
+// ditandai terkirim → status final otomatis pada tanggal efektif. "Tidak Aktif"
+// tidak butuh surat: langsung terjadwal. Riwayat lengkap di Audit Trail.
+// ---------------------------------------------------------------------------
+const TERMINATION_TARGETS = ["TidakAktif", "Archived", "Terminated"] as const;
+const TERMINATION_ACTIVE_STAGES = ["surat", "approval", "siap_kirim", "terjadwal"];
+const TERMINATION_REASONS = ["Kesepakatan bersama", "Wanprestasi / pelanggaran", "Force majeure", "Kontrak digantikan / addendum", "Pembatalan / tidak sah", "Alasan bisnis", "Lainnya"];
+const TERMINATION_TARGET_LABEL: Record<string, string> = { TidakAktif: "Tidak Aktif", Archived: "Tidak Berlaku", Terminated: "Diakhiri" };
+const todayJakarta = () => new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+const systemActor = (contract: Contract) => ({ user: { id: "system", name: "Sistem", role: "System" }, ip: "-", query: { tenantId: contract.tenantId }, body: {} } as unknown as AuthedRequest);
+
+function finalizeTermination(db: any, contract: Contract, actor?: AuthedRequest) {
+  const t = contract.termination!;
+  const now = new Date().toISOString();
+  const a = actor || systemActor(contract);
+  contract.status = t.target;
+  contract.updatedAt = now;
+  t.stage = "selesai";
+  t.finishedAt = now;
+  pushAudit(db, a, {
+    contractId: contract.id, contractNumber: contract.contractNumber, action: "Contract Terminated",
+    details: `Kontrak "${contract.title}" kini berstatus ${TERMINATION_TARGET_LABEL[t.target]} (efektif ${t.effectiveDate}). Alasan: ${t.reasonType}${t.reason ? ` — ${t.reason}` : ""}`,
+  });
+  pushLinkedJobTimeline(db, contract, a, `Status → ${TERMINATION_TARGET_LABEL[t.target]}`, `Efektif ${t.effectiveDate} · ${t.reasonType}`);
+  pushNotif(db, contract.tenantId, {
+    title: `Kontrak ${TERMINATION_TARGET_LABEL[t.target]}`,
+    message: `Kontrak "${contract.title}" (${contract.contractNumber}) kini ${TERMINATION_TARGET_LABEL[t.target]} (efektif ${tanggalPanjang(t.effectiveDate)}).`,
+    type: "warning", contractId: contract.id, targetUserIds: [t.requestedById],
+  });
+}
+
+// Terapkan semua pengakhiran terjadwal yang tanggal efektifnya sudah tiba.
+function applyDueTerminations(db: any): number {
+  const today = todayJakarta();
+  let n = 0;
+  for (const c of (db.contracts || []) as Contract[]) {
+    if (c.termination?.stage === "terjadwal" && c.termination.effectiveDate <= today) { finalizeTermination(db, c); n++; }
+  }
+  return n;
+}
+function sweepTerminations() {
+  try { const db = loadDB(); if (applyDueTerminations(db) > 0) saveDB(db); }
+  catch (err) { logger.warn({ err }, "Sweep pengakhiran kontrak gagal"); }
+}
+if (!process.env.VERCEL) { setTimeout(sweepTerminations, 5_000); setInterval(sweepTerminations, 60 * 60 * 1000); }
+
+function terminationOf(db: any, req: AuthedRequest, res: express.Response): Contract | null {
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) { res.status(404).json({ error: "Contract not found" }); return null; }
+  if (!contract.termination || !TERMINATION_ACTIVE_STAGES.includes(contract.termination.stage)) {
+    res.status(409).json({ error: "Tidak ada proses pengakhiran yang sedang berjalan." }); return null;
+  }
+  return contract;
+}
+
+// Mulai proses pengakhiran (isi form).
+app.post("/api/contracts/:id/termination", requireAuth, requirePerm("contract.edit"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  const target = String(req.body.target || "") as TerminationTarget;
+  if (!(TERMINATION_TARGETS as readonly string[]).includes(target)) return res.status(400).json({ error: "Jenis pengakhiran tidak valid." });
+  if (contract.termination && TERMINATION_ACTIVE_STAGES.includes(contract.termination.stage)) {
+    return res.status(409).json({ error: "Sudah ada proses pengakhiran yang berjalan untuk kontrak ini. Batalkan dulu bila ingin mengulang." });
+  }
+  const okFrom = target === "TidakAktif" ? ["Arsip", "Distribusi", "Aktif"] : ["Arsip", "Distribusi", "Aktif", "TidakAktif"];
+  if (!okFrom.includes(contract.status)) return res.status(400).json({ error: `Kontrak berstatus ${contract.status} tidak bisa diproses menjadi ${TERMINATION_TARGET_LABEL[target]}.` });
+  const effectiveDate = isoDateOnly(req.body.effectiveDate);
+  if (!effectiveDate) return res.status(400).json({ error: "Tanggal efektif wajib diisi." });
+  if (effectiveDate < todayJakarta()) return res.status(400).json({ error: "Tanggal efektif tidak boleh di masa lalu." });
+  const reasonType = String(req.body.reasonType || "").trim().slice(0, 80);
+  const reason = String(req.body.reason || "").trim().slice(0, 2000);
+  if (!reasonType) return res.status(400).json({ error: "Jenis alasan wajib dipilih." });
+  if (!reason) return res.status(400).json({ error: "Alasan / keterangan wajib diisi." });
+  const now = new Date().toISOString();
+  const t: ContractTermination = {
+    id: "trm-" + Date.now(), target, prevStatus: contract.status, reasonType, reason, effectiveDate,
+    stage: target === "TidakAktif" ? "terjadwal" : "surat",
+    requestedById: req.user!.id, requestedByName: req.user!.name, requestedAt: now,
+  };
+  try {
+    if (target !== "TidakAktif") {
+      const buf = await buildTerminationLetter({
+        kind: target === "Terminated" ? "Terminated" : "Archived",
+        contractTitle: contract.title, contractNumber: contract.contractNumber,
+        party1Name: contract.companyName || contract.party1Name || "Pihak Pertama", party2Name: contract.party2Name,
+        startDate: contract.startDate, endDate: contract.endDate, reasonType, reason, effectiveDate,
+      });
+      const key = `termletter-${contract.id.replace(/[^\w-]/g, "")}-${Date.now()}.docx`;
+      const stored = await storeFile(buf, key, DOCX_MIME);
+      t.letter = buildDocumentRef(buf, stored, `${target === "Terminated" ? "Surat Pemutusan" : "Surat Pembatalan"} - ${contract.contractNumber}.docx`, "docx", req.user!.name);
+    }
+  } catch (err: any) {
+    logger.error({ err, contractId: contract.id }, "Gagal membuat surat pengakhiran");
+    return res.status(500).json({ error: "Gagal membuat dokumen surat." });
+  }
+  contract.termination = t;
+  contract.updatedAt = now;
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Started",
+    details: `Memulai proses ${TERMINATION_TARGET_LABEL[target]} · efektif ${effectiveDate} · ${reasonType}: ${reason}`,
+  });
+  pushLinkedJobTimeline(db, contract, req, `Proses ${TERMINATION_TARGET_LABEL[target]} dimulai`, `Efektif ${effectiveDate} · ${reasonType}`);
+  if (t.stage === "terjadwal" && effectiveDate <= todayJakarta()) finalizeTermination(db, contract, req);
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Konfigurasi editor surat (ONLYOFFICE). Bisa diedit selama tahap "surat"; selebihnya lihat saja.
+app.get("/api/contracts/:id/termination/editor-config", requireAuth, async (req: AuthedRequest, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.json({ enabled: false });
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  const t = contract?.termination;
+  if (!contract || !t?.letter) return res.status(404).json({ error: "Surat pengakhiran tidak ditemukan." });
+  const canEdit = t.stage === "surat" && hasPerm(req, "contract.edit");
+  const session = randomUUID();
+  const claims = { contractId: contract.id, version: 1, userId: req.user!.id, tenantId: contract.tenantId, session, termination: t.id };
+  const fileUrl = `${oo.appUrl}/api/onlyoffice/termination-file/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "tfile" }, OO_FILE_TTL))}`;
+  const callbackUrl = `${oo.appUrl}/api/onlyoffice/termination-callback/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "tcallback" }, OO_FILE_TTL))}`;
+  const config = buildEditorConfig(oo, {
+    contractId: contract.id, fileName: t.letter.fileName, version: 1, sha256: t.letter.sha256,
+    canEdit, keyVariant: "term", user: { id: req.user!.id, name: req.user!.name }, fileUrl, callbackUrl,
+  });
+  res.json({ enabled: true, documentServerUrl: oo.publicUrl, config, canEdit, version: 1 });
+});
+
+app.get("/api/onlyoffice/termination-file/:id", async (req, res) => {
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(404).end();
+  const claims = verifyLink(oo, req.query.t, "tfile", req.params.id);
+  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
+  const db = loadDB();
+  const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+  const letter = contract?.termination?.letter;
+  if (!letter) return res.status(404).end();
+  try {
+    const buf = await readStoredDocument(letter, uploadDir);
+    res.setHeader("Content-Type", DOCX_MIME);
+    res.setHeader("Content-Length", buf.length);
+    res.setHeader("Cache-Control", "private, no-store");
+    res.send(buf);
+  } catch (err) {
+    logger.error({ err, contractId: req.params.id }, "ONLYOFFICE: gagal membaca surat pengakhiran");
+    res.status(500).end();
+  }
+});
+
+app.post("/api/onlyoffice/termination-callback/:id", async (req, res) => {
+  const oo = onlyOfficeSettings();
+  const fail = (msg: string) => { logger.warn({ contractId: req.params.id, msg }, "ONLYOFFICE termination-callback: simpan ditolak"); return res.json({ error: 1, message: msg }); };
+  if (!oo.enabled) return fail("ONLYOFFICE tidak aktif");
+  const claims = verifyLink(oo, req.query.t, "tcallback", req.params.id);
+  if (!claims) return res.status(401).json({ error: 1, message: "Tautan tidak valid atau kedaluwarsa." });
+  const ds = verifyDsRequest(oo, req.headers, req.body);
+  if (!ds) return res.status(403).json({ error: 1, message: "Tanda tangan Document Server tidak valid." });
+  const status = Number(ds.status);
+  if (status !== 2 && status !== 6) return res.json({ error: 0 });
+  if (!isAllowedDsDownloadUrl(oo, ds.url)) return fail("Alamat hasil edit tidak diizinkan");
+  try {
+    const dl = await fetch(rewriteDsUrlToInternal(oo, ds.url));
+    if (!dl.ok) return fail(`Gagal mengunduh hasil edit (${dl.status})`);
+    const buf = Buffer.from(await dl.arrayBuffer());
+    if (buf.length > 40 * 1024 * 1024) return fail("Berkas terlalu besar");
+    if (sniffFormat(buf, "x.docx") !== "docx") return fail("Hasil edit bukan berkas Word yang valid");
+    const db = loadDB();
+    const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
+    const t = contract?.termination;
+    if (!contract || !t?.letter || t.id !== (claims as any).termination) return fail("Proses pengakhiran tidak ditemukan");
+    if (t.stage !== "surat") return fail("Surat hanya bisa diubah selagi tahap penyusunan surat.");
+    const user = (db.users as User[]).find((u) => u.id === claims.userId && u.active);
+    if (!user) return fail("Pengguna tidak aktif");
+    const key = `termletter-${contract.id.replace(/[^\w-]/g, "")}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`;
+    const stored = await storeFile(buf, key, DOCX_MIME);
+    const file = buildDocumentRef(buf, stored, t.letter.fileName, "docx", user.name);
+    if (file.sha256 === t.letter.sha256) return res.json({ error: 0 });
+    t.letter = file;
+    contract.updatedAt = file.uploadedAt;
+    saveDB(db);
+    res.json({ error: 0 });
+  } catch (err: any) {
+    logger.error({ err, contractId: claims.contractId }, "ONLYOFFICE: gagal menyimpan surat pengakhiran");
+    fail(err?.message || "Gagal menyimpan");
+  }
+});
+
+// Unduh surat (.docx) versi terkini.
+app.get("/api/contracts/:id/termination/letter", requireAuth, async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  const letter = contract?.termination?.letter;
+  if (!contract || !letter) return res.status(404).json({ error: "Surat tidak ditemukan." });
+  try {
+    const buf = await readStoredDocument(letter, uploadDir);
+    res.setHeader("Content-Type", DOCX_MIME);
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(letter.fileName)}"`);
+    res.send(buf);
+  } catch { res.status(500).json({ error: "Gagal membaca surat." }); }
+});
+
+// Ajukan surat untuk approval internal.
+app.post("/api/contracts/:id/termination/submit", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = terminationOf(db, req, res); if (!contract) return;
+  const t = contract.termination!;
+  if (t.stage !== "surat") return res.status(409).json({ error: "Surat sudah diajukan." });
+  t.stage = "approval"; t.submittedAt = new Date().toISOString();
+  contract.updatedAt = t.submittedAt;
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Submitted", details: `Surat ${TERMINATION_TARGET_LABEL[t.target]} diajukan untuk approval.` });
+  const approvers = (db.users as User[]).filter((u) => u.active && u.tenantId === contract.tenantId && isFullAccessRole(u.role)).map((u) => u.id);
+  pushNotif(db, contract.tenantId, {
+    title: "Approval Pengakhiran Kontrak", type: "warning", contractId: contract.id, targetUserIds: approvers,
+    message: `${req.user!.name} mengajukan surat ${TERMINATION_TARGET_LABEL[t.target]} untuk kontrak "${contract.title}". Mohon ditinjau.`,
+  });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Approval (Legal/Admin): disetujui → siap kirim; ditolak → kembali ke penyusunan surat.
+app.post("/api/contracts/:id/termination/decision", requireAuth, (req: AuthedRequest, res) => {
+  if (!isFullAccessRole(req.user!.role)) return res.status(403).json({ error: "Hanya Legal/Admin yang dapat menyetujui pengakhiran kontrak." });
+  const db = loadDB();
+  const contract = terminationOf(db, req, res); if (!contract) return;
+  const t = contract.termination!;
+  if (t.stage !== "approval") return res.status(409).json({ error: "Surat tidak sedang menunggu approval." });
+  const decision = String(req.body.decision || "");
+  const note = String(req.body.note || "").trim().slice(0, 1000);
+  if (decision !== "approved" && decision !== "rejected") return res.status(400).json({ error: "Keputusan tidak valid." });
+  if (decision === "rejected" && !note) return res.status(400).json({ error: "Catatan wajib diisi saat meminta revisi surat." });
+  t.decidedByName = req.user!.name; t.decidedAt = new Date().toISOString(); t.decisionNote = note || undefined;
+  t.stage = decision === "approved" ? "siap_kirim" : "surat";
+  contract.updatedAt = t.decidedAt;
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber,
+    action: decision === "approved" ? "Termination Approved" : "Termination Revision Requested",
+    details: `${decision === "approved" ? "Menyetujui" : "Meminta revisi"} surat ${TERMINATION_TARGET_LABEL[t.target]}${note ? ` — ${note}` : ""}`,
+  });
+  pushNotif(db, contract.tenantId, {
+    title: decision === "approved" ? "Surat Pengakhiran Disetujui" : "Surat Pengakhiran Perlu Revisi", type: decision === "approved" ? "success" : "warning",
+    contractId: contract.id, targetUserIds: [t.requestedById],
+    message: decision === "approved"
+      ? `Surat ${TERMINATION_TARGET_LABEL[t.target]} kontrak "${contract.title}" disetujui ${req.user!.name}. Silakan kirim ke pihak lawan.`
+      : `Surat ${TERMINATION_TARGET_LABEL[t.target]} kontrak "${contract.title}" perlu revisi: ${note}`,
+  });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Surat sudah dikirim ke pihak lawan (& ditandatangani) → status final berlaku pada tanggal efektif.
+app.post("/api/contracts/:id/termination/send", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = terminationOf(db, req, res); if (!contract) return;
+  const t = contract.termination!;
+  if (t.stage !== "siap_kirim") return res.status(409).json({ error: "Surat belum disetujui." });
+  t.sentAt = new Date().toISOString(); t.sentNote = String(req.body.note || "").trim().slice(0, 500) || undefined;
+  t.stage = "terjadwal";
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Letter Sent", details: `Surat ${TERMINATION_TARGET_LABEL[t.target]} dikirim ke ${contract.party2Name}${t.sentNote ? ` — ${t.sentNote}` : ""}. Efektif ${t.effectiveDate}.` });
+  if (t.effectiveDate <= todayJakarta()) finalizeTermination(db, contract, req);
+  contract.updatedAt = new Date().toISOString();
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Batalkan proses (sebelum efektif). Riwayat tetap di Audit Trail.
+app.post("/api/contracts/:id/termination/cancel", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = terminationOf(db, req, res); if (!contract) return;
+  const t = contract.termination!;
+  t.stage = "dibatalkan"; t.cancelledAt = new Date().toISOString(); t.cancelledByName = req.user!.name;
+  contract.updatedAt = t.cancelledAt;
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Termination Cancelled", details: `Proses ${TERMINATION_TARGET_LABEL[t.target]} dibatalkan.` });
+  saveDB(db);
+  res.json({ success: true, contract });
+});
 
 app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
   const db = loadDB();

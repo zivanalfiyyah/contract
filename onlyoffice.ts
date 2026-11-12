@@ -43,7 +43,7 @@ export function onlyOfficeSettings(env: NodeJS.ProcessEnv = process.env): OnlyOf
 
 // ---- Token tautan (file & callback) ---------------------------------------
 export interface LinkClaims {
-  kind: "file" | "callback" | "plugin" | "rfile" | "rcallback";
+  kind: "file" | "callback" | "plugin" | "rfile" | "rcallback" | "tfile" | "tcallback";
   contractId: string;
   /** Nomor versi berkas yang dibuka. */
   version: number;

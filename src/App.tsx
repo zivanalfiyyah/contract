@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import OnlyOfficeEditor from "./OnlyOfficeEditor";
 import React, { useState, useEffect, useRef, useMemo, useCallback, useLayoutEffect } from "react";
 import jsPDF from "jspdf";
 // html2canvas-pro (not the plain "html2canvas" package): Tailwind v4 emits
@@ -162,6 +163,8 @@ import {
   AuditTrail,
   SystemNotification,
   ReleaseAnnouncement,
+  ContractTermination,
+  TerminationTarget,
   EmployeeData,
   VendorData,
   ClauseComment,
@@ -1188,6 +1191,9 @@ type OperatorDetail = {
 };
 type OperatorGroup = { id: string; name: string; companies: string[]; platforms: string[]; operators: string[]; operatorDetails?: Record<string, OperatorDetail> };
 const isLainnyaLabel = (s: unknown) => /^lain[\s-]?lain(nya)?$|^lainnya$/i.test(String(s ?? "").trim());
+// Dokumen milik PT tertentu: cocokkan companyId, lalu kode/nama PT (data lama).
+const contractInCompany = (c: { companyId?: string; companyCode?: string; companyName?: string }, co?: { id: string; code?: string; name?: string }) =>
+  !!co && (c.companyId === co.id || (!!c.companyCode && sameText(c.companyCode, co.code)) || (!!c.companyName && sameText(c.companyName, co.name)));
 const sameText = (a: unknown, b: unknown) => String(a ?? "").trim().toLowerCase() === String(b ?? "").trim().toLowerCase();
 const OTHER_OPTION = "__lainnya__";
 function companyPlatformList(c?: TaxCompany | null): string[] {
@@ -1500,9 +1506,11 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
 }) {
   // operator === NO_OPERATOR → folder "Tanpa Mitra/Operator".
   const NO_OPERATOR = "__tanpa__";
-  type Path = { companyId?: string; docType?: string; platform?: string; operator?: string; bucket?: "draft" | "aktif"; unclassified?: boolean };
+  type Path = { companyId?: string; docType?: string; platform?: string; operator?: string; bucket?: "draft" | "aktif" | "nonaktif"; unclassified?: boolean };
   const [path, setPath] = useState<Path>({});
   const internal = mode === "internal";
+  // Folder "Tidak Aktif": kontrak yang sudah ditutup (Tidak Aktif / Tidak Berlaku / Diakhiri).
+  const isClosed = (c: Contract) => c.status === "TidakAktif" || c.status === "Archived" || c.status === "Terminated";
   const classified = (c: Contract) => internal
     ? !!(c.companyId && c.employmentType && c.docType)
     : !!(c.companyId && c.platform && c.docType);
@@ -1543,7 +1551,7 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
   if (path.docType) crumbs.push({ label: path.docType, to: { companyId: path.companyId, docType: path.docType } });
   if (path.platform) crumbs.push({ label: path.platform, to: { companyId: path.companyId, docType: path.docType, platform: path.platform } });
   if (path.operator) crumbs.push({ label: path.operator === NO_OPERATOR ? "Tanpa Mitra/Operator" : path.operator, to: { companyId: path.companyId, docType: path.docType, platform: path.platform, operator: path.operator } });
-  if (path.bucket) crumbs.push({ label: path.bucket === "aktif" ? "Aktif" : "Draft", to: path });
+  if (path.bucket) crumbs.push({ label: path.bucket === "aktif" ? "Aktif" : path.bucket === "nonaktif" ? "Tidak Aktif" : "Draft", to: path });
   const grid = "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4";
 
   const DocList = ({ list }: { list: Contract[] }) => (
@@ -1603,8 +1611,9 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
       <div className={grid}>
         {list.map((d) => {
           const here = inCompany.filter((c) => sameText(c.docType, d));
-          const aktif = here.filter(isSigned).length;
-          return <Folder key={d} title={d} sub={`${here.length - aktif} draft · ${aktif} aktif`} count={here.length} dim={here.length === 0} onClick={() => setPath({ ...path, docType: d })} />;
+          const nonaktif = here.filter(isClosed).length;
+          const aktif = here.filter((c) => isSigned(c) && !isClosed(c)).length;
+          return <Folder key={d} title={d} sub={`${here.length - aktif - nonaktif} draft · ${aktif} aktif · ${nonaktif} tidak aktif`} count={here.length} dim={here.length === 0} onClick={() => setPath({ ...path, docType: d })} />;
         })}
       </div>
     );
@@ -1631,16 +1640,18 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
       </div>
     );
   } else if (atBucketLevel && !path.bucket) {
-    const aktif = inOperator.filter(isSigned);
-    const draft = inOperator.filter((c) => !isSigned(c));
+    const nonaktif = inOperator.filter(isClosed);
+    const aktif = inOperator.filter((c) => isSigned(c) && !isClosed(c));
+    const draft = inOperator.filter((c) => !isSigned(c) && !isClosed(c));
     body = (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-4xl">
         <Folder title="Draft" sub="belum TTD basah" count={draft.length} onClick={() => setPath({ ...path, bucket: "draft" })} />
-        <Folder title="Aktif" sub="sudah TTD / pernah aktif" count={aktif.length} tone="emerald" onClick={() => setPath({ ...path, bucket: "aktif" })} />
+        <Folder title="Aktif" sub="sudah TTD, masih berlaku" count={aktif.length} tone="emerald" onClick={() => setPath({ ...path, bucket: "aktif" })} />
+        <Folder title="Tidak Aktif" sub="habis masa / tidak berlaku / diakhiri" count={nonaktif.length} tone="rose" onClick={() => setPath({ ...path, bucket: "nonaktif" })} />
       </div>
     );
   } else {
-    body = <DocList list={inOperator.filter((c) => isSigned(c) === (path.bucket === "aktif"))} />;
+    body = <DocList list={inOperator.filter((c) => path.bucket === "nonaktif" ? isClosed(c) : path.bucket === "aktif" ? isSigned(c) && !isClosed(c) : !isSigned(c) && !isClosed(c))} />;
   }
 
   return (
@@ -3691,6 +3702,56 @@ function LegalHero({ Icon, title, sub, right }: { Icon: any; title: string; sub:
   );
 }
 
+// Alur kerja ringkas: 12 tahap dikelompokkan jadi 4 fase berurutan dengan panah,
+// supaya pemula langsung paham urutannya. Klik tahap = filter/buka daftar.
+const LEGAL_PHASES: { n: number; title: string; hint: string; stages: string[] }[] = [
+  { n: 1, title: "Masuk & siapkan", hint: "Permintaan masuk lalu dibuat drafnya", stages: ["PekerjaanMasuk", "BelumDiproses", "Draft"] },
+  { n: 2, title: "Review", hint: "Ditinjau internal, pihak kedua, lalu revisi", stages: ["ReviewInternal", "ReviewPihakKedua", "RevisiNegosiasi"] },
+  { n: 3, title: "Tanda tangan", hint: "Dikunci final, TTD basah, dokumen kembali", stages: ["Finalisasi", "ProsesTTD", "DokumenKembali"] },
+  { n: 4, title: "Rilis", hint: "Diarsipkan, diumumkan, lalu berlaku", stages: ["Arsip", "Distribusi", "Aktif"] },
+];
+const LEGAL_STAGE_HINT: Record<string, string> = {
+  PekerjaanMasuk: "Permintaan baru menunggu disetujui Legal", BelumDiproses: "Disetujui, belum mulai dikerjakan", Draft: "Dokumen sedang disusun",
+  ReviewInternal: "Ditinjau penanggung jawab internal", ReviewPihakKedua: "Dikirim ke pihak lawan untuk ditinjau", RevisiNegosiasi: "Perbaikan / negosiasi isi",
+  Finalisasi: "Isi final, siap dicetak", ProsesTTD: "Dicetak & ditandatangani basah", DokumenKembali: "Rangkap TTD sudah kembali",
+  Arsip: "Scan TTD diunggah, diarsipkan", Distribusi: "Rilis diumumkan ke tim", Aktif: "Kontrak berlaku",
+};
+function LegalFlowStrip({ countOf, active, onPick }: { countOf: (s: string) => number; active?: string; onPick: (s: string) => void }) {
+  return (
+    <div className="flex flex-col xl:flex-row xl:items-stretch gap-2">
+      {LEGAL_PHASES.map((ph, pi) => (
+        <React.Fragment key={ph.n}>
+          {pi > 0 && <div className="hidden xl:flex items-center text-slate-500"><ChevronRight className="w-5 h-5" /></div>}
+          <div className="flex-1 min-w-0 card-soft card-grad bg-slate-900 rounded-2xl px-3 pt-2.5 pb-2" title={ph.hint}>
+            <p className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 mb-1.5">
+              <span className="w-4 h-4 rounded-full bg-peach text-slate-100 text-[10px] flex items-center justify-center font-bold">{ph.n}</span>{ph.title}
+            </p>
+            <div className="flex items-stretch gap-0.5">
+              {ph.stages.map((s, i) => {
+                const Icon = LEGAL_STATUS_ICON[s] || FileText;
+                const n = countOf(s);
+                return (
+                  <React.Fragment key={s}>
+                    {i > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-500 shrink-0 self-center" />}
+                    <button onClick={() => onPick(s)} title={LEGAL_STAGE_HINT[s]}
+                      className={`flex-1 min-w-0 text-center px-1 py-1.5 rounded-xl transition cursor-pointer ${active === s ? "bg-mist ring-2 ring-soft-blue/60" : "hover:bg-slate-950"}`}>
+                      <span className="flex items-center justify-center gap-1">
+                        <Icon className={`w-3.5 h-3.5 shrink-0 ${n > 0 ? "text-indigo-400" : "text-slate-500"}`} />
+                        <span className={`text-[18px] leading-none font-medium tabular ${n > 0 ? "text-slate-100" : "text-slate-500"}`}>{n}</span>
+                      </span>
+                      <span className="block text-[10.5px] text-slate-500 leading-tight mt-1 break-words">{LEGAL_STATUS_LABEL[s]}</span>
+                    </button>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          </div>
+        </React.Fragment>
+      ))}
+    </div>
+  );
+}
+
 // Kartu ringkasan status (klik = filter / buka daftar).
 function LegalStatCard({ status, count, active, onClick }: { key?: any; status: string; count: number; active?: boolean; onClick: () => void }) {
   const Icon = LEGAL_STATUS_ICON[status] || FileText;
@@ -3927,11 +3988,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
         ) : undefined} />
 
       {/* Kartu ringkasan status — klik untuk filter tabel utama di bawah. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-6 gap-3">
-        {cardStatuses.map((s) => (
-          <LegalStatCard key={s} status={s} count={countOf(s)} active={statusFilter === s} onClick={() => setStatusFilter(s === statusFilter ? "semua" : s)} />
-        ))}
-      </div>
+      <LegalFlowStrip countOf={countOf} active={statusFilter} onPick={(s) => setStatusFilter(s === statusFilter ? "semua" : s)} />
 
       {/* ===== Tabel "Pekerjaan Masuk" (Belum Diproses) ===== */}
       <LegalPanel Icon={Inbox} tone="peach" title={isRequester ? "Menunggu Persetujuan Legal" : "Pekerjaan Masuk"} subtitle={isRequester ? "Permintaan divisi Anda yang belum diproses Legal" : "Belum diproses — dari formulir eksternal & permintaan divisi"}
@@ -4774,11 +4831,7 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
       <LegalHero Icon={Scale} title="Dashboard Legal" sub="Ringkasan kondisi semua pekerjaan legal — data real-time, klik kartu untuk melihat daftarnya." />
 
       {/* Ringkasan Pekerjaan Legal */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-6 gap-3">
-        {cardStatuses.map((s) => (
-          <LegalStatCard key={s} status={s} count={data.statusCounts[s] || 0} onClick={onOpenPekerjaanLegal} />
-        ))}
-      </div>
+      <LegalFlowStrip countOf={(s) => data.statusCounts[s] || 0} onPick={() => onOpenPekerjaanLegal()} />
 
       {/* Monitoring Kontrak — lebar penuh (kartu Surat-Menyurat dihapus) */}
       <div>
@@ -5030,6 +5083,171 @@ function WideBars({ values, labels }: { values: number[]; labels?: string[] }) {
 // yang dipilih PER NAMA (bukan role/departemen) + keterangan bebas. Komponen di
 // luar App supaya state lokal (pencarian/centang/keterangan) tidak ter-reset.
 const releaseInitials = (n: string) => n.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]?.toUpperCase()).join("");
+
+// ===== PROSES PENGAKHIRAN KONTRAK (Nonaktifkan / Tidak Berlaku / Akhiri Kontrak) =====
+const TERMINATION_LABEL: Record<string, string> = { TidakAktif: "Tidak Aktif", Archived: "Tidak Berlaku", Terminated: "Diakhiri" };
+const TERMINATION_REASONS = ["Kesepakatan bersama", "Wanprestasi / pelanggaran", "Force majeure", "Kontrak digantikan / addendum", "Pembatalan / tidak sah", "Alasan bisnis", "Lainnya"];
+const TERMINATION_ACTIVE = ["surat", "approval", "siap_kirim", "terjadwal"];
+const fmtDateId = (iso?: string) => (iso ? new Date(iso.length <= 10 ? iso + "T00:00:00" : iso).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" }) : "-");
+
+function TerminationFormModal({ contract, target, onClose, onDone, showToast }: {
+  contract: Contract; target: TerminationTarget; onClose: () => void; onDone: (c: Contract) => void; showToast: (m: string, t?: any) => void;
+}) {
+  const today = new Date(Date.now() + 7 * 3600_000).toISOString().slice(0, 10);
+  const [effectiveDate, setEffectiveDate] = useState(today);
+  const [reasonType, setReasonType] = useState(target === "Archived" ? "Pembatalan / tidak sah" : target === "TidakAktif" ? "Alasan bisnis" : TERMINATION_REASONS[0]);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const hasLetter = target !== "TidakAktif";
+  const submit = async () => {
+    if (!effectiveDate) { showToast("Tanggal efektif wajib diisi", "warning"); return; }
+    if (!reason.trim()) { showToast("Alasan / keterangan wajib diisi", "warning"); return; }
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/contracts/${contract.id}/termination`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target, effectiveDate, reasonType, reason }) });
+      const d = await res.json();
+      if (d.success) { showToast(hasLetter ? "Proses dimulai — susun surat di editor" : "Penonaktifan dijadwalkan", "success"); onDone(d.contract); }
+      else showToast(d.error || "Gagal memulai proses", "warning");
+    } catch { showToast("Gagal memulai proses", "warning"); }
+    finally { setBusy(false); }
+  };
+  const inp = "w-full px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 animate-fadeIn">
+      <div className="bg-slate-950 border border-slate-800 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+        <div className="p-5 border-b border-slate-800 bg-slate-900/50 flex justify-between items-center">
+          <div>
+            <h3 className="font-bold text-slate-100 text-sm">{target === "TidakAktif" ? "Nonaktifkan Kontrak" : target === "Archived" ? "Tandai Tidak Berlaku" : "Akhiri Kontrak"}</h3>
+            <p className="text-[10px] text-slate-500 mt-0.5 truncate max-w-[300px]">{contract.title}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-100 font-bold cursor-pointer">✕</button>
+        </div>
+        <div className="p-5 space-y-3">
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-300">Tanggal berakhir / efektif *</label>
+            <input type="date" min={today} value={effectiveDate} onChange={(e) => setEffectiveDate(e.target.value)} className={inp} />
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-300">Jenis alasan *</label>
+            <select value={reasonType} onChange={(e) => setReasonType(e.target.value)} className={inp}>
+              {TERMINATION_REASONS.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-slate-300">Alasan / keterangan *</label>
+            <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={4} maxLength={2000} placeholder="Jelaskan dasar pengakhiran (akan masuk ke isi surat)" className={inp} />
+          </div>
+          <p className="text-[11px] text-slate-400 bg-slate-900 border border-slate-800 rounded-lg p-2.5 leading-relaxed">
+            {hasLetter
+              ? <>Setelah ini sistem membuat <b>draf surat {target === "Terminated" ? "pemutusan" : "pembatalan"}</b> untuk disunting di editor Word → <b>approval</b> Legal/Admin → <b>kirim</b> ke pihak lawan. Status <b>{TERMINATION_LABEL[target]}</b> berlaku otomatis pada tanggal efektif.</>
+              : <>Tanpa surat. Status <b>Tidak Aktif</b> berlaku otomatis pada tanggal efektif; reminder berhenti.</>}
+          </p>
+        </div>
+        <div className="p-5 border-t border-slate-800 bg-slate-900/50 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 bg-slate-850 hover:bg-slate-800 text-slate-400 text-xs font-semibold rounded-xl cursor-pointer">Batal</button>
+          <button onClick={submit} disabled={busy} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white text-xs font-bold rounded-xl cursor-pointer">{busy ? "Memproses…" : hasLetter ? "Lanjut ke Surat" : "Jadwalkan"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TerminationPage({ contract, canEdit, isApprover, onBack, onChanged, showToast, askConfirm }: {
+  contract: Contract; canEdit: boolean; isApprover: boolean; onBack: () => void; onChanged: (c: Contract) => void;
+  showToast: (m: string, t?: any) => void; askConfirm: (msg: string, opts?: any) => Promise<boolean>;
+}) {
+  const t = contract.termination as ContractTermination;
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const label = TERMINATION_LABEL[t.target];
+  const active = TERMINATION_ACTIVE.includes(t.stage);
+  const call = async (action: string, body?: any, ok?: string) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/contracts/${contract.id}/termination/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      const d = await res.json();
+      if (d.success) { if (ok) showToast(ok, "success"); setNote(""); onChanged(d.contract); }
+      else showToast(d.error || "Gagal", "warning");
+    } catch { showToast("Gagal", "warning"); }
+    finally { setBusy(false); }
+  };
+  const steps = t.target === "TidakAktif" ? ["Terjadwal", "Efektif"] : ["Surat", "Approval", "Kirim", "Efektif"];
+  const idx = t.stage === "surat" ? 0 : t.stage === "approval" ? 1 : t.stage === "siap_kirim" ? 2 : 3;
+  const cur = t.target === "TidakAktif" ? (t.stage === "selesai" ? 1 : 0) : (t.stage === "selesai" ? 4 : idx);
+  const btn = "px-4 py-2 rounded-full text-xs font-semibold cursor-pointer disabled:opacity-60 transition";
+  const editable = t.stage === "surat" && canEdit;
+  const stageText: Record<string, string> = { surat: "Menyusun surat", approval: "Menunggu approval", siap_kirim: "Siap dikirim", terjadwal: "Menunggu tanggal efektif", selesai: "Selesai", dibatalkan: "Dibatalkan" };
+  return (
+    <div className="space-y-6">
+      <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl flex flex-col gap-3">
+        <button onClick={onBack} className="self-start inline-flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 hover:text-slate-200 bg-slate-900 card-soft rounded-full pl-2.5 pr-3.5 py-1.5 cursor-pointer transition">
+          <ChevronLeft className="w-3.5 h-3.5" /> Kembali ke Kontrak
+        </button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="font-mono text-[12px] font-bold bg-soft-blue/20 text-[#3a7fa8] px-3 py-1 rounded-full">{contract.contractNumber}</span>
+          <span className="text-xs px-2.5 py-0.5 rounded-full font-bold uppercase bg-peach text-slate-100">Pengakhiran · {label}</span>
+          <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-slate-950 text-slate-300">{stageText[t.stage]}</span>
+        </div>
+        <h2 className="text-[22px] leading-tight font-medium text-slate-100">{contract.title}</h2>
+        <p className="text-xs text-slate-500">Pihak: {contract.party2Name} · Kontrak {contract.startDate} s/d {contract.endDate}</p>
+      </div>
+
+      <div className="table-card card-soft bg-slate-900 rounded-2xl p-5 space-y-4">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {steps.map((st, i) => (
+            <React.Fragment key={st}>
+              {i > 0 && <span className="text-slate-500 text-xs">—</span>}
+              <span className={`px-3 py-1 rounded-full text-[11px] font-bold ${i < cur ? "bg-mist text-slate-100" : i === cur && t.stage !== "dibatalkan" ? "bg-indigo-600 text-white" : "bg-slate-950 text-slate-500"}`}>{st}</span>
+            </React.Fragment>
+          ))}
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+          <div className="p-3 bg-slate-950 rounded-xl"><p className="text-slate-500 mb-0.5">Tanggal efektif</p><p className="font-bold text-slate-100">{fmtDateId(t.effectiveDate)}</p></div>
+          <div className="p-3 bg-slate-950 rounded-xl"><p className="text-slate-500 mb-0.5">Jenis alasan</p><p className="font-bold text-slate-100">{t.reasonType}</p></div>
+          <div className="p-3 bg-slate-950 rounded-xl"><p className="text-slate-500 mb-0.5">Diajukan oleh</p><p className="font-bold text-slate-100">{t.requestedByName}</p></div>
+        </div>
+        <div className="p-3 bg-slate-950 rounded-xl text-xs"><p className="text-slate-500 mb-0.5">Alasan / keterangan</p><p className="text-slate-200 whitespace-pre-wrap">{t.reason}</p></div>
+
+        {t.stage === "surat" && t.decisionNote && (
+          <p className="text-xs text-slate-100 bg-peach rounded-xl p-3">Perlu revisi dari <b>{t.decidedByName}</b>: {t.decisionNote}</p>
+        )}
+        {t.stage === "approval" && <p className="text-xs text-slate-400">Surat menunggu approval Legal/Admin.</p>}
+        {t.stage === "siap_kirim" && <p className="text-xs text-slate-300">Surat disetujui <b>{t.decidedByName}</b>. Kirim ke {contract.party2Name}, lalu tandai terkirim.</p>}
+        {t.stage === "terjadwal" && <p className="text-xs text-slate-300">Status <b>{label}</b> berlaku otomatis pada {fmtDateId(t.effectiveDate)}; reminder berhenti saat itu.{t.sentAt ? ` Surat dikirim ${fmtDateId(t.sentAt)}.` : ""}</p>}
+        {t.stage === "selesai" && <p className="text-xs text-slate-300">Pengakhiran selesai — kontrak kini <b>{label}</b> ({fmtDateId(t.finishedAt)}).</p>}
+        {t.stage === "dibatalkan" && <p className="text-xs text-slate-300">Proses dibatalkan oleh {t.cancelledByName} ({fmtDateId(t.cancelledAt)}).</p>}
+
+        {t.stage === "approval" && isApprover && (
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Catatan (wajib bila meminta revisi)" className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+        )}
+        {t.stage === "siap_kirim" && canEdit && (
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Catatan pengiriman (opsional, mis. via email/kurir)" className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-indigo-500" />
+        )}
+        <div className="flex flex-wrap gap-2">
+          {t.letter && <a href={`/api/contracts/${contract.id}/termination/letter`} className={`${btn} bg-slate-950 hover:bg-mist text-slate-200`}>Unduh .docx</a>}
+          {t.stage === "surat" && canEdit && <button disabled={busy} onClick={() => call("submit", {}, "Surat diajukan untuk approval")} className={`${btn} bg-indigo-600 hover:bg-indigo-500 text-white`}>Ajukan approval</button>}
+          {t.stage === "approval" && isApprover && <>
+            <button disabled={busy} onClick={() => call("decision", { decision: "approved", note }, "Surat disetujui")} className={`${btn} bg-indigo-600 hover:bg-indigo-500 text-white`}>Setujui</button>
+            <button disabled={busy} onClick={() => { if (!note.trim()) { showToast("Isi catatan revisi dulu", "warning"); return; } call("decision", { decision: "rejected", note }, "Surat dikembalikan untuk revisi"); }} className={`${btn} bg-peach text-slate-100 hover:brightness-95`}>Minta revisi</button>
+          </>}
+          {t.stage === "siap_kirim" && canEdit && <button disabled={busy} onClick={() => call("send", { note }, "Surat ditandai terkirim")} className={`${btn} bg-indigo-600 hover:bg-indigo-500 text-white`}>Tandai surat terkirim</button>}
+          {active && canEdit && <button disabled={busy} onClick={async () => { if (await askConfirm(`Batalkan proses ${label}? Kontrak tetap berstatus ${contract.status}.`, { title: "Batalkan Proses", confirmLabel: "Ya, Batalkan" })) call("cancel", {}, "Proses dibatalkan"); }} className={`${btn} bg-slate-900 card-soft text-rose-400 hover:brightness-95`}>Batalkan proses</button>}
+        </div>
+      </div>
+
+      {t.letter ? (
+        <div className="table-card card-soft bg-slate-900 rounded-2xl p-5 space-y-3">
+          <p className="text-sm font-bold text-slate-100">{editable ? "Editor surat" : "Surat"} <span className="text-xs font-medium text-slate-500 ml-1">{t.letter.fileName}{editable ? "" : " · hanya lihat"}</span></p>
+          <div className="rounded-xl overflow-hidden border border-slate-800">
+            <OnlyOfficeEditor key={`term-${t.id}-${t.stage}`} contractId={contract.id} version={1} canEdit={editable} configUrl={`/api/contracts/${contract.id}/termination/editor-config`} height="80vh" onUnavailable={() => showToast("Editor tidak tersedia — unduh surat (.docx) dan sunting manual.", "warning")} />
+          </div>
+        </div>
+      ) : (
+        <div className="table-card card-soft bg-slate-900 rounded-2xl p-5 text-xs text-slate-400">Penonaktifan (Tidak Aktif) tidak memakai surat.</div>
+      )}
+    </div>
+  );
+}
 
 // Popup yang tampil saat penerima mengklik notifikasi "Kontrak Telah Rilis":
 // menampilkan keterangan dari pengirim lebih dulu, baru lanjut ke berkas resmi.
@@ -5632,6 +5850,8 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [notifTab, setNotifTab] = useState<"all" | "unread">("all");
   const [releaseNotice, setReleaseNotice] = useState<any | null>(null);
+  const [terminationTarget, setTerminationTarget] = useState<TerminationTarget | null>(null);
+  const [terminationPage, setTerminationPage] = useState(false);
   // Halaman daftar di kartu dashboard (10 item per halaman).
   const [apprPage, setApprPage] = useState(1);
   // Kartu "Info Kontrak" di dashboard → "Lihat semua" membuka daftar semua
@@ -5969,6 +6189,7 @@ export default function App() {
   const [selectedContract, setSelectedContract] = useState<Contract | null>(
     null,
   );
+  useEffect(() => { setTerminationPage(false); }, [selectedContract?.id]);
   const [contractVersions, setContractVersions] = useState<ContractVersion[]>(
     [],
   );
@@ -9504,28 +9725,11 @@ export default function App() {
     }
   };
 
-  // Arsipkan / akhiri kontrak Aktif — lewat PUT existing (otomatis membuat
-  // snapshot versi + audit trail).
-  const handleChangeContractStatus = async (status: "TidakAktif" | "Archived" | "Terminated") => {
+  // Nonaktifkan / Tidak Berlaku / Akhiri Kontrak: tidak lagi satu klik — membuka
+  // form (tanggal efektif + alasan), lalu surat di editor → approval → kirim.
+  const handleChangeContractStatus = (status: TerminationTarget) => {
     if (!selectedContract) return;
-    const label = status === "Archived" ? "menandai Tidak Berlaku" : status === "Terminated" ? "mengakhiri" : "menonaktifkan";
-    if (!(await askConfirm(`Yakin ${label} kontrak "${selectedContract.title}"? Kontrak keluar dari monitoring reminder.`, { title: "Ubah Status Kontrak" }))) return;
-    try {
-      const res = await fetch(`/api/contracts/${selectedContract.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...selectedContract, status, comment: `Perubahan status ke ${status}` }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        showToast(`Status kontrak → ${status}`, "success");
-        setSelectedContract(data.contract);
-        setDraftSavedSnapshot(JSON.stringify(data.contract));
-        fetchInitialData();
-      } else showToast(data.error || "Gagal mengubah status", "warning");
-    } catch {
-      showToast("Gagal mengubah status", "warning");
-    }
+    setTerminationTarget(status);
   };
 
   // Lokal-only (samakan dengan pola edit pasal/variabel) — sebelumnya PUT
@@ -19400,7 +19604,7 @@ export default function App() {
                 // induk menampilkan jumlah addendumnya, dan pencarian nomor/
                 // judul addendum tetap menemukan kontrak induknya.
                 const addendaOf = (c: Contract) => contracts.filter((a) => a.amendsContractId === c.id);
-                const scoped = contracts.filter((c) => !c.amendsContractId && (empTab ? isEmployeeContract(c) : !isEmployeeContract(c)) && (!monitorPt || c.tenantId === monitorPt));
+                const scoped = contracts.filter((c) => !c.amendsContractId && (empTab ? isEmployeeContract(c) : !isEmployeeContract(c)) && (!monitorPt || contractInCompany(c, numberCompanies.find((x) => x.id === monitorPt))));
                 const addendumHit = (c: Contract) => (monitorSearch.trim() && matchContract(c, monitorSearch) === null
                   ? addendaOf(c).find((a) => matchContract(a, monitorSearch) !== null) || null
                   : null);
@@ -20993,7 +21197,7 @@ export default function App() {
                       Arsip Dokumen Eksternal
                     </h2>
                     <p className="text-sm text-slate-400 mt-1">
-                      Tersusun per <b>PT › Jenis Dokumen › Platform › Mitra/Operator › Draft/Aktif</b>, otomatis dari isian form saat dokumen dibuat atau didaftarkan.
+                      Tersusun per <b>PT › Jenis Dokumen › Platform › Mitra/Operator › Draft/Aktif/Tidak Aktif</b>, otomatis dari isian form saat dokumen dibuat atau didaftarkan.
                     </p>
                   </div>
                   <button
@@ -21081,7 +21285,12 @@ export default function App() {
           })()}
 
           {/* WORKSPACE MODE: THE CONTRACT LIFECYCLE MANAGEMENT WORKSPACE */}
-          {selectedContract && (
+          {selectedContract && terminationPage && selectedContract.termination && (
+            <TerminationPage contract={selectedContract} canEdit={can("contract.edit")} isApprover={isFullAccessRole(currentUser?.role)}
+              onBack={() => setTerminationPage(false)}
+              onChanged={(c) => { setSelectedContract(c); setDraftSavedSnapshot(JSON.stringify(c)); fetchInitialData(); }} showToast={showToast} askConfirm={askConfirm} />
+          )}
+          {selectedContract && !(terminationPage && selectedContract.termination) && (
             <div className="space-y-6">
               {/* Workspace Header */}
               <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl flex flex-col gap-4 relative overflow-hidden">
@@ -23035,6 +23244,50 @@ export default function App() {
                 );
               })()}
 
+              {/* TABEL PENGAKHIRAN — tepat di bawah Tabel Addendum; "Tinjau" membuka
+                  halaman pengakhiran (editor surat + approval), seperti addendum. */}
+              {selectedContract.termination && !selectedContract.amendsContractId && (() => {
+                const tr = selectedContract.termination!;
+                const stageLabel: Record<string, string> = { surat: "Menyusun surat", approval: "Menunggu approval", siap_kirim: "Siap dikirim", terjadwal: "Menunggu tanggal efektif", selesai: "Selesai", dibatalkan: "Dibatalkan" };
+                return (
+                  <div className="table-card card-soft bg-slate-900 rounded-2xl p-5">
+                    <div className="flex items-center gap-2.5 px-2 pb-3">
+                      <span className="w-9 h-9 rounded-full bg-peach flex items-center justify-center shrink-0"><FileDigit className="w-4 h-4 text-slate-100" /></span>
+                      <div>
+                        <p className="text-sm font-bold text-slate-100">Tabel Pengakhiran <span className="text-xs font-medium text-slate-500 ml-1">1 proses</span></p>
+                        <p className="text-[11px] text-slate-500">Proses {TERMINATION_LABEL[tr.target]} kontrak ini. Klik Tinjau untuk membuka surat & approval.</p>
+                      </div>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr>
+                            <th className="px-2 py-3">Jenis</th>
+                            <th className="px-2 py-3">Alasan</th>
+                            <th className="px-2 py-3">Efektif</th>
+                            <th className="px-2 py-3">Diajukan</th>
+                            <th className="px-2 py-3">Tahap</th>
+                            <th className="px-2 py-3">Dokumen</th>
+                            <th className="px-2 py-3 text-right">Aksi</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr onClick={() => setTerminationPage(true)} className="cursor-pointer" title="Klik untuk membuka halaman pengakhiran">
+                            <td className="px-2 py-3 font-bold text-slate-200">{TERMINATION_LABEL[tr.target]}</td>
+                            <td className="px-2 py-3 text-slate-300 min-w-[160px]">{tr.reasonType}</td>
+                            <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{fmtDateId(tr.effectiveDate)}</td>
+                            <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{tr.requestedByName}</td>
+                            <td className="px-2 py-3"><span className="inline-flex items-center gap-1.5 text-[10.5px] px-2 py-1 rounded-full font-semibold whitespace-nowrap bg-peach text-slate-100"><span className="w-1.5 h-1.5 rounded-full bg-current" />{stageLabel[tr.stage]}</span></td>
+                            <td className="px-2 py-3 text-slate-500">{tr.letter ? "Word" : "—"}</td>
+                            <td className="px-2 py-3"><div className="flex justify-end"><button onClick={(e) => { e.stopPropagation(); setTerminationPage(true); }} className="px-2.5 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-200 font-semibold transition cursor-pointer">Tinjau</button></div></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* Status & Siklus Kontrak + Riwayat Addendum — dipindah ke
                   bawah (lebar penuh), atas permintaan user. Dulu jadi kolom
                   kanan sebelahan preview; sekarang di bawah grid preview+
@@ -23455,7 +23708,14 @@ export default function App() {
                                 : <>Kontrak <b>Aktif</b> — semua penerima pengumuman rilis sudah membuka notifikasinya.</>}
                             {" "}Masa berlaku terpantau — reminder otomatis berjalan hingga {new Date(selectedContract.endDate).toLocaleDateString("id-ID")}.
                           </div>
-                          <div className="grid grid-cols-3 gap-2">
+                          {selectedContract.termination && TERMINATION_ACTIVE.includes(selectedContract.termination.stage) && (
+                            <div className="px-4 py-2.5 bg-peach/60 rounded-[18px] text-[11px] text-slate-200 flex items-center justify-between gap-2">
+                              <span>Sedang dalam proses pengakhiran ({TERMINATION_LABEL[selectedContract.termination.target]}) — lihat <b>Tabel Pengakhiran</b> di atas.</span>
+                              <button onClick={() => setTerminationPage(true)} className="px-3 py-1 bg-slate-900 card-soft rounded-full font-semibold cursor-pointer">Buka</button>
+                            </div>
+                          )}
+                          {!(selectedContract.termination && TERMINATION_ACTIVE.includes(selectedContract.termination.stage)) && (
+                          <div className="grid grid-cols-2 gap-2">
                             <button
                               onClick={() => handleChangeContractStatus("TidakAktif")}
                               title="Nonaktifkan manual sebelum masa berlaku habis (mis. alasan bisnis) — beda dari kedaluwarsa otomatis, hasil akhirnya status yang sama."
@@ -23464,33 +23724,29 @@ export default function App() {
                               Nonaktifkan
                             </button>
                             <button
-                              onClick={() => handleChangeContractStatus("Archived")}
-                              className="py-2 bg-mist text-slate-100 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer"
-                            >
-                              Tidak Berlaku
-                            </button>
-                            <button
                               onClick={() => handleChangeContractStatus("Terminated")}
                               className="py-2 bg-slate-900 card-soft text-rose-400 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer"
                             >
                               Akhiri Kontrak
                             </button>
                           </div>
+                          )}
                         </div>
                       )}
 
                       {selectedContract.status === "TidakAktif" && (
                         <div className="space-y-2">
                           <div className="px-4 py-2.5 bg-peach/60 rounded-full text-[11px] text-slate-200">
-                            Kontrak sudah melewati masa berlaku ({new Date(selectedContract.endDate).toLocaleDateString("id-ID")}) dan otomatis ditandai Tidak Aktif — tidak lagi dipantau reminder. Gunakan "Perpanjang / Extend" untuk melanjutkan, atau tutup lewat salah satu tombol di bawah.
+                            Kontrak sudah melewati masa berlaku ({new Date(selectedContract.endDate).toLocaleDateString("id-ID")}) dan otomatis ditandai Tidak Aktif — tidak lagi dipantau reminder. Gunakan "Perpanjang / Extend" untuk melanjutkan, atau akhiri lewat tombol di bawah.
                           </div>
-                          <div className="grid grid-cols-2 gap-2">
-                            <button
-                              onClick={() => handleChangeContractStatus("Archived")}
-                              className="py-2 bg-mist text-slate-100 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer"
-                            >
-                              Tidak Berlaku
-                            </button>
+                          {selectedContract.termination && TERMINATION_ACTIVE.includes(selectedContract.termination.stage) && (
+                            <div className="px-4 py-2.5 bg-peach/60 rounded-[18px] text-[11px] text-slate-200 flex items-center justify-between gap-2">
+                              <span>Sedang dalam proses pengakhiran ({TERMINATION_LABEL[selectedContract.termination.target]}) — lihat <b>Tabel Pengakhiran</b> di atas.</span>
+                              <button onClick={() => setTerminationPage(true)} className="px-3 py-1 bg-slate-900 card-soft rounded-full font-semibold cursor-pointer">Buka</button>
+                            </div>
+                          )}
+                          {!(selectedContract.termination && TERMINATION_ACTIVE.includes(selectedContract.termination.stage)) && (
+                          <div className="grid grid-cols-1 gap-2">
                             <button
                               onClick={() => handleChangeContractStatus("Terminated")}
                               className="py-2 bg-slate-900 card-soft text-rose-400 hover:brightness-95 text-[11px] font-bold rounded-full transition cursor-pointer"
@@ -23498,6 +23754,7 @@ export default function App() {
                               Akhiri Kontrak
                             </button>
                           </div>
+                          )}
                         </div>
                       )}
 
@@ -26835,6 +27092,12 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {terminationTarget && selectedContract && (
+        <TerminationFormModal contract={selectedContract} target={terminationTarget} showToast={showToast}
+          onClose={() => setTerminationTarget(null)}
+          onDone={(c) => { setTerminationTarget(null); setSelectedContract(c); setDraftSavedSnapshot(JSON.stringify(c)); fetchInitialData(); }} />
       )}
 
       {/* MITRA / OPERATOR MODAL — isian sama dengan form Vendor */}

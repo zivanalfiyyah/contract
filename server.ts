@@ -10031,7 +10031,16 @@ app.get("/api/legal-dashboard", requireAuth, (req: AuthedRequest, res) => {
     .sort((a, b) => (b.at || "").localeCompare(a.at || ""))
     .slice(0, 12);
 
+  const inForce = contracts.filter((c) => isInForce(c.status) && c.endDate && dayDiff(c.endDate) >= 0);
+  const expiringList = inForce
+    .slice().sort((a, b) => dayDiff(a.endDate) - dayDiff(b.endDate)).slice(0, 6)
+    .map((c) => ({ id: c.id, title: c.title, partner: c.party2Name || "", days: Math.ceil(dayDiff(c.endDate)) }));
+  const weekBuckets = [[0, 7], [7, 14], [14, 21], [21, 28]];
+  const weeklyExpiry = weekBuckets.map(([a, b]) => inForce.filter((c) => dayDiff(c.endDate) >= a && dayDiff(c.endDate) < b).length);
+
   res.json({
+    expiringList,
+    weeklyExpiry,
     statusCounts,
     totalJobs: jobs.length,
     monitoringKontrak,

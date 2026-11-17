@@ -27,6 +27,19 @@ import {
   LayoutDashboard,
   Plus,
   Hash,
+  TrendingUp,
+  FilePen,
+  Info,
+  Activity,
+  PencilLine,
+  GitCompare,
+  FileType as FileTypeIc,
+  FolderTree,
+  Store,
+  Bus,
+  UserCog,
+  Building as BuildingIc,
+  LayoutGrid,
   Save,
   Search,
   Settings,
@@ -51,6 +64,17 @@ import {
   ArrowRight,
   CornerDownLeft,
   Eye,
+  Paperclip,
+  MoreHorizontal,
+  BellRing,
+  Folder,
+  MapPin,
+  FileStack,
+  FilePlus,
+  CalendarClock,
+  AlertCircle,
+  AlertOctagon,
+  Timer,
   EyeOff,
   Ban,
   Trash2,
@@ -92,6 +116,7 @@ import {
   Send,
   Percent,
   Lock,
+  BookOpen,
   Sun,
   Moon,
   PanelLeftClose,
@@ -1488,6 +1513,82 @@ function DcsArchiveBrowser({ docs, onOpen }: { docs: DcsArchiveDoc[]; onOpen: (d
 // dokumen, Mitra/Operator per PT/platform) + nilai "Lainnya" yang pernah
 // diketik di dokumen. Dokumen lama yang belum lengkap klasifikasinya dikumpulkan di
 // "Belum Diklasifikasi". Mode internal (kontrak karyawan): PT › Jenis › Draft/Aktif.
+// Chip status gaya Prodex (dipakai kartu arsip).
+function auditCatOf(a: any) {
+  const t = String(a.action || "").toLowerCase();
+  if (/reject|tolak/.test(t)) return { k: "Penolakan", I: ShieldAlert, tone: "rose" };
+  if (/delete|hapus|terminate|revoke/.test(t)) return { k: "Penghapusan", I: Trash2, tone: "rose" };
+  if (/approv|setuju/.test(t)) return { k: "Approval", I: Stamp, tone: "indigo" };
+  if (/sign|ttd|tanda tangan/.test(t)) return { k: "TTD", I: PencilLine, tone: "emerald" };
+  if (/remind|ingat/.test(t)) return { k: "Pengingat", I: BellRing, tone: "amber" };
+  if (/create|buat|upload|add/.test(t)) return { k: "Dokumen Baru", I: FilePlus, tone: "emerald" };
+  if (/revis|update|edit|ubah|amend|renew|negotiat|change/.test(t)) return { k: "Revisi", I: GitCompare, tone: "purple" };
+  return { k: "Aktivitas", I: History, tone: "indigo" };
+}
+const AUDIT_TONE: Record<string, { ic: string; chip: string; bar: string }> = {
+  indigo: { ic: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]", chip: "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300", bar: "bg-[#635BFF]" },
+  emerald: { ic: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600", chip: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300", bar: "bg-emerald-500" },
+  amber: { ic: "bg-amber-50 dark:bg-amber-950/50 text-amber-500", chip: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300", bar: "bg-[#F59E0B]" },
+  purple: { ic: "bg-purple-50 dark:bg-purple-950/50 text-purple-600", chip: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300", bar: "bg-[#A855F7]" },
+  rose: { ic: "bg-rose-50 dark:bg-rose-950/50 text-rose-500", chip: "text-rose-600 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300", bar: "bg-rose-500" },
+};
+
+function AiHero({ Icon, title, desc, right }: { Icon: any; title: string; desc: string; right?: React.ReactNode }) {
+  return (
+    <div className="relative overflow-hidden rounded-2xl p-6 bg-gradient-to-br from-[#635BFF] via-[#7C5CFF] to-[#A855F7] text-white shadow-lg shadow-indigo-500/20 ring-0">
+      <div className="absolute -right-10 -top-10 w-48 h-48 rounded-full bg-white/10" />
+      <div className="absolute right-24 -bottom-16 w-40 h-40 rounded-full bg-white/10" />
+      <div className="relative flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-white/20 flex items-center justify-center shrink-0"><Icon className="w-6 h-6" /></div>
+          <div>
+            <span className="block leading-6 text-[10px] font-bold uppercase tracking-widest text-white/70">AI Tools Hukum</span>
+            <h2 className="text-xl font-extrabold tracking-tight text-white">{title}</h2>
+            <p className="text-xs font-medium text-white/80 mt-0.5 max-w-xl">{desc}</p>
+          </div>
+        </div>
+        {right && <div className="flex items-center gap-2 text-slate-800">{right}</div>}
+      </div>
+    </div>
+  );
+}
+
+function AiNote({ children, tone = "indigo" }: { children: React.ReactNode; tone?: "indigo" | "amber" }) {
+  return (
+    <div className={`rounded-xl px-4 py-3 text-[11px] font-medium flex items-start gap-2 ${tone === "amber" ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300" : "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300"}`}>
+      <Info className="w-4 h-4 shrink-0 mt-px" />
+      <span>{children}</span>
+    </div>
+  );
+}
+
+function AiEmpty({ Icon, text }: { Icon: any; text: string }) {
+  return (
+    <div className="flex-1 min-h-[260px] flex flex-col items-center justify-center text-center px-8">
+      <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] flex items-center justify-center mb-3"><Icon className="w-6 h-6" /></div>
+      <p className="text-xs font-semibold text-rs-400 max-w-xs">{text}</p>
+    </div>
+  );
+}
+
+function statusChipCls(status?: string) {
+  const m: Record<string, string> = {
+    Draft: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300",
+    OnReview: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300",
+    ApprovedInternal: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300",
+    ReviewEksternal: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300",
+    FinalReview: "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300",
+    FullyApproved: "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300",
+    Arsip: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300",
+    Distribusi: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300",
+    Aktif: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300",
+    TidakAktif: "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300",
+    Archived: "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300",
+    Terminated: "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300",
+  };
+  return `inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${m[status || ""] || "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300"}`;
+}
+
 function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups, isSigned, onOpen, onClassify, renderStatus, mode = "external" }: {
   contracts: Contract[]; companies: TaxCompany[]; docTypes: string[]; operatorGroups?: OperatorGroup[]; mode?: "external" | "internal";
   isSigned: (c: Contract) => boolean; onOpen: (c: Contract) => void; onClassify: (c: Contract) => void;
@@ -1497,6 +1598,8 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
   const NO_OPERATOR = "__tanpa__";
   type Path = { companyId?: string; docType?: string; platform?: string; operator?: string; bucket?: "draft" | "aktif"; unclassified?: boolean };
   const [path, setPath] = useState<Path>({});
+  const [arTab, setArTab] = useState<"all" | "aktif" | "nonaktif">("all");
+  const [arQ, setArQ] = useState("");
   const internal = mode === "internal";
   const classified = (c: Contract) => internal
     ? !!(c.companyId && c.employmentType && c.docType)
@@ -1524,134 +1627,155 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
   // Level Draft/Aktif tercapai setelah Jenis (internal) / Mitra-Operator (eksternal).
   const atBucketLevel = internal ? !!path.docType : (!!path.platform && !!path.operator);
 
-  const Folder = ({ title, sub, count, onClick, dim, tone = "amber" }: { key?: any; title: string; sub?: string; count: number; onClick: () => void; dim?: boolean; tone?: "amber" | "emerald" | "rose" }) => (
-    <button onClick={onClick}
-      className={`p-5 bg-slate-950/60 border rounded-2xl text-left transition group cursor-pointer ${tone === "emerald" ? "border-emerald-500/30 hover:border-emerald-500/60" : tone === "rose" ? "border-rose-500/30 hover:border-rose-500/60" : "border-slate-800 hover:border-indigo-500/50"} ${dim ? "opacity-60" : ""}`}>
-      <FolderOpen className={`w-8 h-8 mb-3 group-hover:scale-110 transition-transform ${tone === "emerald" ? "text-emerald-500" : tone === "rose" ? "text-rose-500" : "text-amber-400"}`} />
-      <p className="font-bold text-slate-200 text-sm leading-snug">{title}</p>
-      <p className="text-[11px] text-slate-500 mt-1">{count} dokumen{sub ? ` · ${sub}` : ""}</p>
-    </button>
-  );
-  const crumbs: { label: string; to: Path }[] = [{ label: "Semua PT", to: {} }];
+  const crumbs: { label: string; to: Path }[] = [{ label: "Arsip", to: {} }];
   if (path.unclassified) crumbs.push({ label: "Belum Diklasifikasi", to: { unclassified: true } });
   if (path.companyId) crumbs.push({ label: company?.code || company?.name || "PT", to: { companyId: path.companyId } });
   if (path.docType) crumbs.push({ label: path.docType, to: { companyId: path.companyId, docType: path.docType } });
   if (path.platform) crumbs.push({ label: path.platform, to: { companyId: path.companyId, docType: path.docType, platform: path.platform } });
   if (path.operator) crumbs.push({ label: path.operator === NO_OPERATOR ? "Tanpa Mitra/Operator" : path.operator, to: { companyId: path.companyId, docType: path.docType, platform: path.platform, operator: path.operator } });
   if (path.bucket) crumbs.push({ label: path.bucket === "aktif" ? "Aktif" : "Draft", to: path });
-  const grid = "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4";
 
-  const DocList = ({ list }: { list: Contract[] }) => (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-      {list.length === 0 && <p className="text-slate-500 italic text-sm col-span-full py-8 text-center">Belum ada dokumen di folder ini.</p>}
-      {list.map((c) => (
-        <div key={c.id} className="p-4 bg-slate-950/60 border border-slate-800 rounded-2xl space-y-2">
-          <div className="flex items-start justify-between gap-2">
-            <p className="font-bold text-slate-200 text-sm leading-snug">{c.title}</p>
-            {renderStatus(c)}
-          </div>
-          <p className="font-mono text-[10px] text-slate-500">{c.contractNumber}</p>
-          <p className="text-[11px] text-slate-400">Pihak: {c.party2Name} · {c.startDate} s/d {c.endDate}</p>
-          {path.unclassified && (
-            <p className="text-[10px] text-amber-600">
-              Belum lengkap: {(internal
-                ? [!c.companyId && "PT", !c.docType && "Jenis", !c.employmentType && "Kategori"]
-                : [!c.companyId && "PT", !c.docType && "Jenis", !c.platform && "Platform"]).filter(Boolean).join(", ")}
-            </p>
-          )}
-          <div className="flex items-center gap-2 pt-2 border-t border-slate-850">
-            {c.masterPdfUrl && (
-              <a href={`/api/contracts/${c.id}/view-pdf`} target="_blank" rel="noreferrer"
-                className="px-3 py-1.5 bg-rose-600/20 text-rose-600 border border-rose-600/30 rounded-lg text-[11px] font-semibold flex items-center gap-1 hover:bg-rose-600/30 transition">
-                <FileText className="w-3 h-3" /> Buka PDF
-              </a>
-            )}
-            <button onClick={() => onOpen(c)} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-slate-200 text-[11px] font-semibold transition">Detail</button>
-            <button onClick={() => onClassify(c)} className="px-3 py-1.5 bg-slate-900 border border-slate-800 hover:border-indigo-500/50 rounded-lg text-indigo-500 text-[11px] font-semibold transition">
-              {path.unclassified ? "Klasifikasikan" : "Pindah Folder"}
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-
-  let body: any;
+  // ---- Daftar folder (sidebar kiri): isi level saat ini ----
+  type FolderItem = { key: string; title: string; count: number; dim?: boolean; tone?: "rose"; active?: boolean; onClick: () => void };
+  let folders: FolderItem[] = [];
+  let emptyNote = "";
   if (path.unclassified) {
-    body = <DocList list={unclassified} />;
+    folders = [{ key: "u", title: "Belum Diklasifikasi", count: unclassified.length, tone: "rose", active: true, onClick: () => setPath({ unclassified: true }) }];
   } else if (!path.companyId) {
-    body = (
-      <div className={grid}>
-        {companyList.map((c) => {
-          const n = docs.filter((d) => d.companyId === c.id).length;
-          return <Folder key={c.id} title={c.name} sub={c.code} count={n} dim={n === 0} onClick={() => setPath({ companyId: c.id })} />;
-        })}
-        {unclassified.length > 0 && (
-          <Folder title="Belum Diklasifikasi" sub={internal ? "PT/Kategori/Jenis belum lengkap" : "PT/Jenis/Platform belum lengkap"} count={unclassified.length} tone="rose" onClick={() => setPath({ unclassified: true })} />
-        )}
-        {companyList.length === 0 && <p className="text-sm text-slate-500 col-span-full">Belum ada perusahaan. Tambahkan di Konfigurasi › Kelola Perusahaan.</p>}
-      </div>
-    );
+    folders = companyList.map((c) => {
+      const n = docs.filter((d) => d.companyId === c.id).length;
+      return { key: c.id, title: c.name, count: n, dim: n === 0, onClick: () => setPath({ companyId: c.id }) };
+    });
+    if (unclassified.length > 0) folders.push({ key: "__u", title: "Belum Diklasifikasi", count: unclassified.length, tone: "rose", onClick: () => setPath({ unclassified: true }) });
+    if (companyList.length === 0) emptyNote = "Belum ada perusahaan. Tambahkan di Konfigurasi › Kelola Perusahaan.";
   } else if (!path.docType) {
-    const list = uniq(docTypes, inCompany.map((c) => c.docType));
-    body = (
-      <div className={grid}>
-        {list.map((d) => {
-          const here = inCompany.filter((c) => sameText(c.docType, d));
-          const aktif = here.filter(isSigned).length;
-          return <Folder key={d} title={d} sub={`${here.length - aktif} draft · ${aktif} aktif`} count={here.length} dim={here.length === 0} onClick={() => setPath({ ...path, docType: d })} />;
-        })}
-      </div>
-    );
+    folders = uniq(docTypes, inCompany.map((c) => c.docType)).map((d) => {
+      const here = inCompany.filter((c) => sameText(c.docType, d));
+      return { key: d, title: d, count: here.length, dim: here.length === 0, onClick: () => setPath({ ...path, docType: d }) };
+    });
   } else if (!internal && !path.platform) {
-    const list = uniq(companyPlatformList(company), inDocType.map((c) => c.platform));
-    body = (
-      <div className={grid}>
-        {list.map((p) => {
-          const n = inDocType.filter((c) => sameText(c.platform, p)).length;
-          return <Folder key={p} title={p} count={n} dim={n === 0} onClick={() => setPath({ ...path, platform: p })} />;
-        })}
-        {list.length === 0 && <p className="text-sm text-slate-500 col-span-full">PT ini belum punya platform. Atur di Konfigurasi › Kelola Perusahaan.</p>}
-      </div>
-    );
+    folders = uniq(companyPlatformList(company), inDocType.map((c) => c.platform)).map((pl) => {
+      const n = inDocType.filter((c) => sameText(c.platform, pl)).length;
+      return { key: pl, title: pl, count: n, dim: n === 0, onClick: () => setPath({ ...path, platform: pl }) };
+    });
+    if (folders.length === 0) emptyNote = "PT ini belum punya platform. Atur di Konfigurasi › Kelola Perusahaan.";
   } else if (!internal && !path.operator) {
     const noOp = inPlatform.filter((c) => !String(c.operator || "").trim());
-    body = (
-      <div className={grid}>
-        {operatorList.map((o) => {
-          const n = inPlatform.filter((c) => sameText(c.operator, o)).length;
-          return <Folder key={o} title={o} count={n} dim={n === 0} onClick={() => setPath({ ...path, operator: o })} />;
-        })}
-        <Folder title="Tanpa Mitra/Operator" count={noOp.length} dim={noOp.length === 0} onClick={() => setPath({ ...path, operator: NO_OPERATOR })} />
-      </div>
-    );
-  } else if (atBucketLevel && !path.bucket) {
-    const aktif = inOperator.filter(isSigned);
-    const draft = inOperator.filter((c) => !isSigned(c));
-    body = (
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
-        <Folder title="Draft" sub="belum TTD basah" count={draft.length} onClick={() => setPath({ ...path, bucket: "draft" })} />
-        <Folder title="Aktif" sub="sudah TTD / pernah aktif" count={aktif.length} tone="emerald" onClick={() => setPath({ ...path, bucket: "aktif" })} />
-      </div>
-    );
-  } else {
-    body = <DocList list={inOperator.filter((c) => isSigned(c) === (path.bucket === "aktif"))} />;
+    folders = operatorList.map((o) => {
+      const n = inPlatform.filter((c) => sameText(c.operator, o)).length;
+      return { key: o, title: o, count: n, dim: n === 0, onClick: () => setPath({ ...path, operator: o }) };
+    });
+    folders.push({ key: "__tanpa", title: "Tanpa Mitra/Operator", count: noOp.length, dim: noOp.length === 0, onClick: () => setPath({ ...path, operator: NO_OPERATOR }) });
+  } else if (atBucketLevel) {
+    const aktifN = inOperator.filter(isSigned).length;
+    folders = [
+      { key: "draft", title: "Draft", count: inOperator.length - aktifN, active: path.bucket === "draft", onClick: () => setPath({ ...path, bucket: "draft" }) },
+      { key: "aktif", title: "Aktif", count: aktifN, active: path.bucket === "aktif", onClick: () => setPath({ ...path, bucket: "aktif" }) },
+    ];
   }
+  const TONES = [
+    "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]", "bg-purple-50 dark:bg-purple-950/50 text-purple-600",
+    "bg-amber-50 dark:bg-amber-950/50 text-amber-500", "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600",
+    "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]", "bg-rose-50 dark:bg-rose-950/50 text-rose-500",
+    "bg-rs-100 dark:bg-rs-800 text-rs-500",
+  ];
+
+  // ---- Dokumen pada cakupan folder saat ini (kanan) ----
+  let scope: Contract[] = contracts;
+  if (path.unclassified) scope = unclassified;
+  else if (path.companyId) {
+    scope = inCompany;
+    if (path.docType) scope = inDocType;
+    if (path.platform) scope = inPlatform;
+    if (path.operator) scope = inOperator;
+    if (path.bucket) scope = inOperator.filter((c) => isSigned(c) === (path.bucket === "aktif"));
+  }
+  const isOff = (c: Contract) => ["TidakAktif", "Archived", "Terminated"].includes(c.status) || (!!c.endDate && new Date(c.endDate).getTime() < Date.now() && isSigned(c));
+  const q = arQ.trim().toLowerCase();
+  const shown = scope.filter((c) => (arTab === "all" ? true : arTab === "aktif" ? !isOff(c) : isOff(c))
+    && (!q || [c.title, c.contractNumber, c.party2Name, c.platform, c.operator].join(" ").toLowerCase().includes(q)));
+  const shortDate = (d?: string) => { if (!d) return "—"; const t = new Date(d); return Number.isNaN(t.getTime()) ? d : t.toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "2-digit" }); };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center flex-wrap gap-1 text-xs">
-        {crumbs.map((cr, i) => (
-          <React.Fragment key={i}>
-            {i > 0 && <span className="text-slate-600">/</span>}
-            <button onClick={() => setPath(cr.to)}
-              className={`font-semibold cursor-pointer ${i === crumbs.length - 1 ? "text-slate-200" : "text-indigo-400 hover:text-indigo-300"}`}>
-              {cr.label}
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="lg:col-span-3 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 self-start">
+        <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider px-3 mb-2">Folder</div>
+        <div className="space-y-0.5">
+          {folders.map((f, i) => (
+            <button key={f.key} onClick={f.onClick}
+              className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-xs text-left cursor-pointer ${f.active ? "bg-[#EFF0FF] dark:bg-indigo-950/60 text-[#635BFF] dark:text-indigo-400 font-bold" : "text-rs-600 dark:text-rs-300 hover:bg-rs-100 dark:hover:bg-rs-800/60 font-semibold"} ${f.dim ? "opacity-60" : ""}`}>
+              <span className="flex items-center gap-2.5 min-w-0">
+                <span className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 ${f.tone === "rose" ? TONES[5] : TONES[i % TONES.length]}`}><Folder className="w-3.5 h-3.5" /></span>
+                <span className="truncate">{f.title}</span>
+              </span>
+              <span className="text-[10px] font-bold text-rs-400">{f.count}</span>
             </button>
-          </React.Fragment>
-        ))}
+          ))}
+          {folders.length === 0 && <p className="px-3 py-2 text-[11px] text-rs-400">{emptyNote || "Tidak ada folder."}</p>}
+        </div>
       </div>
-      {body}
+      <div className="lg:col-span-9 min-w-0 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+        <div className="flex items-center flex-wrap gap-1.5 text-[11px] font-semibold text-rs-400 mb-4">
+          <FolderOpen className="w-3.5 h-3.5" />
+          {crumbs.map((cr, i) => (
+            <React.Fragment key={i}>
+              {i > 0 && <span>/</span>}
+              <button onClick={() => setPath(cr.to)} className={`cursor-pointer ${i === crumbs.length - 1 ? "text-rs-700 dark:text-rs-200" : "hover:text-[#635BFF]"}`}>{cr.label}</button>
+            </React.Fragment>
+          ))}
+        </div>
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-5">
+          <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start text-[11px] font-bold text-rs-500 flex-wrap">
+            {([["all", "Semua"], ["aktif", "Berlaku"], ["nonaktif", internal ? "Tidak Berlaku" : "Tidak Aktif / Tidak Berlaku"]] as const).map(([k, l]) => (
+              <button key={k} onClick={() => setArTab(k)} className={`px-3 py-1 rounded-lg cursor-pointer ${arTab === k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>{l}</button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+              <input type="text" value={arQ} onChange={(e) => setArQ(e.target.value)} placeholder="Cari berkas..." className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {shown.length === 0 && <p className="col-span-full text-center text-xs font-semibold text-rs-400 py-10">Belum ada dokumen di folder ini.</p>}
+          {shown.map((c) => {
+            const signed = isSigned(c);
+            const kind = contractDocKind(c);
+            return (
+              <div key={c.id} onClick={() => onOpen(c)} className="rounded-2xl border border-rs-200/80 dark:border-rs-800 overflow-hidden hover:border-[#635BFF] transition group cursor-pointer">
+                <div className={`h-24 flex items-center justify-center relative ${signed ? "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600" : "bg-rs-100 dark:bg-rs-800 text-rs-400"}`}>
+                  <FileText className="w-9 h-9 opacity-80" />
+                  <span className="absolute top-2 right-2"><span className="inline-block text-[10px] font-bold text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300 px-2.5 py-1 rounded-lg whitespace-nowrap">{c.masterPdfUrl ? "PDF" : kind}</span></span>
+                </div>
+                <div className="p-3.5">
+                  <div className="flex items-center justify-between mb-1">
+                    {renderStatus(c)}
+                    {c.masterPdfUrl ? (
+                      <a href={`/api/contracts/${c.id}/view-pdf`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} title="Buka PDF" className="text-rs-400 group-hover:text-[#635BFF]"><Download className="w-3.5 h-3.5" /></a>
+                    ) : (
+                      <button onClick={(e) => { e.stopPropagation(); onOpen(c); }} title="Buka detail" className="text-rs-400 group-hover:text-[#635BFF] cursor-pointer"><Eye className="w-3.5 h-3.5" /></button>
+                    )}
+                  </div>
+                  <h4 className="text-xs font-bold text-rs-900 dark:text-white leading-snug mt-2">{c.title}</h4>
+                  <p className="text-[10px] text-rs-400 font-medium mt-0.5">{c.contractNumber}{c.party2Name ? ` · ${c.party2Name}` : ""}</p>
+                  {path.unclassified && (
+                    <p className="text-[10px] text-amber-600 mt-1">
+                      Belum lengkap: {(internal
+                        ? [!c.companyId && "PT", !c.docType && "Jenis", !c.employmentType && "Kategori"]
+                        : [!c.companyId && "PT", !c.docType && "Jenis", !c.platform && "Platform"]).filter(Boolean).join(", ")}
+                    </p>
+                  )}
+                  <div className="flex items-center justify-between text-[10px] font-semibold text-rs-400 mt-3 pt-2.5 border-t border-rs-100 dark:border-rs-800">
+                    <button onClick={(e) => { e.stopPropagation(); onClassify(c); }} title={path.unclassified ? "Klasifikasikan" : "Pindah folder"} className="flex items-center gap-1 hover:text-[#635BFF] cursor-pointer"><MapPin className="w-3 h-3" />{path.unclassified ? "Klasifikasikan" : "Pindah Folder"}</button>
+                    <span>{shortDate(c.endDate || c.startDate)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2091,7 +2215,7 @@ function ExternalReviewPage({ token }: { token: string }) {
           />
         )}
 
-        <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 sm:p-7">
+        <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 sm:p-7">
           {c.documentSource === "upload" ? (
             <div className="space-y-5">
               <p className="text-[11px] text-slate-500 truncate">
@@ -2346,7 +2470,7 @@ function LegalExternalFormPage({ token }: { token: string }) {
           <p className="text-xs text-slate-400">{meta?.tenantName} · Diisi oleh partner/pihak eksternal</p>
         </header>
 
-        <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 sm:p-7 space-y-5">
+        <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 sm:p-7 space-y-5">
           <div className="space-y-1.5">
             <label className={labelCls}>Badan Hukum / Entitas Perusahaan <span className="text-rose-500">*</span></label>
             <select value={form.companyId} onChange={set("companyId")} className={inputCls + " cursor-pointer"}>
@@ -2610,7 +2734,7 @@ function DcsExternalReviewPage({ token }: { token: string }) {
         </header>
 
         {(d.purpose || d.scope) && (
-          <section className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-2">
+          <section className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-2">
             {d.purpose && <p className="text-sm text-slate-300"><b className="text-slate-100">Tujuan:</b> {d.purpose}</p>}
             {d.scope && <p className="text-sm text-slate-300"><b className="text-slate-100">Ruang Lingkup:</b> {d.scope}</p>}
           </section>
@@ -2619,7 +2743,7 @@ function DcsExternalReviewPage({ token }: { token: string }) {
         {sections.map((sec, i) => {
           const secComments = commentsFor((c) => c.anchor?.field === "section" && c.anchor?.sectionIndex === i);
           return (
-            <section key={i} className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-3">
+            <section key={i} className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-3">
               <h2 className="font-bold text-slate-100 text-sm">{sec.heading}</h2>
               <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap select-text">
                 {highlightDcsQuotes(sec.content, secComments.map((c) => c.anchor?.quote).filter(Boolean))}
@@ -2634,12 +2758,12 @@ function DcsExternalReviewPage({ token }: { token: string }) {
         })}
 
         {sections.length === 0 && (
-          <section className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 text-sm text-slate-400">
+          <section className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 text-sm text-slate-400">
             Dokumen ini diunggah sebagai berkas PDF (bukan disusun per bagian di sistem) — tidak ada bagian terstruktur untuk dikomentari satu-satu. Gunakan komentar umum di bawah, atau klik Setuju/OK bila sudah sesuai.
           </section>
         )}
 
-        <section className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-3">
+        <section className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-3">
           <h2 className="font-bold text-slate-100 text-sm">Komentar Umum</h2>
           {!data.locked && (
             <button onClick={startGeneralComment} className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-lg cursor-pointer">✎ Tambah komentar umum</button>
@@ -3606,66 +3730,63 @@ const legalJobEntityCell = (j: { companyName?: string; companyCode?: string }) =
     ? <span title={j.companyName} className="whitespace-nowrap">{j.companyCode ? `PT ${j.companyCode}` : j.companyName}</span>
     : <span className="text-slate-500">—</span>;
 
-// Kepala halaman bergradasi + ikon samar (seragam dengan Konfigurasi).
-function LegalHero({ Icon, title, sub, right }: { Icon: any; title: string; sub: string; right?: any }) {
+// Judul halaman (gaya Prodex): judul tebal + keterangan kecil, aksi di kanan.
+function LegalHero({ title, sub, right }: { Icon?: any; title: string; sub: string; right?: any }) {
   return (
-    <div className="card-grad card-soft bg-slate-900 rounded-2xl px-6 py-5 flex flex-col md:flex-row md:items-center gap-4 relative overflow-hidden">
-      <Gavel aria-hidden className="pointer-events-none absolute -right-4 -top-8 w-40 h-40 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
-      <ScrollText aria-hidden className="pointer-events-none absolute right-44 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
-      <Scale aria-hidden className="pointer-events-none absolute right-96 -top-3 w-16 h-16 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
-      <div className="flex items-center gap-4 min-w-0 relative flex-1">
-        <span className="w-12 h-12 rounded-full bg-peach flex items-center justify-center shrink-0"><Icon className="w-5 h-5 text-slate-300" /></span>
-        <div className="min-w-0">
-          <h2 className="text-[22px] leading-tight font-medium text-slate-100">{title}</h2>
-          <p className="text-xs text-slate-500 mt-0.5">{sub}</p>
-        </div>
+    <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">{title}</h2>
+        <p className="text-xs font-medium text-rs-400 mt-0.5">{sub}</p>
       </div>
-      {right && <div className="relative shrink-0">{right}</div>}
+      {right && <div className="shrink-0 flex items-center gap-2">{right}</div>}
     </div>
   );
 }
 
-// Kartu ringkasan status (klik = filter / buka daftar).
-// Panah alur antar kartu tahap: grid 2 / 4 / 6 kolom (base / sm / xl) — panah ke kanan hanya di kartu yang masih
-// punya tetangga di barisnya; di ujung baris, panah melengkung menunjukkan alur lanjut ke baris berikutnya.
+// Kartu tahap (gaya Prodex): batang warna di atas, nomor kecil, angka besar; chevron antar kartu.
+const LEGAL_STAGE_BAR: Record<string, string> = {
+  PekerjaanMasuk: "bg-rs-400", BelumDiproses: "bg-rs-400", Draft: "bg-[#A855F7]", ReviewInternal: "bg-[#A855F7]",
+  ReviewPihakKedua: "bg-[#F59E0B]", RevisiNegosiasi: "bg-[#F59E0B]", Finalisasi: "bg-[#635BFF]", ProsesTTD: "bg-[#635BFF]",
+  DokumenKembali: "bg-[#635BFF]", Arsip: "bg-emerald-500", Distribusi: "bg-emerald-500", Aktif: "bg-emerald-500",
+};
 function LegalStatCard({ status, count, active, onClick, index, total }: { key?: any; status: string; count: number; active?: boolean; onClick: () => void; index?: number; total?: number }) {
-  const Icon = LEGAL_STATUS_ICON[status] || FileText;
   const hasFlow = typeof index === "number" && typeof total === "number";
   const isLast = hasFlow && index === total - 1;
-  const rightCls = !hasFlow || isLast ? "hidden"
-    : `${index % 2 !== 1 ? "flex" : "hidden"} ${index % 4 !== 3 ? "sm:flex" : "sm:hidden"} ${index % 6 !== 5 ? "xl:flex" : "xl:hidden"}`;
-  const wrapCls = !hasFlow || isLast ? "hidden"
-    : `${index % 2 === 1 ? "flex" : "hidden"} ${index % 4 === 3 ? "sm:flex" : "sm:hidden"} ${index % 6 === 5 ? "xl:flex" : "xl:hidden"}`;
   return (
-    <div className="relative">
+    <>
       <button onClick={onClick}
-        className={`w-full h-full text-left p-4 rounded-2xl card-soft card-grad relative overflow-hidden transition cursor-pointer hover:brightness-[1.02] ${active ? "bg-mist ring-2 ring-soft-blue/60" : "bg-slate-900"}`}>
-        <span className={`w-8 h-8 rounded-full flex items-center justify-center mb-3 ${status === "PekerjaanMasuk" ? "bg-peach-strong" : "bg-peach"}`}><Icon className="w-4 h-4 text-slate-100" /></span>
-        {hasFlow && <span className="absolute top-3.5 right-4 text-[10px] font-bold text-rs-400 tabular-nums">{index + 1}</span>}
-        <p className="text-[26px] leading-none font-medium text-slate-100 tabular">{count}</p>
-        <p className="text-[11px] text-slate-500 leading-tight mt-1.5">{LEGAL_STATUS_LABEL[status]}</p>
+        className={`shrink-0 w-36 text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-3 relative overflow-hidden transition cursor-pointer hover:border-rs-300 ${active ? "ring-2 ring-[#635BFF]" : ""}`}>
+        <span className={`absolute top-0 left-0 right-0 h-1 ${LEGAL_STAGE_BAR[status] || "bg-rs-400"}`} />
+        {hasFlow && <span className="text-[10px] font-bold text-rs-400">{String(index + 1).padStart(2, "0")}</span>}
+        <span className="block text-xl font-extrabold text-rs-900 dark:text-white tracking-tight leading-tight">{count.toLocaleString("en-US")}</span>
+        <span className="block text-[11px] font-semibold text-rs-500 dark:text-rs-400 leading-snug">{status === "Distribusi" ? "Distribusi / Implementasi" : LEGAL_STATUS_LABEL[status]}</span>
       </button>
-      <span aria-hidden className={`${rightCls} absolute top-1/2 -right-[13px] -translate-y-1/2 z-10 w-[22px] h-[22px] rounded-full bg-white dark:bg-rs-800 border border-rs-200 dark:border-rs-700 items-center justify-center text-[#635BFF] pointer-events-none`}>
-        <ArrowRight className="w-3 h-3" strokeWidth={2.5} />
-      </span>
-      <span aria-hidden className={`${wrapCls} absolute -bottom-[13px] right-5 z-10 w-[22px] h-[22px] rounded-full bg-white dark:bg-rs-800 border border-rs-200 dark:border-rs-700 items-center justify-center text-[#635BFF] pointer-events-none`}>
-        <CornerDownLeft className="w-3 h-3" strokeWidth={2.5} />
-      </span>
+      {hasFlow && !isLast && <div aria-hidden className="shrink-0 self-center text-rs-300"><ChevronRight className="w-4 h-4" /></div>}
+    </>
+  );
+}
+
+// Baris kartu tahap dalam panel putih berjudul "Alur Dokumen".
+function LegalStageRow({ children, right }: { children: any; right?: any }) {
+  return (
+    <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider">Alur Dokumen</div>
+        {right}
+      </div>
+      <div className="flex gap-1.5 overflow-x-auto pb-1">{children}</div>
     </div>
   );
 }
 
 // Kartu isi: lingkaran ikon + judul + (aksi) lalu konten.
-function LegalPanel({ Icon, title, subtitle, right, tone, children }: { Icon: any; title: string; subtitle?: string; right?: any; tone?: "peach"; children: any }) {
+function LegalPanel({ Icon, title, subtitle, right, children }: { Icon?: any; title: string; subtitle?: string; right?: any; tone?: "peach"; children: any }) {
   return (
-    <div className="card-soft bg-slate-900 rounded-2xl p-6 space-y-4 min-w-0">
+    <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5 space-y-4 min-w-0">
       <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <span className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${tone === "peach" ? "bg-peach-strong" : "bg-mist"}`}><Icon className="w-[17px] h-[17px] text-slate-100" /></span>
-          <div className="min-w-0">
-            <h3 className="text-[16px] font-medium text-slate-100 leading-snug">{title}</h3>
-            {subtitle && <p className="text-[11px] text-slate-500 leading-snug mt-0.5">{subtitle}</p>}
-          </div>
+        <div className="min-w-0">
+          <h3 className="text-sm font-extrabold text-rs-900 dark:text-white leading-snug flex items-center gap-2">{Icon && <Icon className="w-4 h-4 text-[#635BFF] shrink-0" />}{title}</h3>
+          {subtitle && <p className="text-[11px] font-medium text-rs-400 leading-snug mt-0.5">{subtitle}</p>}
         </div>
         {right}
       </div>
@@ -3795,6 +3916,10 @@ async function openLegalJobDocument(
 // Bagikan Link Formulir (bukan form internal lagi); pekerjaan yang masuk
 // dari form eksternal direview lewat tabel "Pekerjaan Masuk" sebelum masuk
 // ke tabel utama. Lihat Spek-Dashboard-Pekerjaan-Legal.docx bagian 4.
+const PJ_CARD = "bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5";
+const PJ_CHIP = "inline-block text-[10px] font-bold text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300 px-2.5 py-1 rounded-lg whitespace-nowrap";
+const pjPrio = (p: string) => `inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${p === "Tinggi" ? "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300" : p === "Sedang" ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300" : "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300"}`;
+const LEGAL_DOT: Record<string, string> = { Draft: "bg-[#A855F7]", ReviewInternal: "bg-[#A855F7]", ReviewPihakKedua: "bg-[#F59E0B]", RevisiNegosiasi: "bg-[#F59E0B]", Finalisasi: "bg-[#635BFF]", ProsesTTD: "bg-[#635BFF]", DokumenKembali: "bg-[#635BFF]", Arsip: "bg-emerald-500", Distribusi: "bg-emerald-500", Aktif: "bg-emerald-500" };
 function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, onCreateExternalContract, focusJobId, onFocusHandled }: { currentUser: any; actionPermissions?: Record<string, string[]>; onOpenContract: (contractId: string) => void; onCreateExternalContract?: (job: { id: string; title: string; companyId?: string }) => void; focusJobId?: string | null; onFocusHandled?: () => void }) {
   const [jobs, setJobs] = useState<LegalJobWithLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -3811,6 +3936,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
   const [rejectJob, setRejectJob] = useState<LegalJob | null>(null);
   const [detailJob, setDetailJob] = useState<LegalJobWithLink | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("semua");
+  const [jobView, setJobView] = useState<"board" | "table">("board");
   // Divisi bisnis = PEMINTA (ajukan Permintaan Kontrak, pantau progresnya);
   // Legal/Admin = PEMROSES (setujui/tolak, buat kontrak). Manajemen hanya lihat.
   const isRequester = isDivisionRole(currentUser?.role);
@@ -3870,191 +3996,183 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
       )}
 
       <LegalHero Icon={Briefcase} title={isRequester ? "Permintaan Kontrak" : "Pekerjaan Legal"}
-        sub={isRequester ? `Ajukan kebutuhan kontrak ke Legal & pantau progresnya — divisi ${roleLabelOf(currentUser?.role)}.` : "Kelola seluruh pekerjaan Legal dari awal hingga selesai."}
-        right={isRequester ? (
-          <button onClick={() => setRequestOpen(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer"><Send className="w-4 h-4" /> Ajukan Permintaan Kontrak</button>
+        sub={isRequester ? `Ajukan kebutuhan kontrak ke Legal & pantau progresnya — divisi ${roleLabelOf(currentUser?.role)}.` : "Alur dokumen dari permintaan masuk sampai aktif. Klik tahap untuk menyaring."}
+        right={<>
+          <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl text-[11px] font-bold text-rs-500">
+            {([["board", "Board", Columns3], ["table", "Tabel", Table2]] as const).map(([k, l, I]) => (
+              <button key={k} onClick={() => setJobView(k)} className={`px-3 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer ${jobView === k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : ""}`}><I className="w-3 h-3" /> {l}</button>
+            ))}
+          </div>
+          {isRequester ? (
+          <button onClick={() => setRequestOpen(true)} className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"><Send className="w-4 h-4" /> Ajukan Permintaan Kontrak</button>
         ) : isLegalSide ? (
-          <button onClick={() => setAddOpen(true)} className="flex items-center gap-2 px-5 py-2.5 rounded-full btn-grad-primary text-white text-xs font-bold cursor-pointer"><Plus className="w-4 h-4" /> Tambah Pekerjaan Legal</button>
-        ) : undefined} />
+          <button onClick={() => setAddOpen(true)} className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"><Plus className="w-4 h-4" /> Tambah Pekerjaan Legal</button>
+        ) : null}
+        </>} />
 
       {/* Kartu ringkasan status — klik untuk filter tabel utama di bawah. */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-6 gap-3">
+      <LegalStageRow right={
+        <div className="relative"><Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+          <input value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} placeholder="Cari judul, mitra, jenis, status…" className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
+        </div>}>
+        <button onClick={() => setStatusFilter("semua")} className={`shrink-0 w-28 text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-3 relative overflow-hidden cursor-pointer ${statusFilter === "semua" ? "ring-2 ring-[#635BFF]" : ""}`}>
+          <span className="absolute top-0 left-0 right-0 h-1 bg-[#635BFF]" />
+          <span className="text-[10px] font-bold text-rs-400">SEMUA</span>
+          <span className="block text-xl font-extrabold text-rs-900 dark:text-white leading-tight tabular">{jobs.length}</span>
+          <span className="block text-[11px] font-semibold text-rs-500">Pekerjaan</span>
+        </button>
+        <div aria-hidden className="shrink-0 self-center text-rs-300"><ChevronRight className="w-4 h-4" /></div>
         {cardStatuses.map((s, i) => (
           <LegalStatCard key={s} status={s} index={i} total={cardStatuses.length} count={countOf(s)} active={statusFilter === s} onClick={() => setStatusFilter(s === statusFilter ? "semua" : s)} />
         ))}
-      </div>
+      </LegalStageRow>
 
-      {/* ===== Tabel "Pekerjaan Masuk" (Belum Diproses) ===== */}
-      <LegalPanel Icon={Inbox} tone="peach" title={isRequester ? "Menunggu Persetujuan Legal" : "Pekerjaan Masuk"} subtitle={isRequester ? "Permintaan divisi Anda yang belum diproses Legal" : "Belum diproses — dari formulir eksternal & permintaan divisi"}
-        right={<span className="text-[11px] px-3 py-1 rounded-full bg-peach text-brand-orange font-semibold whitespace-nowrap">{incoming.length} menunggu</span>}>
+      {/* ===== Permintaan Masuk (Belum Diproses) ===== */}
+      <div className={PJ_CARD}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2"><Inbox className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">{isRequester ? "Menunggu Persetujuan Legal" : "Permintaan Masuk"}</h3></div>
+          <div className="flex items-center gap-2"><span className="inline-block text-[10px] font-bold text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300 px-2.5 py-1 rounded-lg whitespace-nowrap">{incoming.length > 0 ? "Menunggu Legal" : "0 menunggu"}</span></div>
+        </div>
         {loading ? (
-          <p className="py-6 text-center text-xs text-slate-500">Memuat…</p>
+          <p className="py-6 text-center text-xs text-rs-400">Memuat…</p>
         ) : incoming.length === 0 ? (
-          <p className="py-6 text-center text-xs text-slate-500">{isRequester ? "Tidak ada permintaan yang sedang menunggu." : "Belum ada pekerjaan masuk dari formulir eksternal maupun divisi."}</p>
+          <p className="py-6 text-center text-xs text-rs-400">{isRequester ? "Tidak ada permintaan yang sedang menunggu." : "Belum ada pekerjaan masuk dari formulir eksternal maupun divisi."}</p>
         ) : (
-          <div className="overflow-x-auto no-scrollbar">
-            <table className="w-full text-[12.5px]">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="p-3 font-semibold">Judul Pekerjaan</th>
-                  <th className="p-3 font-semibold">Badan Hukum</th>
-                  <th className="p-3 font-semibold">Partner/Pihak</th>
-                  <th className="p-3 font-semibold">Jenis</th>
-                  <th className="p-3 font-semibold">PIC Pemberi</th>
-                  <th className="p-3 font-semibold">Deadline</th>
-                  <th className="p-3 font-semibold">Dokumen</th>
-                  <th className="p-3 font-semibold">Tanggal Masuk</th>
-                  <th className="p-3 font-semibold text-right">Aksi</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse plain-table">
+              <thead><tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider"><th className="py-2.5 px-2">Judul Pekerjaan</th><th className="py-2.5 px-2">Badan Hukum</th><th className="py-2.5 px-2">Partner/Pihak</th><th className="py-2.5 px-2">Jenis</th><th className="py-2.5 px-2">PIC Pemberi</th><th className="py-2.5 px-2 text-center">Deadline</th><th className="py-2.5 px-2 text-center">Dokumen</th><th className="py-2.5 px-2 text-center">Tgl Masuk</th><th className="py-2.5 px-2 text-center">Aksi</th></tr></thead>
+              <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
                 {incoming.map((j) => (
-                  <tr key={j.id}>
-                    <td className="p-3 font-medium text-slate-100">{j.title}</td>
-                    <td className="p-3 text-slate-400">{legalJobEntityCell(j)}</td>
-                    <td className="p-3 text-slate-400">{j.partnerName}</td>
-                    <td className="p-3 text-slate-400">{j.docType}</td>
-                    <td className="p-3 text-slate-400">{j.picName}{j.source === "divisi" && j.requesterName ? <span className="block text-[10.5px] text-slate-500">oleh {j.requesterName}</span> : null}</td>
-                    <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
-                    <td className="p-3">
+                  <tr key={j.id} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40 transition-opacity duration-300">
+                    <td className="py-3 px-2"><span className="font-bold text-rs-900 dark:text-white block">{j.title}</span><span className="text-[10px] text-rs-400 font-normal">{j.source === "divisi" && j.requesterName ? `Sumber: Divisi · oleh ${j.requesterName}` : "Sumber: Eksternal"}</span></td>
+                    <td className="py-3 px-2 font-medium text-rs-500">{legalJobEntityCell(j)}</td>
+                    <td className="py-3 px-2 font-medium">{j.partnerName}</td>
+                    <td className="py-3 px-2"><span className={PJ_CHIP}>{j.docType}</span></td>
+                    <td className="py-3 px-2 font-medium">{j.picName}</td>
+                    <td className="py-3 px-2 text-center text-rs-500 font-medium whitespace-nowrap">{fmtDateID(j.deadline)}</td>
+                    <td className="py-3 px-2 text-center">
                       {j.documents.length > 0 ? (
-                        <div className="flex flex-col gap-0.5">
+                        <span className="inline-flex flex-col items-center gap-0.5 text-rs-500">
                           {j.documents.map((d, di) => (
-                            <button key={d.id} type="button" onClick={() => openLegalJobDocument(j.id, d, "view", notify)}
-                              title={d.name} className="text-left text-[#3a7fa8] font-semibold hover:underline text-[11.5px] cursor-pointer max-w-[160px] truncate">
-                              {j.documents.length > 1 ? `${d.linkUrl ? "Link" : "Berkas"} ${di + 1}: ${d.name}` : d.linkUrl ? "Buka link" : "Lihat berkas"}
+                            <button key={d.id} type="button" onClick={() => openLegalJobDocument(j.id, d, "view", notify)} title={d.name} className="inline-flex items-center gap-1 text-rs-500 hover:text-[#635BFF] cursor-pointer">
+                              <Paperclip className="w-3 h-3" />{j.documents.length > 1 ? `${d.linkUrl ? "Link" : "Berkas"} ${di + 1}` : d.linkUrl ? "1 link" : "1 berkas"}
                             </button>
                           ))}
-                        </div>
-                      ) : <span className="text-slate-500">—</span>}
+                        </span>
+                      ) : <span className="text-rs-300">—</span>}
                     </td>
-                    <td className="p-3 text-slate-500">{fmtDateTimeID(j.createdAt)}</td>
-                    <td className="p-3">
+                    <td className="py-3 px-2 text-center text-rs-500 font-medium whitespace-nowrap">{fmtDateID(j.createdAt)}</td>
+                    <td className="py-3 px-2 text-center whitespace-nowrap">
                       {!isLegalSide ? (
-                        <p className="text-right text-[11px] text-slate-500 italic">Menunggu Legal</p>
+                        <span className="text-[11px] text-rs-400 italic font-normal">Menunggu Legal</span>
                       ) : (
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => setApproveJob(j)} title="Setujui" className="w-8 h-8 rounded-full bg-mist hover:brightness-95 text-indigo-400 flex items-center justify-center cursor-pointer"><ThumbsUp className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => setRejectJob(j)} title="Tidak Disetujui" className="w-8 h-8 rounded-full bg-peach hover:brightness-95 text-brand-orange flex items-center justify-center cursor-pointer"><ThumbsDown className="w-3.5 h-3.5" /></button>
+                        <>
+                          <button onClick={() => setApproveJob(j)} title="Setujui" className="bg-[#635BFF] hover:bg-indigo-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg mr-1 cursor-pointer">Setujui</button>
+                          <button onClick={() => setRejectJob(j)} title="Tidak Disetujui" className="bg-rs-100 dark:bg-rs-800 text-rs-600 dark:text-rs-300 text-[10px] font-bold px-2.5 py-1 rounded-lg cursor-pointer">Tolak</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ===== Board per tahap ===== */}
+      {jobView === "board" && (
+        <div className="flex gap-3 overflow-x-auto pb-2">
+          {LEGAL_STAGES.filter((st) => !["PekerjaanMasuk", "BelumDiproses"].includes(st)).map((st) => {
+            const col = mainJobs.filter((j) => legalJobDisplayStatus(j) === st);
+            if (statusFilter !== "semua" && statusFilter !== st) return null;
+            return (
+              <div key={st} className="w-64 shrink-0 rounded-2xl bg-rs-100/70 dark:bg-rs-800/40 p-2.5">
+                <div className="flex items-center justify-between px-1.5 py-1.5 mb-2">
+                  <span className="flex items-center gap-2 text-xs font-bold text-rs-700 dark:text-rs-200"><span className={`w-2 h-2 rounded-full ${LEGAL_DOT[st] || "bg-rs-400"}`} />{LEGAL_STATUS_LABEL[st]}</span>
+                  <span className="text-[10px] font-bold text-rs-400">{col.length}</span>
+                </div>
+                <div className="space-y-2.5 min-h-[60px]">
+                  {col.map((j) => (
+                    <div key={j.id} onClick={() => setDetailJob(j)} className="p-3 rounded-xl bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs hover:border-[#635BFF] transition cursor-pointer">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className={PJ_CHIP}>{j.docType}</span>
+                        {j.priority && <span className={pjPrio(j.priority)}>{j.priority}</span>}
                       </div>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </LegalPanel>
-
-      {/* ===== Tabel "Pekerjaan Legal" Utama ===== */}
-      <LegalPanel Icon={Layers} title="Daftar Pekerjaan Legal" subtitle={statusFilter === "semua" ? "Semua status" : `Filter: ${LEGAL_STATUS_LABEL[statusFilter]}`}
-        right={
-          <div className="flex flex-wrap items-center justify-end gap-2">
-          <div className="flex items-center gap-2 bg-slate-950 rounded-full pl-3 pr-3 py-1.5">
-            <Search className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-            <input
-              value={jobSearch}
-              onChange={(e) => setJobSearch(e.target.value)}
-              placeholder="Cari judul, mitra, nomor, jenis, status…"
-              className="bg-transparent text-[12px] text-slate-200 placeholder:text-slate-500 focus:outline-none w-52"
-              style={{ border: "none", boxShadow: "none" }}
-            />
-            {jobSearch && <button onClick={() => setJobSearch("")} aria-label="Hapus pencarian" className="text-slate-500 hover:text-slate-200 cursor-pointer"><X className="w-3.5 h-3.5" /></button>}
-          </div>
-          <div className="flex items-center gap-2 bg-slate-950 rounded-full pl-3 pr-2 py-1.5">
-            <Filter className="w-3.5 h-3.5 text-slate-500" />
-            <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="bg-transparent text-[12px] text-slate-300 focus:outline-none cursor-pointer" style={{ border: "none", boxShadow: "none" }}>
-              <option value="semua">Semua Status</option>
-              {LEGAL_WORKFLOW_ORDER.map((s) => <option key={s} value={s}>{LEGAL_STATUS_LABEL[s]}</option>)}
-              <option value="Ditolak">{LEGAL_STATUS_LABEL.Ditolak}</option>
-            </select>
-          </div>
-          </div>
-        }>
-        {mainJobs.length === 0 ? (
-          <p className="py-6 text-center text-xs text-slate-500">{jobSearch.trim() ? `Tidak ada pekerjaan yang cocok dengan "${jobSearch.trim()}".` : "Belum ada pekerjaan pada status ini."}</p>
-        ) : (
-          <div className="overflow-x-auto no-scrollbar">
-            <table className="w-full text-[12.5px]">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="p-3 font-semibold">Judul Pekerjaan</th>
-                  <th className="p-3 font-semibold">Badan Hukum</th>
-                  <th className="p-3 font-semibold">Jenis</th>
-                  <th className="p-3 font-semibold">Partner</th>
-                  <th className="p-3 font-semibold">PIC Pemberi</th>
-                  <th className="p-3 font-semibold">Status</th>
-                  <th className="p-3 font-semibold">Deadline</th>
-                  <th className="p-3 font-semibold">Prioritas</th>
-                  <th className="p-3 font-semibold text-right">Aksi</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mainJobs.map((j) => (
-                  <tr key={j.id}>
-                    <td className="p-3 font-medium text-slate-100">{j.title}</td>
-                    <td className="p-3 text-slate-400">{legalJobEntityCell(j)}</td>
-                    <td className="p-3 text-slate-400">{j.docType}</td>
-                    <td className="p-3 text-slate-400">{j.partnerName}</td>
-                    <td className="p-3 text-slate-400">{j.picName}</td>
-                    <td className="p-3">
-                      {j.linkedContract ? (
-                        <div className="flex flex-col gap-0.5 w-fit">
-                          <span className={`text-[11px] px-2.5 py-1 rounded-full font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[j.linkedContract.status] || "bg-slate-800 text-slate-400"}`}>
-                            {CONTRACT_STATUS_LABEL_ID[j.linkedContract.status] || j.linkedContract.status}
-                          </span>
-                          <button onClick={() => onOpenContract(j.linkedContract!.id)} className="text-[9.5px] text-[#3a7fa8] font-semibold hover:underline text-left cursor-pointer pl-1">mengikuti Kontrak →</button>
+                      <h4 className="text-xs font-bold text-rs-900 dark:text-white leading-snug">{j.title}</h4>
+                      <p className="text-[11px] text-rs-400 font-medium mt-0.5">{j.partnerName}</p>
+                      <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-rs-100 dark:border-rs-800">
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-5 h-5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] text-[10px] font-bold flex items-center justify-center shrink-0">{String(j.picName || "?").split(" ").map((w: string) => w[0]).slice(0, 2).join("").toUpperCase()}</div>
+                          <span className="text-[10px] font-semibold text-rs-500">{j.picName}</span>
                         </div>
-                      ) : (
-                        <span className={LEGAL_PILL}>{LEGAL_STATUS_LABEL[legalJobDisplayStatus(j)]}</span>
-                      )}
-                    </td>
-                    <td className="p-3 text-slate-400">{fmtDateID(j.deadline)}</td>
-                    <td className="p-3">{j.priority && <span className={`text-[11px] px-2.5 py-1 rounded-full font-semibold ${LEGAL_PRIORITY_STYLE[j.priority]}`}>{j.priority}</span>}</td>
-                    <td className="p-3 text-right">
-                      <button onClick={() => setDetailJob(j)} className="px-3.5 py-1.5 rounded-full bg-mist text-indigo-400 hover:brightness-95 text-[11.5px] font-semibold cursor-pointer whitespace-nowrap">Lihat Detail</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </LegalPanel>
+                        <span className="text-[10px] font-bold text-rs-400 flex items-center gap-1"><Calendar className="w-3 h-3" />{fmtDateID(j.deadline)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {/* ===== Tabel "Ditolak / Arsip Penolakan" ===== */}
-      <LegalPanel Icon={FileX} title="Ditolak" subtitle="Arsip penolakan"
-        right={<span className="text-[11px] px-3 py-1 rounded-full bg-slate-950 text-slate-400 font-semibold">{rejected.length}</span>}>
+      {/* ===== Tabel Pekerjaan Legal ===== */}
+      {jobView === "table" && (
+        <div className={PJ_CARD}>
+          {mainJobs.length === 0 ? (
+            <p className="py-6 text-center text-xs text-rs-400">{jobSearch.trim() ? `Tidak ada pekerjaan yang cocok dengan "${jobSearch.trim()}".` : "Belum ada pekerjaan pada status ini."}</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse plain-table">
+                <thead><tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider"><th className="py-2.5 px-2">Judul Pekerjaan</th><th className="py-2.5 px-2">Badan Hukum</th><th className="py-2.5 px-2">Jenis</th><th className="py-2.5 px-2">PIC Pemberi</th><th className="py-2.5 px-2 text-center">Status</th><th className="py-2.5 px-2 text-center">Deadline</th><th className="py-2.5 px-2 text-center">Prioritas</th><th className="py-2.5 px-2 text-center">Aksi</th></tr></thead>
+                <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
+                  {mainJobs.map((j) => (
+                    <tr key={j.id} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40">
+                      <td className="py-3 px-2"><span className="font-bold text-rs-900 dark:text-white block">{j.title}</span><span className="text-[10px] text-rs-400 font-normal">{j.partnerName}</span></td>
+                      <td className="py-3 px-2 font-medium text-rs-500">{legalJobEntityCell(j)}</td>
+                      <td className="py-3 px-2 font-medium">{j.docType}</td>
+                      <td className="py-3 px-2 font-medium">{j.picName}</td>
+                      <td className="py-3 px-2 text-center">
+                        {j.linkedContract ? (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[j.linkedContract.status] || "bg-rs-100 text-rs-600"}`}>{CONTRACT_STATUS_LABEL_ID[j.linkedContract.status] || j.linkedContract.status}</span>
+                            <button onClick={() => onOpenContract(j.linkedContract!.id)} className="text-[9.5px] text-[#635BFF] font-semibold hover:underline cursor-pointer">mengikuti Kontrak →</button>
+                          </div>
+                        ) : (
+                          <span className={PJ_CHIP}>{LEGAL_STATUS_LABEL[legalJobDisplayStatus(j)]}</span>
+                        )}
+                      </td>
+                      <td className="py-3 px-2 text-center text-rs-500 font-medium whitespace-nowrap">{fmtDateID(j.deadline)}</td>
+                      <td className="py-3 px-2 text-center">{j.priority ? <span className={pjPrio(j.priority)}>{j.priority}</span> : <span className="text-rs-300">—</span>}</td>
+                      <td className="py-3 px-2 text-center whitespace-nowrap">
+                        <button onClick={() => setDetailJob(j)} title="Lihat Detail" className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer"><Eye className="w-4 h-4" /></button>
+                        <button onClick={() => setDetailJob(j)} title="Lainnya" className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer"><MoreHorizontal className="w-4 h-4" /></button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ===== Pekerjaan Ditolak ===== */}
+      <div className={PJ_CARD}>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2"><XCircle className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">Pekerjaan Ditolak</h3></div>
+          <div className="flex items-center gap-2"><span className="inline-block text-[10px] font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300 px-2.5 py-1 rounded-lg whitespace-nowrap">{rejected.length}</span></div>
+        </div>
         {rejected.length === 0 ? (
-          <p className="py-6 text-center text-xs text-slate-500">Belum ada pekerjaan yang ditolak.</p>
-        ) : (
-          <div className="overflow-x-auto no-scrollbar">
-            <table className="w-full text-[12.5px]">
-              <thead>
-                <tr className="text-left text-slate-500">
-                  <th className="p-3 font-semibold">Judul Pekerjaan</th>
-                  <th className="p-3 font-semibold">Partner</th>
-                  <th className="p-3 font-semibold">Alasan Penolakan</th>
-                  <th className="p-3 font-semibold">Ditolak oleh</th>
-                  <th className="p-3 font-semibold">Tanggal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rejected.map((j) => (
-                  <tr key={j.id}>
-                    <td className="p-3 font-medium text-slate-100">{j.title}</td>
-                    <td className="p-3 text-slate-400">{j.partnerName}</td>
-                    <td className="p-3 text-slate-400 max-w-xs truncate" title={j.rejectionReason}>{j.rejectionReason}</td>
-                    <td className="p-3 text-slate-400">{j.rejectedByName}</td>
-                    <td className="p-3 text-slate-500">{fmtDateTimeID(j.rejectedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <p className="py-3 text-center text-xs text-rs-400">Belum ada pekerjaan yang ditolak.</p>
+        ) : rejected.map((j) => (
+          <div key={j.id} className="flex items-center justify-between gap-3 py-2.5 border-b border-rs-100 dark:border-rs-800 last:border-0">
+            <div><h4 className="text-xs font-bold text-rs-900 dark:text-white">{j.title}</h4><p className="text-[11px] text-rs-400 font-medium">{j.partnerName} • Ditolak {j.rejectedByName}</p></div>
+            <span className="text-[11px] font-medium text-rs-400 text-right" title={fmtDateTimeID(j.rejectedAt)}>{j.rejectionReason}</span>
           </div>
-        )}
-      </LegalPanel>
+        ))}
+      </div>
       {addOpen && (
         <AddLegalJobChooser onClose={() => setAddOpen(false)}
           onShare={() => { setAddOpen(false); setShareOpen(true); }}
@@ -4720,113 +4838,145 @@ function DashboardLegalPage({ currentUser, onOpenPekerjaanLegal }: { currentUser
   const cardStatuses: string[] = [...LEGAL_STAGES];
   const maxChart = Math.max(1, ...data.chartByStatus.map((c: any) => c.count));
 
+  const PIPE_COLOR: Record<string, string> = { PekerjaanMasuk: "bg-rs-400", BelumDiproses: "bg-rs-400", Draft: "bg-[#A855F7]", ReviewInternal: "bg-[#A855F7]", ReviewPihakKedua: "bg-[#F59E0B]", RevisiNegosiasi: "bg-[#F59E0B]", Finalisasi: "bg-[#6366F1]", ProsesTTD: "bg-[#6366F1]", DokumenKembali: "bg-[#6366F1]", Arsip: "bg-emerald-500", Distribusi: "bg-emerald-500", Aktif: "bg-emerald-500" };
+  const sc = data.statusCounts || {};
+  const inProcess = LEGAL_STAGES.filter((s) => !["PekerjaanMasuk", "BelumDiproses", "Aktif", "Arsip", "Distribusi"].includes(s)).reduce((n: number, s: string) => n + (sc[s] || 0), 0);
+  const mk = data.monitoringKontrak;
+  const hour = new Date().getHours();
+  const greet = hour < 11 ? "Selamat pagi" : hour < 15 ? "Selamat siang" : hour < 19 ? "Selamat sore" : "Selamat malam";
+  const firstName = String(currentUser?.name || "").split(" ")[0] || "Tim Legal";
+  const weekly: number[] = data.weeklyExpiry || [0, 0, 0, 0];
+  const maxWeek = Math.max(1, ...weekly);
+  const weekColors = ["#EF4444", "#F59E0B", "#A855F7", "#635BFF"];
+  const weekLabels = ["0–7 hr", "1–2 mgg", "2–3 mgg", "3–4 mgg"];
+  const CARD = "bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs";
+  const prioCls = (p: string) => p === "Tinggi" ? "text-rose-600 bg-rose-50 dark:bg-rose-500/10" : p === "Sedang" ? "text-amber-600 bg-amber-50 dark:bg-amber-500/10" : "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300";
+  const daysLeft = (d?: string) => d ? Math.ceil((new Date(d).getTime() - Date.now()) / 86400000) : null;
+  const dayCls = (n: number | null) => n === null ? "" : n <= 14 ? "text-rose-600 bg-rose-50 dark:bg-rose-500/10" : n <= 90 ? "text-amber-600 bg-amber-50 dark:bg-amber-500/10" : "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10";
+
+  const stageChip = (st: string) => ["Draft", "ReviewInternal"].includes(st)
+    ? "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300"
+    : ["ReviewPihakKedua", "RevisiNegosiasi"].includes(st)
+      ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300"
+      : ["PekerjaanMasuk", "BelumDiproses"].includes(st)
+        ? "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300"
+        : "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300";
+  const prioChip = (p: string) => p === "Tinggi" ? "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300" : p === "Sedang" ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300" : "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300";
+  const dayChip = (n: number | null) => n === null ? "" : n <= 30 ? "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300" : n <= 90 ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300" : "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300";
+  const chipBase = "inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap";
+  const smallBtn = "px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer";
+  const CARD5 = "bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5";
+  // Sumbu-Y grafik batang: 0..max dalam langkah bulat (seperti Chart.js).
+  const axisMax = Math.max(4, maxWeek);
+  const step = axisMax <= 5 ? 1 : Math.ceil(axisMax / 5);
+  const topTick = Math.ceil(axisMax / step) * step;
+  const ticks = Array.from({ length: topTick / step + 1 }, (_, i) => i * step);
+
   return (
-    <div className="space-y-5">
-      <LegalHero Icon={Scale} title="Dashboard Legal" sub="Ringkasan kondisi semua pekerjaan legal — data real-time, klik kartu untuk melihat daftarnya." />
-
-      {/* Ringkasan Pekerjaan Legal */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-6 gap-3">
-        {cardStatuses.map((s) => (
-          <LegalStatCard key={s} status={s} index={cardStatuses.indexOf(s)} total={cardStatuses.length} count={data.statusCounts[s] || 0} onClick={onOpenPekerjaanLegal} />
-        ))}
-      </div>
-
-      {/* Monitoring Kontrak — lebar penuh (kartu Surat-Menyurat dihapus) */}
-      <div>
-        <LegalPanel Icon={FileCheck} title="Dokumen Eksternal" subtitle="Masa berlaku kontrak berjalan (sejak Arsip: Arsip, Distribusi/Implementasi, Aktif)">
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 text-center">
-            {[
-              { v: data.monitoringKontrak.aktif, l: "Berlaku", c: "bg-mist text-indigo-400" },
-              { v: data.monitoringKontrak.akanBerakhir30, l: "< 30 hari", c: "bg-peach text-brand-orange" },
-              { v: data.monitoringKontrak.akanBerakhir60, l: "30–60 hari", c: "bg-peach text-brand-orange" },
-              { v: data.monitoringKontrak.akanBerakhir90, l: "60–90 hari", c: "bg-peach text-brand-orange" },
-              { v: data.monitoringKontrak.expired, l: "Expired", c: "bg-brand-orange text-white" },
-            ].map((m) => (
-              <div key={m.l} className={`rounded-[18px] py-3 ${m.c}`}>
-                <p className="text-[22px] leading-none font-medium tabular">{m.v}</p>
-                <p className={`text-[10.5px] mt-1.5 ${m.l === "Expired" ? "text-white/90" : "text-slate-500"}`}>{m.l}</p>
+    <div className="space-y-6">
+      <div className="relative overflow-hidden rounded-2xl p-6 bg-gradient-to-br from-[#635BFF] via-[#6F66FF] to-[#8A82FF] text-white shadow-lg shadow-indigo-500/20 ring-0">
+        <div className="absolute -right-12 -top-12 w-56 h-56 rounded-full bg-white/10" />
+        <div className="absolute right-24 -bottom-20 w-48 h-48 rounded-full bg-white/10" />
+        <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          <div>
+            <span className="text-[10px] font-bold uppercase tracking-widest text-white/60">Dashboard Legal</span>
+            <h2 className="text-xl font-extrabold tracking-tight mt-1">{greet}, {firstName}</h2>
+            <p className="text-xs font-medium text-white/70 mt-1 max-w-md">Ada {sc.PekerjaanMasuk || 0} permintaan baru menunggu Anda dan {mk.akanBerakhir30 + mk.akanBerakhir60 + mk.akanBerakhir90} kontrak yang segera berakhir dalam 90 hari.</p>
+            <button onClick={onOpenPekerjaanLegal} className="inline-flex items-center gap-1.5 mt-4 bg-white text-rs-900 text-[11px] font-bold px-3.5 py-2 rounded-xl cursor-pointer"><ClipboardList className="w-3.5 h-3.5" /> Buka Pekerjaan Legal</button>
+          </div>
+          <div className="grid grid-cols-2 gap-3 lg:w-96">
+            {[{ l: "Pekerjaan Masuk", v: sc.PekerjaanMasuk || 0 }, { l: "Dalam Proses", v: inProcess }, { l: "Mendekati Deadline", v: data.deadlineThisWeek.length }, { l: "Kontrak Berlaku", v: mk.aktif }].map((x) => (
+              <div key={x.l} className="rounded-xl bg-white/10 backdrop-blur px-4 py-3">
+                <span className="text-[10px] font-semibold text-white/70 block">{x.l}</span>
+                <span className="text-xl font-extrabold">{x.v.toLocaleString("en-US")}</span>
               </div>
             ))}
           </div>
-        </LegalPanel>
+        </div>
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-5">
-        {/* Yang Perlu Ditindaklanjuti */}
-        <LegalPanel Icon={ShieldAlert} title="Yang Perlu Ditindaklanjuti" subtitle="Pekerjaan prioritas & mendesak">
-          {data.needsFollowUp.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-500">Tidak ada yang mendesak saat ini.</p>
-          ) : (
-            <div className="space-y-1.5 max-h-80 overflow-y-auto no-scrollbar">
-              {data.needsFollowUp.map((j: any) => (
-                <button key={j.id} onClick={onOpenPekerjaanLegal} className="w-full text-left px-4 py-3 rounded-[18px] flex items-center justify-between gap-3 bg-slate-950/60 hover:bg-slate-950 transition cursor-pointer">
-                  <div className="min-w-0">
-                    <p className="text-[12.5px] font-medium text-slate-100 truncate">{j.title}</p>
-                    <p className="text-[10.5px] text-slate-500 truncate">{j.partnerName} · {LEGAL_STATUS_LABEL[j.status]}</p>
-                  </div>
-                  <div className="text-right shrink-0 space-y-1">
-                    {j.priority && <span className={`inline-block text-[10px] px-2 py-0.5 rounded-full font-semibold ${LEGAL_PRIORITY_STYLE[j.priority]}`}>{j.priority}</span>}
-                    <p className="text-[10.5px] text-slate-500">{fmtDateID(j.deadline)}</p>
-                  </div>
-                </button>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className={`lg:col-span-7 ${CARD5}`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2"><h3 className="text-xs font-bold text-rs-900 dark:text-white">Pipeline Pekerjaan Legal</h3></div>
+            <div className="flex items-center gap-2"><span className={`${chipBase} text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300`}>Real-time</span></div>
+          </div>
+          <div className="space-y-3.5">
+            {data.chartByStatus.filter((c: any) => !["Arsip", "Distribusi", "Aktif"].includes(c.status)).map((c: any) => (
+              <div key={c.status} className="flex items-center gap-3 text-xs">
+                <span className="w-36 shrink-0 font-semibold text-rs-600 dark:text-rs-300 truncate">{LEGAL_STATUS_LABEL[c.status]}</span>
+                <div className="flex-1 h-2 rounded-full bg-rs-100 dark:bg-rs-800 overflow-hidden"><div className={`h-full rounded-full ${PIPE_COLOR[c.status]}`} style={{ width: `${(c.count / maxChart) * 100}%` }} /></div>
+                <span className="w-10 text-right font-bold text-rs-900 dark:text-white">{c.count}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className={`lg:col-span-5 ${CARD5}`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2"><h3 className="text-xs font-bold text-rs-900 dark:text-white">Kontrak Berakhir per Minggu</h3></div>
+            <div className="flex items-center gap-2" />
+          </div>
+          <div className="relative h-56 flex flex-col">
+            <div className="relative flex-1">
+              {ticks.map((t) => (
+                <div key={t} className="absolute left-0 right-0 flex items-center" style={{ bottom: `${(t / topTick) * 100}%`, transform: "translateY(50%)" }}>
+                  <span className="w-7 text-[10px] font-medium text-rs-400 shrink-0">{t}</span>
+                  <span className="flex-1 h-px bg-rs-100 dark:bg-rs-800" />
+                </div>
               ))}
-            </div>
-          )}
-        </LegalPanel>
-
-        {/* Aktivitas Terbaru */}
-        <LegalPanel Icon={History} title="Aktivitas Terbaru" subtitle="Riwayat pergerakan pekerjaan">
-          {data.recentActivity.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-500">Belum ada aktivitas.</p>
-          ) : (
-            <div className="max-h-80 overflow-y-auto no-scrollbar space-y-3 pl-1">
-              {data.recentActivity.map((a: any, i: number) => (
-                <div key={i} className="flex gap-3">
-                  <span className="w-2 h-2 rounded-full bg-soft-blue mt-1.5 shrink-0" />
-                  <div className="min-w-0">
-                    <p className="text-[12px] text-slate-400 leading-snug"><span className="font-semibold text-slate-100">{a.jobTitle}</span> — {a.label}</p>
-                    <p className="text-[10.5px] text-slate-500 mt-0.5">{a.actor ? `${a.actor} · ` : ""}{fmtDateTimeID(a.at)}</p>
+              <div className="absolute inset-y-0 left-7 right-0 flex">
+                {weekly.map((n, i) => (
+                  <div key={i} className="flex-1 flex items-end justify-center">
+                    <div title={`${weekLabels[i]}: ${n}`} className="w-[32%] rounded-t-md" style={{ height: `${(n / topTick) * 100}%`, background: weekColors[i] }} />
                   </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex pl-7 pt-2.5">{weekLabels.map((l) => <span key={l} className="flex-1 text-center text-[10px] font-medium text-rs-400">{l}</span>)}</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        <div className={`lg:col-span-7 min-w-0 ${CARD5}`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2"><ClipboardList className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">Pekerjaan Perlu Perhatian</h3></div>
+            <div className="flex items-center gap-2"><button onClick={onOpenPekerjaanLegal} className={smallBtn}>Semua</button></div>
+          </div>
+          {data.needsFollowUp.length === 0 ? <p className="py-6 text-center text-xs text-rs-400">Tidak ada yang mendesak saat ini.</p> : (
+            <div className="overflow-x-auto"><table className="plain-table w-full text-left border-collapse">
+              <thead><tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider"><th className="py-2.5 px-2">Pekerjaan</th><th className="py-2.5 px-2 text-center">Status</th><th className="py-2.5 px-2 text-center">Prioritas</th><th className="py-2.5 px-2 text-center">Deadline</th><th className="py-2.5 px-2 text-center">Sisa</th></tr></thead>
+              <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
+                {data.needsFollowUp.slice(0, 5).map((j: any) => { const n = daysLeft(j.deadline); return (
+                  <tr key={j.id} onClick={onOpenPekerjaanLegal} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40 cursor-pointer">
+                    <td className="py-3 px-2"><span className="font-bold text-rs-900 dark:text-white block">{j.title}</span><span className="text-[10px] text-rs-400 font-normal">{j.partnerName}</span></td>
+                    <td className="py-3 px-2 text-center"><span className={`${chipBase} ${stageChip(j.status)}`}>{LEGAL_STATUS_LABEL[j.status]}</span></td>
+                    <td className="py-3 px-2 text-center">{j.priority && <span className={`${chipBase} ${prioChip(j.priority)}`}>{j.priority}</span>}</td>
+                    <td className="py-3 px-2 text-center text-rs-500 font-medium whitespace-nowrap">{j.deadline ? new Date(j.deadline).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "2-digit" }) : "—"}</td>
+                    <td className="py-3 px-2 text-center">{n !== null && <span className={`${chipBase} ${n <= 14 ? "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300" : "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300"}`}>{n < 0 ? "lewat" : `${n} hari`}</span>}</td>
+                  </tr>); })}
+              </tbody></table></div>
+          )}
+        </div>
+        <div className={`lg:col-span-5 min-w-0 ${CARD5}`}>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">Kontrak Segera Berakhir</h3></div>
+            <div className="flex items-center gap-2"><button onClick={onOpenPekerjaanLegal} className={smallBtn}>Detail</button></div>
+          </div>
+          {(data.expiringList || []).length === 0 ? <p className="py-6 text-center text-xs text-rs-400">Tidak ada kontrak yang segera berakhir.</p> : (
+            <div className="space-y-4">
+              {data.expiringList.map((c: any) => (
+                <div key={c.id} className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-8 h-8 rounded-full bg-amber-50 dark:bg-amber-950/50 text-amber-500 flex items-center justify-center shrink-0"><AlertCircle className="w-4 h-4" /></div>
+                    <div className="min-w-0"><h4 className="text-xs font-bold text-rs-900 dark:text-white truncate">{c.title}</h4><p className="text-[11px] text-rs-400 font-medium truncate">{c.partner}</p></div>
+                  </div>
+                  <span className={`${chipBase} shrink-0 ${dayChip(c.days)}`}>{c.days} hari</span>
                 </div>
               ))}
             </div>
           )}
-        </LegalPanel>
-      </div>
-
-      <div className="grid lg:grid-cols-2 gap-5">
-        {/* Deadline Minggu Ini */}
-        <LegalPanel Icon={CalendarDays} title="Deadline Minggu Ini" subtitle="7 hari ke depan" tone="peach">
-          {data.deadlineThisWeek.length === 0 ? (
-            <p className="py-6 text-center text-xs text-slate-500">Tidak ada deadline dalam 7 hari ke depan.</p>
-          ) : (
-            <div className="space-y-1.5">
-              {data.deadlineThisWeek.map((j: any) => (
-                <button key={j.id} onClick={onOpenPekerjaanLegal} className="w-full text-left px-4 py-3 rounded-[18px] flex items-center gap-3 bg-slate-950/60 hover:bg-slate-950 transition cursor-pointer">
-                  <span className="shrink-0 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-peach text-brand-orange whitespace-nowrap">{fmtDateID(j.deadline)}</span>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-[12.5px] font-medium text-slate-100 truncate">{j.title}</p>
-                    <p className="text-[10.5px] text-slate-500 truncate">{j.docType}</p>
-                  </div>
-                  <span className="shrink-0 text-[10.5px] px-2.5 py-1 rounded-full bg-mist text-indigo-400 font-semibold whitespace-nowrap">{LEGAL_STATUS_LABEL[j.status]}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </LegalPanel>
-
-        {/* Grafik Pekerjaan Legal */}
-        <LegalPanel Icon={PieChart} title="Grafik Pekerjaan Legal" subtitle="Jumlah pekerjaan per status">
-          <div className="flex items-end gap-2 h-44 pt-2">
-            {data.chartByStatus.map((c: any, i: number) => (
-              <div key={c.status} className="flex flex-col items-center gap-1.5 flex-1 min-w-0">
-                <span className="text-[10.5px] font-semibold text-slate-300 tabular">{c.count}</span>
-                <div className={`w-full max-w-[22px] rounded-full transition-all ${c.count > 0 ? (i % 2 === 0 ? "bg-soft-blue" : "bg-peach-strong") : "bg-mist"}`} style={{ height: `${Math.max(8, (c.count / maxChart) * 104)}px` }} />
-                <span title={LEGAL_STATUS_LABEL[c.status]} className="text-[9px] text-slate-500 text-center leading-tight w-full min-h-[2.4em]">{LEGAL_CHART_SHORT_LABEL[c.status] || LEGAL_STATUS_LABEL[c.status] || c.status}</span>
-              </div>
-            ))}
-          </div>
-        </LegalPanel>
+        </div>
       </div>
     </div>
   );
@@ -5330,16 +5480,16 @@ function DashPager({ page, total, pageSize, onChange }: { page: number; total: n
 function LegalTabsBar({ active, onChange, tabs }: { active: string; onChange: (id: string) => void; tabs: { id: string; label: string; icon: any; badge?: number }[] }) {
   if (tabs.length < 2) return null;
   return (
-    <div className="mb-6 flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl w-fit text-xs font-bold text-rs-500" role="tablist">
+    <div className="mb-4 flex items-center gap-1 border-b border-rs-200/80 dark:border-rs-800" role="tablist">
       {tabs.map((t) => {
         const Icon = t.icon;
         const on = active === t.id;
         return (
           <button key={t.id} role="tab" aria-selected={on} onClick={() => onChange(t.id)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg cursor-pointer transition ${on ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white" : "hover:text-rs-900 dark:hover:text-white"}`}>
+            className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${on ? "border-[#635BFF] text-[#635BFF] dark:text-indigo-400" : "border-transparent text-rs-500 dark:text-rs-400 hover:text-rs-800 dark:hover:text-rs-200"}`}>
             <Icon className="w-4 h-4" />
             {t.label}
-            {t.badge ? <span className="bg-amber-100 text-amber-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{t.badge}</span> : null}
+            {t.badge ? <span className="bg-amber-500/15 text-amber-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{t.badge}</span> : null}
           </button>
         );
       })}
@@ -5563,6 +5713,41 @@ export default function App() {
   const [expPage, setExpPage] = useState(1);
 
   // Tab gabungan Pekerjaan Legal | Dokumen Eksternal (kedua menu lama jadi satu).
+  // Menu Konfigurasi (dipakai menu samping & Beranda).
+  const getCfg = () => {
+        const CFG_ICON: Record<string, any> = { beranda: LayoutGrid, dokumen: FileText, master: Users, sistem: Settings, dcsdoctypes: FileTypeIc, masterdata: Hash, dcsclauses: BookOpen, clauses: ScrollText, folder: FolderTree, vendor: Store, karyawan: Users, operator: Bus, app: Building2, pengguna: UserCog, hakakses: ShieldCheck, perusahaan: BuildingIc };
+        const GROUPS = [
+          // Label dulu menyesatkan: penomoran KONTRAK ada di tab
+          // bernama "Dropdown Form" (tak ada petunjuk sama sekali),
+          // sementara "Jenis Dokumen" ternyata khusus DCS. Orang yang
+          // mencari pengaturan nomor kontrak hampir pasti tidak
+          // menemukannya. Nama tab sekarang menyebut isinya.
+          { group: "Dokumen & Template", items: [
+            // JANGAN beri label ini "…(DCS)": tab dcsdoctypes adalah HUB
+            // TERPADU berisi ketiga modul (DCS + Kontrak Eksternal +
+            // Kontrak Karyawan), masing-masing dengan Kode & Format
+            // Nomor sendiri. Sempat salah dinamai "Jenis Dokumen
+            // Internal (DCS)" sehingga hub-nya justru tersembunyi.
+            { k: "dcsdoctypes", label: "Jenis Dokumen (Semua Modul)" },
+            { k: "masterdata", label: "Format Nomor Default & Dropdown" },
+            { k: "dcsclauses", label: "Klausul DCS" },
+            { k: "clauses", label: "Klausul Kontrak", main: "clauses" },
+            { k: "folder", label: "Kategori Kontrak (Eksternal & Karyawan)" },
+          ] },
+          { group: "Master Data", items: [
+            { k: "vendor", label: "Data Vendor" },
+            { k: "karyawan", label: "Data Karyawan" },
+            { k: "operator", label: "Mitra / Operator" },
+          ] },
+          { group: "Perusahaan & Sistem", items: [
+            { k: "app", label: "Perusahaan & e-Meterai" },
+            ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
+            ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
+            ...(currentUser.role === "super_admin" ? [{ k: "perusahaan", label: "Kelola Perusahaan" }] : []),
+          ] },
+        ] as { group: string; items: { k: string; label: string; main?: string }[] }[];
+  return { CFG_ICON, GROUPS };
+  };
   const renderLegalTabs = () => {
     const now = new Date();
     const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
@@ -5733,6 +5918,10 @@ export default function App() {
   // semua status selain Aktif (Draft/Archived/Terminated digabung, sesuai
   // framing biner yang diminta — bukan filter per-status granular).
   const [allDocsStatusFilter, setAllDocsStatusFilter] = useState<"all" | "aktif" | "nonaktif">("all");
+  const [clauseCatFilter, setClauseCatFilter] = useState<string>("Semua");
+  const [libTab, setLibTab] = useState<"klausul" | "template">("klausul");
+  const [libSearch, setLibSearch] = useState("");
+  const [allDocsType, setAllDocsType] = useState<"semua" | "kontrak" | "karyawan" | "dcs">("semua");
   const [allDocsSearch, setAllDocsSearch] = useState("");
   const [allDocsSort, setAllDocsSort] = useState<SortState>({ key: "judul", dir: "asc" });
   const [allDocsPage, setAllDocsPage] = useState(1);
@@ -5932,6 +6121,8 @@ export default function App() {
   // Filter cepat via klik kartu ringkasan (Lewat/≤30/31-90/Aman) — "" = semua.
   const [monitorHealth, setMonitorHealth] = useState<"" | "expired" | "critical" | "warning" | "healthy">("");
   const [monitorPage, setMonitorPage] = useState(1);
+  // Tab status di Dokumen Karyawan (Semua / Dalam Proses / Berlaku / Berakhir).
+  const [empDocTab, setEmpDocTab] = useState<"all" | "proses" | "aktif" | "berakhir">("all");
   // Filter lanjutan (drawer): terapan = monitorExtra; draft = salinan sementara saat drawer terbuka.
   const [monitorExtra, setMonitorExtra] = useState<MonitorExtra>(EMPTY_MONITOR_EXTRA);
   const [monitorFilterOpen, setMonitorFilterOpen] = useState(false);
@@ -5940,6 +6131,7 @@ export default function App() {
   const [contractSort, setContractSort] = useState<SortState>({ key: "dibuat", dir: "desc" });
   // Audit trail table — search + sortable columns.
   const [auditSearch, setAuditSearch] = useState("");
+  const [auditUser, setAuditUser] = useState("");
   const [auditPage, setAuditPage] = useState(1);
   // Kalender Legal — filter tampilan (view murni, tidak ada state server).
   const [kalenderFilter, setKalenderFilter] = useState<"7" | "30" | "90" | "semua">("30");
@@ -14273,7 +14465,7 @@ export default function App() {
                   setActiveTab("monitoring");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center justify-between px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "monitoring"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14292,7 +14484,7 @@ export default function App() {
                     return days <= (c.reminderDaysBefore || 30) && days > -3650;
                   }).length;
                   return expiringCount > 0 ? (
-                    <span className="bg-amber-500/20 text-amber-400 text-[10px] px-2 py-0.5 rounded-full font-bold">
+                    <span className="ml-auto bg-amber-500/15 text-amber-600 text-[10px] px-2 py-0.5 rounded-full font-bold">
                       {expiringCount}
                     </span>
                   ) : null;
@@ -14306,7 +14498,7 @@ export default function App() {
                   setActiveTab("clauses");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "clauses"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14326,7 +14518,7 @@ export default function App() {
                   setArsipSubPath([]);
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "arsip-eksternal"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14347,7 +14539,7 @@ export default function App() {
                   setActiveTab("kontrak-karyawan");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center justify-between px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center justify-between px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "kontrak-karyawan"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14361,7 +14553,7 @@ export default function App() {
                   const isEmp = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
                   const cnt = contracts.filter((c) => isEmp(c) && !c.amendsContractId).length;
                   return cnt > 0 ? (
-                    <span className="bg-emerald-500/20 text-emerald-400 text-[10px] px-2 py-0.5 rounded-full font-bold">{cnt}</span>
+                    <span className="ml-auto bg-emerald-500/15 text-emerald-600 text-[10px] px-2 py-0.5 rounded-full font-bold">{cnt}</span>
                   ) : null;
                 })()}
               </button>
@@ -14373,7 +14565,7 @@ export default function App() {
                   setActiveTab("internal-docs");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "internal-docs"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14393,7 +14585,7 @@ export default function App() {
                   setArsipSubPath([]);
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "arsip-internal"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14415,7 +14607,7 @@ export default function App() {
                   setActiveTab("all-docs");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "all-docs"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14433,7 +14625,7 @@ export default function App() {
                   setActiveTab("konfigurasi");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "konfigurasi"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14450,7 +14642,7 @@ export default function App() {
                   setActiveTab("audits");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "audits"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14467,7 +14659,7 @@ export default function App() {
                   setActiveTab("audit-kontrak-dcs");
                   setSelectedContract(null);
                 }}
-                className={`w-full mt-1 flex items-center gap-3 px-4 py-2.5 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
+                className={`nav-item w-full flex items-center gap-3 px-3 py-2 mb-1 rounded-xl text-xs font-semibold text-left transition cursor-pointer ${
                   activeTab === "audit-kontrak-dcs"
                     ? "nav-active"
                     : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"
@@ -14483,19 +14675,19 @@ export default function App() {
             </div>
 
             {canSee("ai-tools") && (
-            <div className="pt-2">
+            <div className="-mt-3">
               <button
                 onClick={() => setShowToolsMenu(!showToolsMenu)}
-                className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-[10px] font-bold text-slate-500 uppercase tracking-widest hover:text-slate-300 transition cursor-pointer"
+                className="w-full flex items-center justify-between px-3 py-2 mt-2 rounded-xl text-[10px] font-bold text-rs-400 uppercase tracking-widest hover:text-rs-600 dark:hover:text-rs-200 transition cursor-pointer"
               >
                 <span>AI Tools Hukum</span>
-                <ChevronRight
-                  className={`w-3.5 h-3.5 transition-transform ${showToolsMenu ? "rotate-90" : ""}`}
+                <ChevronDown
+                  className={`w-3.5 h-3.5 transition-transform ${showToolsMenu ? "rotate-180" : ""}`}
                 />
               </button>
 
               {showToolsMenu && (
-                <div className="space-y-1 animate-fadeIn">
+                <div className="ml-3 pl-2 border-l-2 border-rs-100 dark:border-rs-800 space-y-1 animate-fadeIn">
                   <button
                     onClick={() => {
                       setActiveTab("pusat-peraturan");
@@ -14638,20 +14830,13 @@ export default function App() {
             </FadeScroll>
           </div>
 
-          <div className="space-y-3 pt-3 shrink-0 border-t border-slate-800">
-            <button
-              onClick={toggleTheme}
-              className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-slate-500 hover:bg-slate-750 transition cursor-pointer"
-              aria-label="Ganti tema"
-            >
-              <span className="flex items-center gap-2">
-                {theme === "dark" ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4" />}
-                {theme === "dark" ? "Mode Gelap" : "Mode Terang"}
-              </span>
-              <span className={`w-8 h-[18px] rounded-full p-0.5 flex transition ${theme === "dark" ? "bg-[#635BFF] justify-end" : "bg-slate-700 justify-start"}`}>
-                <span className="w-3.5 h-3.5 rounded-full bg-white shadow-none" />
-              </span>
-            </button>
+          <div className="pt-6 space-y-4 shrink-0">
+            <div className="flex items-center justify-between px-3 py-1.5">
+              <div className="flex items-center gap-2 text-xs font-semibold text-rs-600 dark:text-rs-300">{theme === "dark" ? <Sun className="w-4 h-4 text-rs-400" /> : <Moon className="w-4 h-4 text-rs-400" />}Dark Mode</div>
+              <button onClick={toggleTheme} aria-label="Ganti tema" className="w-9 h-5 bg-rs-200 dark:bg-indigo-600 rounded-full p-0.5 transition-colors duration-200 flex items-center cursor-pointer">
+                <div className={`w-4 h-4 bg-white rounded-full shadow-sm transform transition-transform duration-200 ${theme === "dark" ? "translate-x-4" : "translate-x-0"}`} />
+              </button>
+            </div>
           </div>
                 </aside>
         )}
@@ -14726,6 +14911,13 @@ export default function App() {
                 </h2>
               </div>
             )}
+            {activeTab !== "dashboard" && !selectedContract && ({ "dashboard-legal": "Dashboard Legal", "pekerjaan-legal": "Pekerjaan Legal", monitoring: "Pekerjaan Legal", clauses: "Library Klausul & Template", "arsip-eksternal": "Arsip Eksternal", "arsip-internal": "Arsip Internal", "kontrak-karyawan": "Dokumen Karyawan", "internal-docs": "Dokumen DCS", "all-docs": "Tabel Semua Dokumen", konfigurasi: "Konfigurasi & Master Data", audits: "Audit Trail", "audit-kontrak-dcs": "Audit Kontrak & DCS", "pusat-peraturan": "Pusat Peraturan", "putusan-pengadilan": "Putusan Pengadilan", "opini-hukum": "Opini Hukum", "terjemah-dokumen": "Terjemah Teks Lepas", "review-dokumen": "Audit Risiko Naskah", "bandingkan-dokumen": "Bandingkan 2 Dokumen", "buat-draft-ai": "Buat Naskah Draft AI", tabular: "Analisis Tabular", analytics: "Analytics & Risk" } as Record<string, string>)[activeTab] && (
+              <div className="min-w-0">
+                <h2 className="text-xl font-extrabold tracking-tight text-rs-900 dark:text-white truncate">
+                  {({ "dashboard-legal": "Dashboard Legal", "pekerjaan-legal": "Pekerjaan Legal", monitoring: "Pekerjaan Legal", clauses: "Library Klausul & Template", "arsip-eksternal": "Arsip Eksternal", "arsip-internal": "Arsip Internal", "kontrak-karyawan": "Dokumen Karyawan", "internal-docs": "Dokumen DCS", "all-docs": "Tabel Semua Dokumen", konfigurasi: "Konfigurasi & Master Data", audits: "Audit Trail", "audit-kontrak-dcs": "Audit Kontrak & DCS", "pusat-peraturan": "Pusat Peraturan", "putusan-pengadilan": "Putusan Pengadilan", "opini-hukum": "Opini Hukum", "terjemah-dokumen": "Terjemah Teks Lepas", "review-dokumen": "Audit Risiko Naskah", "bandingkan-dokumen": "Bandingkan 2 Dokumen", "buat-draft-ai": "Buat Naskah Draft AI", tabular: "Analisis Tabular", analytics: "Analytics & Risk" } as Record<string, string>)[activeTab]}
+                </h2>
+              </div>
+            )}
           </div>
 
           <div className="flex items-center gap-4 shrink-0">
@@ -14740,26 +14932,6 @@ export default function App() {
                   <LineChart className="w-[18px] h-[18px]" />
                 </button>
               </>
-            )}
-            {activeTab === "clauses" && (
-                  <button
-                    onClick={() => {
-                      setIsAddingClause(true);
-                      setEditingClauseId(null);
-                      setNewClauseForm({
-                        title: "",
-                        content: "",
-                        category: "General",
-                        tags: "",
-                        isMandatory: false,
-                        isProtected: false,
-                      });
-                    }}
-                    className="flex items-center gap-2 px-5 h-10 bg-soft-blue hover:opacity-90 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Tambah Klausul Master
-                  </button>
             )}
           {/* Notifikasi — klik lonceng membuka popup (bukan lagi kartu di dashboard). */}
           <div className="relative">
@@ -14891,10 +15063,10 @@ export default function App() {
             })()}
           </div>
           <div className="relative hidden md:block">
-            <div className="flex items-center gap-2 bg-rs-100 dark:bg-rs-800/80 rounded-xl pl-3 pr-2.5 py-2 w-56 lg:w-72 border border-transparent focus-within:ring-2 focus-within:ring-indigo-500/40 transition">
+            <div className="flex items-center gap-2 bg-rs-100 dark:bg-rs-800/80 rounded-xl pl-3 pr-2.5 py-2 w-56 border border-transparent focus-within:ring-2 focus-within:ring-indigo-500/40 transition">
               <button
                 onClick={submitNavbarSearch}
-                className="shrink-0 text-rs-400 hover:text-rs-600 transition cursor-pointer"
+                className="shrink-0 flex items-center text-rs-400 hover:text-rs-600 transition cursor-pointer"
                 title="Cari"
                 aria-label="Cari"
               >
@@ -14913,10 +15085,10 @@ export default function App() {
                     (e.target as HTMLInputElement).blur();
                   }
                 }}
-                placeholder="Cari kontrak, mitra, nomor…"
-                className="bg-transparent border-none outline-none text-xs text-slate-200 placeholder:text-slate-500 w-full"
+                placeholder="Cari kontrak, vendor..."
+                className="bg-transparent border-none outline-none text-xs text-rs-800 dark:text-rs-200 placeholder:text-rs-400 w-full p-0 h-4 leading-4"
               />
-              <span className="text-[10px] text-rs-400 font-bold bg-white dark:bg-rs-700 px-1.5 py-0.5 rounded border border-rs-200 dark:border-rs-600 shrink-0">⌘K</span>
+              <span className="text-[10px] leading-3 text-rs-400 font-bold bg-white dark:bg-rs-700 px-1.5 py-0.5 rounded border border-rs-200 dark:border-rs-600 shrink-0">⌘K</span>
             </div>
 
             {navbarSearchFocused && navbarSearch.trim().length > 0 && (
@@ -15057,123 +15229,85 @@ export default function App() {
         <main className="flex-1 p-6 overflow-y-auto">
           {/* VIEW: PUSAT PERATURAN */}
           {activeTab === "pusat-peraturan" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                    <Scale className="text-indigo-400 w-5 h-5" />
-                    Pusat Peraturan & Monitor Kepatuhan Regulasi RI
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Sistem pemantauan regulasi nasional (Kemenaker, Kominfo, Kemenkumham) dan audit dampak otomatis terhadap kontrak perusahaan.
-                  </p>
-                </div>
-                <div className="bg-slate-900 border border-slate-850 px-3 py-1.5 rounded-lg flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping"></span>
-                  <span className="text-[10px] text-slate-300 font-bold">5 Regulasi Aktif Terpantau</span>
-                </div>
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs">
+              <AiHero Icon={Scale} title="Pusat Peraturan" desc="Pantau regulasi nasional (Kemenaker, Kominfo, Kemenkumham) dan audit dampaknya terhadap kontrak perusahaan." />
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Left Panel: Active Regulations List */}
-                <div className="lg:col-span-5 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
-                  <div className="border-b border-slate-850 pb-2">
-                    <h3 className="font-bold text-sm text-slate-200">Daftar Regulasi Terpantau</h3>
+                <div className="lg:col-span-5 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-xs font-bold text-rs-900 dark:text-white">Daftar Regulasi Terpantau</h3>
+                    <span className="inline-block text-[10px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300 px-2.5 py-1 rounded-lg whitespace-nowrap">{regulations.length} Regulasi Aktif</span>
                   </div>
-
-                  <div className="space-y-3">
-                    {regulations.map((reg) => (
-                      <div
-                        key={reg.id}
-                        onClick={() => handleAnalyzeRegulationImpact(reg.id)}
-                        className={`p-3 rounded-xl border transition cursor-pointer text-left ${
-                          selectedRegId === reg.id
-                            ? "bg-indigo-600/10 border-indigo-500"
-                            : "bg-slate-900/60 border-slate-800 hover:border-slate-700"
-                        }`}
-                      >
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="text-[9px] bg-slate-800 text-indigo-400 px-2 py-0.5 rounded font-bold uppercase">
-                            {reg.category}
-                          </span>
-                          <span className="text-[9px] text-slate-500 font-mono">{reg.enactedDate}</span>
-                        </div>
-                        <h4 className="font-bold text-slate-200 text-xs leading-snug mb-1">{reg.title}</h4>
-                        <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed">{reg.summary}</p>
-                      </div>
-                    ))}
+                  <div className="space-y-2.5">
+                    {regulations.map((reg, ri) => {
+                      const tones = ["text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300", "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300", "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300", "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300", "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300"];
+                      return (
+                        <button key={reg.id} type="button" onClick={() => handleAnalyzeRegulationImpact(reg.id)}
+                          className={`w-full text-left p-3 rounded-xl border transition cursor-pointer ${selectedRegId === reg.id ? "border-[#635BFF] bg-[#EFF0FF]/60 dark:bg-indigo-950/30" : "border-rs-200/80 dark:border-rs-800 hover:border-rs-300"}`}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${tones[ri % tones.length]}`}>{reg.category}</span>
+                            <span className="text-[10px] font-bold text-emerald-600">● Terpantau</span>
+                          </div>
+                          <p className="text-xs font-bold text-rs-900 dark:text-white">{reg.title}</p>
+                          <p className="text-[10px] text-rs-400 font-medium mt-0.5 line-clamp-2">{reg.summary}</p>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
                 {/* Right Panel: AI Compliance Audit and Impact Results */}
-                <div className="lg:col-span-7 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
-                  <div>
-                    <div className="flex items-center justify-between pb-3 border-b border-slate-850 mb-4">
-                      <h3 className="font-bold text-sm text-slate-200 flex items-center gap-1.5">
-                        <Sparkles className="text-amber-400 w-4 h-4" />
-                        AI Regulatory Audit & Addendum Draft
-                      </h3>
-                      {selectedRegId && (
-                        <span className="bg-indigo-500/15 text-indigo-400 px-2 py-0.5 rounded font-mono text-[9px]">
-                          Reg ID: {selectedRegId}
-                        </span>
-                      )}
-                    </div>
-
-                    {!regImpactReport && !aiLoading && (
-                      <div className="text-center py-20 text-slate-500">
-                        Silakan pilih salah satu regulasi di panel sebelah kiri untuk memulai audit kepatuhan AI terhadap seluruh registry kontrak.
-                      </div>
-                    )}
-
-                    {aiLoading && (
-                      <div className="text-center py-20 space-y-3">
-                        <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-500" />
-                        <p className="text-xs text-slate-400 animate-pulse">
-                          Gemini sedang memeriksa seluruh isi klausul kontrak aktif untuk kepatuhan hukum...
-                        </p>
-                      </div>
-                    )}
-
-                    {regImpactReport && (
-                      <div className="space-y-4 animate-fadeIn">
-                        <div className="p-3.5 bg-indigo-950/15 border border-indigo-500/25 rounded-xl">
-                          <p className="font-bold text-slate-200">Hasil Analisis Kepatuhan Portofolio</p>
-                          <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">{regImpactReport.impactSummary}</p>
-                          <div className="mt-2.5 inline-block bg-rose-500/10 border border-rose-500/20 text-rose-400 px-2.5 py-0.5 rounded-full font-bold">
-                            Terdampak: {regImpactReport.affectedContractsCount} Kontrak
-                          </div>
-                        </div>
-
-                        <div className="space-y-3">
-                          <p className="font-bold text-slate-400">Rincian Kontrak Terdampak & Tindakan Perbaikan:</p>
-                          {regImpactReport.results.map((res: any, idx: number) => (
-                            <div key={idx} className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-2">
-                              <div className="flex justify-between items-center">
-                                <span className="font-bold text-slate-200 text-xs">
-                                  {res.contractTitle} ({res.contractNumber})
-                                </span>
-                                <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
-                                  res.impactLevel === "High" ? "bg-rose-500/15 text-rose-400" : "bg-amber-500/15 text-amber-400"
-                                }`}>
-                                  {res.impactLevel} Risk
-                                </span>
-                              </div>
-                              <p className="text-slate-400 leading-relaxed"><strong className="text-slate-300">Risiko:</strong> {res.reason}</p>
-                              <p className="text-slate-400 leading-relaxed"><strong className="text-slate-300">Perbaikan:</strong> {res.actionRequired}</p>
-                              
-                              {res.addendumClauseDraft && (
-                                <div className="mt-2 bg-slate-950 p-2.5 rounded border border-slate-850 font-mono text-[10px] text-indigo-400 leading-relaxed">
-                                  <p className="font-bold text-[9px] text-slate-500 uppercase mb-1">Draf Addendum Penyesuaian:</p>
-                                  {res.addendumClauseDraft}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                <div className="lg:col-span-7 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5 flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2"><Scale className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">Audit Kepatuhan AI</h3></div>
+                    {selectedRegId && <span className="inline-block text-[10px] font-bold text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300 px-2.5 py-1 rounded-lg whitespace-nowrap">Reg ID: {selectedRegId}</span>}
                   </div>
+
+                  {!regImpactReport && !aiLoading && (
+                    <div className="flex-1 min-h-[260px] flex flex-col items-center justify-center text-center px-8">
+                      <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] flex items-center justify-center mb-3"><Scale className="w-6 h-6" /></div>
+                      <p className="text-xs font-semibold text-rs-400 max-w-xs">Pilih salah satu regulasi di panel kiri, lalu jalankan audit kepatuhan AI terhadap seluruh registry kontrak.</p>
+                    </div>
+                  )}
+
+                  {aiLoading && (
+                    <div className="flex-1 min-h-[260px] flex flex-col items-center justify-center text-center space-y-3">
+                      <RefreshCw className="w-8 h-8 animate-spin text-[#635BFF]" />
+                      <p className="text-xs font-semibold text-rs-400 animate-pulse">Gemini sedang memeriksa seluruh isi klausul kontrak aktif untuk kepatuhan hukum...</p>
+                    </div>
+                  )}
+
+                  {regImpactReport && !aiLoading && (
+                    <div className="flex-1 space-y-3 animate-fadeIn">
+                      <div className="flex items-center justify-between gap-3">
+                        <h4 className="text-sm font-bold text-rs-900 dark:text-white">Hasil Analisis Kepatuhan Portofolio</h4>
+                        <span className="inline-block text-[10px] font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300 px-2.5 py-1 rounded-lg whitespace-nowrap">Terdampak: {regImpactReport.affectedContractsCount} Kontrak</span>
+                      </div>
+                      <p className="text-[11px] font-medium text-rs-500 dark:text-rs-400 leading-relaxed">{regImpactReport.impactSummary}</p>
+                      {regImpactReport.results.map((res: any, idx: number) => (
+                        <div key={idx} className="p-3 rounded-xl border border-rs-200/80 dark:border-rs-800 space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <h4 className="text-xs font-bold text-rs-900 dark:text-white">{res.contractTitle} ({res.contractNumber})</h4>
+                            <span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${res.impactLevel === "High" ? "text-rose-500 bg-rose-50 dark:bg-rose-950/60" : "text-amber-600 bg-amber-50 dark:bg-amber-950/60"}`}>{res.impactLevel} Risk</span>
+                          </div>
+                          <p className="text-[11px] text-rs-500 dark:text-rs-400 font-medium leading-relaxed"><strong className="text-rs-700 dark:text-rs-200">Risiko:</strong> {res.reason}</p>
+                          <p className="text-[11px] text-rs-500 dark:text-rs-400 font-medium leading-relaxed"><strong className="text-rs-700 dark:text-rs-200">Perbaikan:</strong> {res.actionRequired}</p>
+                          {res.addendumClauseDraft && (
+                            <div className="bg-rs-100 dark:bg-rs-800 p-2.5 rounded-lg font-mono text-[10px] text-[#635BFF] leading-relaxed">
+                              <p className="font-bold text-[9px] text-rs-400 uppercase mb-1">Draf Addendum Penyesuaian:</p>
+                              {res.addendumClauseDraft}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <button type="button" disabled={!selectedRegId || aiLoading} onClick={() => selectedRegId && handleAnalyzeRegulationImpact(selectedRegId)}
+                    className="mt-4 w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#635BFF] hover:bg-[#5249E6] text-white text-[11px] font-bold shadow-lg shadow-indigo-500/25 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer transition">
+                    <Sparkles className="w-3.5 h-3.5" /> Jalankan Audit Dampak
+                  </button>
                 </div>
               </div>
             </div>
@@ -15181,36 +15315,25 @@ export default function App() {
 
           {/* VIEW: PUTUSAN PENGADILAN */}
           {activeTab === "putusan-pengadilan" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <FolderOpen className="text-indigo-400 w-5 h-5" />
-                  Putusan Pengadilan & Analisis Jurisprudensi
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Uji logika hukum dan analisis putusan Mahkamah Agung RI untuk mendapatkan rasio decidendi (alasan hakim) serta mengamankan draf kontrak bisnis Anda.
-                </p>
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs">
+              <AiHero Icon={Gavel} title="Putusan Pengadilan" desc="Analisis putusan MA / PHI dan dampaknya terhadap klausul serta kontrak yang berjalan." />
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Left side: Upload or presets */}
-                <div className="lg:col-span-5 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
-                  <div className="border-b border-slate-850 pb-2">
-                    <h3 className="font-bold text-sm text-slate-200">Masukkan Salinan Putusan MA / PHI</h3>
-                  </div>
+                <div className="lg:col-span-5 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-4">
+                  <h3 className="text-xs font-bold text-rs-900 dark:text-white">Masukkan Salinan Putusan MA / PHI</h3>
 
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     <button
                       onClick={() => {
                         setJurisprudenceText(`PUTUSAN MAHKAMAH AGUNG REPUBLIK INDONESIA\nNomor: 123/Pdt.G/2025/MA\nDEMI KEADILAN BERDASARKAN KETUHANAN YANG MAHA ESA\nMahkamah Agung memeriksa perkara perdata sengketa wanprestasi antara PT Semesta Digital Terpadu (Penggugat) melawan CV Solusi Bersama (Tergugat). Bahwa Tergugat tidak menyediakan jasa SLA perawatan AC Gedung sebesar 99% melainkan AC rusak selama 14 hari berturut-turut. Hakim mempertimbangkan bahwa wanprestasi terbukti sah karena ketiadaan force majeure dan menghukum Tergugat membayar ganti rugi denda 0.1% per hari keterlambatan sesuai perjanjian.`);
                         handleAnalyzeCourtDecision(`PUTUSAN MAHKAMAH AGUNG REPUBLIK INDONESIA\nNomor: 123/Pdt.G/2025/MA\nDEMI KEADILAN BERDASARKAN KETUHANAN YANG MAHA ESA\nMahkamah Agung memeriksa perkara perdata sengketa wanprestasi antara PT Semesta Digital Terpadu (Penggugat) melawan CV Solusi Bersama (Tergugat). Bahwa Tergugat tidak menyediakan jasa SLA perawatan AC Gedung sebesar 99% melainkan AC rusak selama 14 hari berturut-turut. Hakim mempertimbangkan bahwa wanprestasi terbukti sah karena ketiadaan force majeure dan menghukum Tergugat membayar ganti rugi denda 0.1% per hari keterlambatan sesuai perjanjian.`);
                       }}
-                      className="w-full p-3 bg-slate-900 hover:bg-slate-850 rounded-xl text-left border border-slate-800 flex items-center gap-3 transition"
+                      className="w-full p-3 rounded-xl text-left border border-rs-200/80 dark:border-rs-800 hover:border-rs-300 transition cursor-pointer"
                     >
-                      <Briefcase className="text-emerald-400 w-5 h-5" />
                       <div>
-                        <p className="font-bold text-slate-200">Preset 1: Putusan Perdata Sengketa Vendor (SLA)</p>
-                        <p className="text-[10px] text-slate-500">Nomor: 123/Pdt.G/2025/MA</p>
+                        <p className="text-xs font-bold text-rs-900 dark:text-white">Preset 1: Putusan Perdata Sengketa Vendor (SLA)</p>
+                        <p className="text-[10px] text-rs-400 font-medium mt-0.5">Nomor: 123/Pdt.G/2025/MA</p>
                       </div>
                     </button>
 
@@ -15219,22 +15342,21 @@ export default function App() {
                         setJurisprudenceText(`PUTUSAN PENGADILAN HUBUNGAN INDUSTRIAL\nNomor: 45/Pdt.Sus-PHI/2024\nAntara Pekerja Andi Budiman (Penggugat) melawan PT Global Tech (Tergugat). Tergugat melakukan PHK kepada Penggugat di masa kontrak PKWT 1 tahun yang baru berjalan 3 bulan dengan alasan efisiensi perusahaan. Hakim PHI menolak alasan Tergugat dan mewajibkan Tergugat membayar sisa upah kontrak selama 9 bulan penuh ditambah uang kompensasi PKWT sesuai Pasal 62 UU No 13/2003.`);
                         handleAnalyzeCourtDecision(`PUTUSAN PENGADILAN HUBUNGAN INDUSTRIAL\nNomor: 45/Pdt.Sus-PHI/2024\nAntara Pekerja Andi Budiman (Penggugat) melawan PT Global Tech (Tergugat). Tergugat melakukan PHK kepada Penggugat di masa kontrak PKWT 1 tahun yang baru berjalan 3 bulan dengan alasan efisiensi perusahaan. Hakim PHI menolak alasan Tergugat dan mewajibkan Tergugat membayar sisa upah kontrak selama 9 bulan penuh ditambah uang kompensasi PKWT sesuai Pasal 62 UU No 13/2003.`);
                       }}
-                      className="w-full p-3 bg-slate-900 hover:bg-slate-850 rounded-xl text-left border border-slate-800 flex items-center gap-3 transition"
+                      className="w-full p-3 rounded-xl text-left border border-rs-200/80 dark:border-rs-800 hover:border-rs-300 transition cursor-pointer"
                     >
-                      <Users className="text-indigo-400 w-5 h-5" />
                       <div>
-                        <p className="font-bold text-slate-200">Preset 2: Putusan Sengketa PHK Kontrak PKWT</p>
-                        <p className="text-[10px] text-slate-500">Nomor: 45/Pdt.Sus-PHI/2024</p>
+                        <p className="text-xs font-bold text-rs-900 dark:text-white">Preset 2: Putusan Sengketa PHK Kontrak PKWT</p>
+                        <p className="text-[10px] text-rs-400 font-medium mt-0.5">Nomor: 45/Pdt.Sus-PHI/2024</p>
                       </div>
                     </button>
                   </div>
 
                   <div className="pt-2">
-                    <label className="block text-xs font-semibold text-slate-300 mb-2">Atau Paste Salinan Putusan Mentah:</label>
+                    <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">Atau Paste Salinan Putusan Mentah:</label>
                     <textarea
                       value={jurisprudenceText}
                       onChange={(e) => setJurisprudenceText(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-850 p-3 rounded-xl text-slate-300 focus:outline-none"
+                      className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                       rows={6}
                       placeholder="Tempel amar putusan di sini..."
                     />
@@ -15243,33 +15365,34 @@ export default function App() {
                   <button
                     onClick={() => handleAnalyzeCourtDecision(jurisprudenceText)}
                     disabled={aiLoading || !jurisprudenceText}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1 shadow-lg"
+                    className="w-full py-2.5 bg-[#635BFF] hover:bg-[#5249E6] disabled:opacity-60 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 cursor-pointer"
                   >
-                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
-                    Analisis Putusan dengan AI
+                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    Analisis Putusan
                   </button>
                 </div>
 
                 {/* Right side: AI breakdown */}
-                <div className="lg:col-span-7 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+                <div className="lg:col-span-7 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between pb-3 border-b border-slate-850 mb-4">
-                      <h3 className="font-bold text-sm text-slate-200 flex items-center gap-1.5">
-                        <Sparkles className="text-amber-400 w-4 h-4" />
-                        AI Jurisprudence Insights Report
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-xs font-bold text-rs-900 dark:text-white flex items-center gap-2">
+                        <Gavel className="text-rs-400 w-4 h-4" />
+                        Hasil Analisis
                       </h3>
                     </div>
 
                     {!jurisprudenceResult && !aiLoading && (
-                      <div className="text-center py-20 text-slate-500">
-                        Pilih preset putusan di kiri atau tempel draf putusan untuk mendapatkan rasio hukum (rationale) dan rekomendasi kontrak bisnis.
+                      <div className="min-h-[260px] flex flex-col items-center justify-center text-center px-8">
+                        <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] flex items-center justify-center mb-3"><Gavel className="w-6 h-6" /></div>
+                        <p className="text-xs font-semibold text-rs-400 max-w-xs">Pilih preset atau tempel putusan, lalu klik Analisis Putusan.</p>
                       </div>
                     )}
 
                     {aiLoading && (
                       <div className="text-center py-20 space-y-3">
                         <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-500" />
-                        <p className="text-xs text-slate-400 animate-pulse">
+                        <p className="text-xs text-rs-500 animate-pulse">
                           Gemini sedang membedah pertimbangan hukum majelis hakim...
                         </p>
                       </div>
@@ -15278,34 +15401,34 @@ export default function App() {
                     {jurisprudenceResult && (
                       <div className="space-y-4 animate-fadeIn">
                         <div className="grid grid-cols-2 gap-3">
-                          <div className="p-2.5 bg-slate-900 rounded-lg">
-                            <span className="text-[9px] text-slate-500 block">Nomor Putusan</span>
-                            <span className="font-bold text-slate-200">{jurisprudenceResult.decisionNumber}</span>
+                          <div className="p-2.5 bg-white dark:bg-rs-900 rounded-lg">
+                            <span className="text-[9px] text-rs-400 block">Nomor Putusan</span>
+                            <span className="font-bold text-rs-900 dark:text-white">{jurisprudenceResult.decisionNumber}</span>
                           </div>
-                          <div className="p-2.5 bg-slate-900 rounded-lg">
-                            <span className="text-[9px] text-slate-500 block">Instansi Pengadilan</span>
-                            <span className="font-bold text-indigo-400">{jurisprudenceResult.court}</span>
+                          <div className="p-2.5 bg-white dark:bg-rs-900 rounded-lg">
+                            <span className="text-[9px] text-rs-400 block">Instansi Pengadilan</span>
+                            <span className="font-bold text-[#635BFF]">{jurisprudenceResult.court}</span>
                           </div>
                         </div>
 
-                        <div className="p-3 bg-slate-900 rounded-xl space-y-1">
-                          <strong className="text-slate-300">Duduk Perkara / Kasus Posisi:</strong>
-                          <p className="text-slate-400 leading-relaxed">{jurisprudenceResult.caseSummary}</p>
+                        <div className="p-3 bg-white dark:bg-rs-900 rounded-xl space-y-1">
+                          <strong className="text-rs-700 dark:text-rs-300">Duduk Perkara / Kasus Posisi:</strong>
+                          <p className="text-rs-500 leading-relaxed">{jurisprudenceResult.caseSummary}</p>
                         </div>
 
-                        <div className="p-3 bg-slate-900 rounded-xl space-y-1 border-l-4 border-indigo-500">
-                          <strong className="text-indigo-400">Rasio Decidendi (Pertimbangan Hukum Hakim):</strong>
-                          <p className="text-slate-300 leading-relaxed font-sans">{jurisprudenceResult.ratioDecidendi}</p>
+                        <div className="p-3 bg-white dark:bg-rs-900 rounded-xl space-y-1 border-l-4 border-indigo-500">
+                          <strong className="text-[#635BFF]">Rasio Decidendi (Pertimbangan Hukum Hakim):</strong>
+                          <p className="text-rs-700 dark:text-rs-300 leading-relaxed font-sans">{jurisprudenceResult.ratioDecidendi}</p>
                         </div>
 
-                        <div className="p-3 bg-slate-900 rounded-xl space-y-1">
-                          <strong className="text-slate-300">Amar Putusan (Ruling):</strong>
-                          <p className="text-slate-400 font-semibold italic">"{jurisprudenceResult.ruling}"</p>
+                        <div className="p-3 bg-white dark:bg-rs-900 rounded-xl space-y-1">
+                          <strong className="text-rs-700 dark:text-rs-300">Amar Putusan (Ruling):</strong>
+                          <p className="text-rs-500 font-semibold italic">"{jurisprudenceResult.ruling}"</p>
                         </div>
 
                         <div className="p-3 bg-rose-500/5 border border-rose-500/10 rounded-xl space-y-1">
-                          <strong className="text-rose-400">Implikasi Bisnis & Pencegahan Risiko Kontrak:</strong>
-                          <ul className="list-disc pl-5 text-slate-300 space-y-1 mt-1">
+                          <strong className="text-rose-500">Implikasi Bisnis & Pencegahan Risiko Kontrak:</strong>
+                          <ul className="list-disc pl-5 text-rs-700 dark:text-rs-300 space-y-1 mt-1">
                             {jurisprudenceResult.recommendations.map((rec: string, idx: number) => (
                               <li key={idx}>{rec}</li>
                             ))}
@@ -15321,54 +15444,44 @@ export default function App() {
 
           {/* VIEW: OPINI HUKUM */}
           {activeTab === "opini-hukum" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <MessageSquare className="text-indigo-400 w-5 h-5" />
-                  AI Legal Opinion & Memorandum Generator
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Formulasikan opini hukum korporasi (Legal Memo) secara instan. Input fakta kasus perdata/ketenagakerjaan, sistem AI akan menyusun memorandum formal berdasarkan regulasi nasional yang berlaku.
-                </p>
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs">
+              <AiHero Icon={MessageSquare} title="Opini Hukum" desc="Susun opini hukum korporasi (Legal Memo) secara instan dari fakta kasus dan pertanyaan hukum." />
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Inputs (5 cols) */}
-                <div className="lg:col-span-5 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4 text-left">
-                  <div className="border-b border-slate-850 pb-2">
-                    <h3 className="font-bold text-sm text-slate-200">Detail Legal Issues</h3>
-                  </div>
+                <div className="lg:col-span-5 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-4 text-left">
+                  <h3 className="text-xs font-bold text-rs-900 dark:text-white">Detail Legal Issues</h3>
 
                   <div className="space-y-3">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-400 mb-1">1. Duduk Perkara / Fakta Kasus (Kasus Posisi):</label>
+                      <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">1. Duduk Perkara / Fakta Kasus (Kasus Posisi):</label>
                       <textarea
                         value={opinionFacts}
                         onChange={(e) => setOpinionFacts(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-850 p-2.5 rounded-xl text-slate-200 text-xs focus:outline-none"
+                        className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                         rows={5}
                         placeholder="Contoh: Perusahaan berencana memutus hubungan kerja vendor IT CV Cepat Tanggap karena keterlambatan pengerjaan aplikasi selama 2 bulan, namun vendor menolak membayar penalti keterlambatan karena beralasan terjadi force majeure pemogokan developer mereka..."
                       />
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-slate-400 mb-1">2. Pertanyaan Hukum (Legal Issues):</label>
+                      <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">2. Pertanyaan Hukum (Legal Issues):</label>
                       <textarea
                         value={opinionQuestions}
                         onChange={(e) => setOpinionQuestions(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-850 p-2.5 rounded-xl text-slate-200 text-xs focus:outline-none"
+                        className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                         rows={3}
                         placeholder="Contoh: Apakah pemogokan karyawan internal vendor sah dikategorikan sebagai keadaan memaksa (force majeure) menurut hukum Indonesia? Bagaimana legalitas tuntutan penalti denda?"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-slate-400 mb-1">3. Dasar Hukum Referensi (Opsional):</label>
+                      <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">3. Dasar Hukum Referensi (Opsional):</label>
                       <input
                         type="text"
                         value={opinionBaseLaws}
                         onChange={(e) => setOpinionBaseLaws(e.target.value)}
-                        className="w-full bg-slate-900 border border-slate-850 px-3 py-2 rounded-xl text-slate-200 text-xs focus:outline-none"
+                        className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent px-3 py-2.5 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                         placeholder="Contoh: Pasal 1243 & 1244 KUHPerdata"
                       />
                     </div>
@@ -15377,20 +15490,20 @@ export default function App() {
                   <button
                     onClick={handleGenerateLegalOpinion}
                     disabled={aiLoading || !opinionFacts || !opinionQuestions}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 shadow-lg"
+                    className="w-full py-2.5 bg-[#635BFF] hover:bg-[#5249E6] disabled:opacity-60 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 cursor-pointer"
                   >
-                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />}
-                    Generate Legal Opinion
+                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    Susun Opini Hukum
                   </button>
                 </div>
 
                 {/* AI Opinion Report Output (7 cols) */}
-                <div className="lg:col-span-7 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between text-left">
+                <div className="lg:col-span-7 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 flex flex-col justify-between text-left">
                   <div>
-                    <div className="flex items-center justify-between pb-3 border-b border-slate-850 mb-4">
-                      <h3 className="font-bold text-sm text-slate-200 flex items-center gap-1.5">
-                        <Sparkles className="text-amber-400 w-4 h-4" />
-                        AI Legal Opinion Draft (Memorandum)
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-xs font-bold text-rs-900 dark:text-white flex items-center gap-2">
+                        <FileText className="text-rs-400 w-4 h-4" />
+                        Legal Memo
                       </h3>
                       {opinionResult && (
                         <button
@@ -15402,23 +15515,24 @@ export default function App() {
                             a.download = "Legal_Opinion.txt";
                             a.click();
                           }}
-                          className="text-[10px] text-indigo-400 hover:underline cursor-pointer"
+                          className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 rounded-xl flex items-center gap-1.5 cursor-pointer"
                         >
-                          Unduh Memo
+                          <Download className="w-3 h-3" /> Unduh Memo
                         </button>
                       )}
                     </div>
 
                     {!opinionResult && !aiLoading && (
-                      <div className="text-center py-24 text-slate-500">
-                        Lengkapi fakta perdata dan pertanyaan hukum di kiri untuk membuat Legal Opinion / Memorandum Hukum resmi.
+                      <div className="min-h-[260px] flex flex-col items-center justify-center text-center px-8">
+                        <div className="w-12 h-12 rounded-2xl bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] flex items-center justify-center mb-3"><MessageSquare className="w-6 h-6" /></div>
+                        <p className="text-xs font-semibold text-rs-400 max-w-xs">Isi fakta kasus dan pertanyaan hukum, lalu klik Susun Opini Hukum.</p>
                       </div>
                     )}
 
                     {aiLoading && (
                       <div className="text-center py-24 space-y-3">
                         <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-500" />
-                        <p className="text-xs text-slate-400 animate-pulse">
+                        <p className="text-xs text-rs-500 animate-pulse">
                           Gemini sedang merumuskan memorandum hukum korporasi Indonesia...
                         </p>
                       </div>
@@ -15426,36 +15540,36 @@ export default function App() {
 
                     {opinionResult && (
                       <div className="space-y-4 animate-fadeIn leading-relaxed">
-                        <div className="text-center border-b border-slate-800 pb-3 mb-2">
-                          <h4 className="font-bold text-slate-100 text-sm">{opinionResult.title}</h4>
-                          <span className="text-[9px] text-slate-500">PT SEMESTA DIGITAL TERPADU • CORPORATE LEGAL</span>
+                        <div className="text-center border-b border-rs-200/80 pb-3 mb-2">
+                          <h4 className="font-bold text-rs-900 text-sm">{opinionResult.title}</h4>
+                          <span className="text-[9px] text-rs-400">PT SEMESTA DIGITAL TERPADU • CORPORATE LEGAL</span>
                         </div>
 
-                        <div className="p-3 bg-slate-900 rounded-xl">
-                          <strong className="text-indigo-400 block text-[10px] uppercase font-mono mb-1">Executive Summary:</strong>
-                          <p className="text-slate-200">{opinionResult.executiveSummary}</p>
+                        <div className="p-3 bg-white dark:bg-rs-900 rounded-xl">
+                          <strong className="text-[#635BFF] block text-[10px] uppercase font-mono mb-1">Executive Summary:</strong>
+                          <p className="text-rs-900 dark:text-white">{opinionResult.executiveSummary}</p>
                         </div>
 
                         <div className="space-y-2">
-                          <strong className="text-slate-400 block text-[10px] uppercase font-mono">Dasar Hukum Terkait:</strong>
+                          <strong className="text-rs-500 block text-[10px] uppercase font-mono">Dasar Hukum Terkait:</strong>
                           <div className="grid grid-cols-1 gap-2">
                             {opinionResult.legalFramework.map((f: any, i: number) => (
-                              <div key={i} className="p-2.5 bg-slate-900/60 border border-slate-850 rounded-lg text-[11px]">
-                                <p className="font-bold text-slate-200">{f.regulation}</p>
-                                <p className="text-slate-400 text-[10px] mt-0.5">{f.relevance}</p>
+                              <div key={i} className="p-2.5 bg-white dark:bg-rs-900/60 border border-rs-200/80 rounded-lg text-[11px]">
+                                <p className="font-bold text-rs-900 dark:text-white">{f.regulation}</p>
+                                <p className="text-rs-500 text-[10px] mt-0.5">{f.relevance}</p>
                               </div>
                             ))}
                           </div>
                         </div>
 
-                        <div className="p-3 bg-slate-900 rounded-xl space-y-1">
-                          <strong className="text-slate-300 block text-[10px] uppercase font-mono">Analisis Hukum & Kasus Posisi:</strong>
-                          <p className="text-slate-300 whitespace-pre-line">{opinionResult.legalDiscussion}</p>
+                        <div className="p-3 bg-white dark:bg-rs-900 rounded-xl space-y-1">
+                          <strong className="text-rs-700 dark:text-rs-300 block text-[10px] uppercase font-mono">Analisis Hukum & Kasus Posisi:</strong>
+                          <p className="text-rs-700 dark:text-rs-300 whitespace-pre-line">{opinionResult.legalDiscussion}</p>
                         </div>
 
                         <div className="p-3 bg-indigo-950/20 border border-indigo-500/10 rounded-xl">
-                          <strong className="text-indigo-400 block text-[10px] uppercase font-mono">Kesimpulan Hukum:</strong>
-                          <ul className="list-decimal pl-5 text-slate-300 space-y-1 mt-1 font-semibold">
+                          <strong className="text-[#635BFF] block text-[10px] uppercase font-mono">Kesimpulan Hukum:</strong>
+                          <ul className="list-decimal pl-5 text-rs-700 dark:text-rs-300 space-y-1 mt-1 font-semibold">
                             {opinionResult.conclusions.map((c: string, idx: number) => (
                               <li key={idx}>{c}</li>
                             ))}
@@ -15463,8 +15577,8 @@ export default function App() {
                         </div>
 
                         <div className="p-3 bg-emerald-500/5 border border-emerald-500/10 rounded-xl">
-                          <strong className="text-emerald-400 block text-[10px] uppercase font-mono">Rekomendasi Mitigasi Bisnis:</strong>
-                          <ul className="list-disc pl-5 text-slate-300 space-y-1 mt-1">
+                          <strong className="text-emerald-600 block text-[10px] uppercase font-mono">Rekomendasi Mitigasi Bisnis:</strong>
+                          <ul className="list-disc pl-5 text-rs-700 dark:text-rs-300 space-y-1 mt-1">
                             {opinionResult.businessRecommendations.map((r: string, idx: number) => (
                               <li key={idx}>{r}</li>
                             ))}
@@ -15480,206 +15594,133 @@ export default function App() {
 
           {/* VIEW: TERJEMAH DOKUMEN */}
           {activeTab === "terjemah-dokumen" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <Languages className="text-indigo-400 w-5 h-5" />
-                  Penerjemah Tersumpah Dokumen Hukum (Sworn Legal Translator)
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Terjemahan klausul kontrak {"(Indonesia <-> Inggris)"} yang diselaraskan dengan tata bahasa hukum formal korporasi. Disertai visualisasi kamus glosarium hukum.
-                </p>
-              </div>
-              <div className="px-4 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-[11px] text-sky-900/90 leading-relaxed">
-                <b className="text-sky-800">Alat bantu lepas.</b> Hasil terjemahan di sini <b>tidak tersimpan</b> ke kontrak mana pun. Untuk membuat dokumen dwibahasa yang menempel pada kontrak (Indonesia | Inggris berdampingan), buka kontraknya lalu pakai pemilih bahasa di header workspace.
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs">
+              <AiHero Icon={Languages} title="Terjemah Teks Lepas" desc="Terjemahkan teks hukum Indonesia ↔ Inggris. Hasil tidak tersimpan ke kontrak mana pun." />
+              <AiNote><b>Alat bantu lepas.</b> Hasil terjemahan di sini tidak tersimpan. Untuk dokumen dwibahasa yang menempel pada kontrak, gunakan fitur dwibahasa di workspace kontrak.</AiNote>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 text-left">
-                {/* Input Text Panel */}
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4 flex flex-col justify-between">
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center pb-2 border-b border-slate-850">
-                      <h3 className="font-bold text-sm text-slate-200">Teks Hukum Asal</h3>
-                      <div className="flex items-center gap-2 bg-slate-900 border border-slate-850 px-2.5 py-1 rounded-lg">
-                        <span className="text-[10px] text-slate-300 font-bold">Arah:</span>
-                        <select
-                          value={translationTargetLang}
-                          onChange={(e) => setTranslationTargetLang(e.target.value)}
-                          className="bg-transparent border-none text-[10px] text-indigo-400 font-bold focus:outline-none cursor-pointer"
-                        >
-                          <option value="EN">Bahasa Indonesia ke Inggris (ID -&gt; EN)</option>
-                          <option value="ID">English to Bahasa Indonesia (EN -&gt; ID)</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Pemuat cepat dari kontrak yang sudah ada — supaya tidak
-                        perlu bolak-balik buka tab lain untuk copy-paste pasal.
-                        Hanya MENGISI kotak sumber; hasil terjemahan tetap tidak
-                        tersimpan ke kontrak (lihat catatan biru di atas). */}
-                    <div className="flex flex-wrap gap-1.5">
-                      <select
-                        value={translationSourceContractId}
-                        onChange={(e) => { setTranslationSourceContractId(e.target.value); setTranslationSourceClauseId(""); }}
-                        className="flex-1 min-w-[160px] px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
-                      >
-                        <option value="">Muat dari kontrak (opsional)...</option>
-                        {contracts.map((c) => (
-                          <option key={c.id} value={c.id}>{c.contractNumber} — {c.title}</option>
-                        ))}
-                      </select>
-                      {translationSourceContractId && (() => {
-                        const src = contracts.find((c) => c.id === translationSourceContractId);
-                        if (!src) return null;
-                        return (
-                          <select
-                            value={translationSourceClauseId}
-                            onChange={(e) => {
-                              setTranslationSourceClauseId(e.target.value);
-                              if (e.target.value === "__all__") {
-                                setTranslationText(src.clauses.map((cl) => `${cl.title}\n${stripHtmlOnly(String(cl.content || ""))}`).join("\n\n"));
-                              } else {
-                                const cl = src.clauses.find((x) => (x.id || "") === e.target.value);
-                                if (cl) setTranslationText(stripHtmlOnly(String(cl.content || "")));
-                              }
-                            }}
-                            className="flex-1 min-w-[160px] px-2 py-1.5 bg-slate-900 border border-slate-800 rounded-lg text-[11px] text-slate-300 focus:outline-none focus:border-indigo-500 cursor-pointer"
-                          >
-                            <option value="">Pilih pasal...</option>
-                            <option value="__all__">Seluruh dokumen ({src.clauses.length} pasal)</option>
-                            {src.clauses.map((cl, i) => (
-                              <option key={cl.id || i} value={cl.id || ""}>{cl.title}</option>
-                            ))}
+              <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5 text-left">
+                {(() => {
+                  const fld = "w-full px-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs font-medium text-rs-800 dark:text-rs-200 rounded-xl border border-transparent focus:outline-none focus:ring-2 focus:ring-indigo-500/40";
+                  const src = translationSourceContractId ? contracts.find((c) => c.id === translationSourceContractId) : null;
+                  return (
+                    <>
+                      <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4">
+                        <span className="text-[11px] font-bold text-rs-500">Arah:</span>
+                        <div className="md:w-72">
+                          <select value={translationTargetLang} onChange={(e) => setTranslationTargetLang(e.target.value)} className={fld + " cursor-pointer"}>
+                            <option value="EN">Bahasa Indonesia ke Inggris (ID -&gt; EN)</option>
+                            <option value="ID">English to Bahasa Indonesia (EN -&gt; ID)</option>
                           </select>
-                        );
-                      })()}
-                    </div>
-
-                    <textarea
-                      value={translationText}
-                      onChange={(e) => setTranslationText(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-850 p-3.5 rounded-xl text-slate-200 text-xs focus:outline-none"
-                      rows={10}
-                      placeholder="Ketik atau tempel paragraf klausul hukum di sini, atau muat dari kontrak di atas..."
-                    />
-                  </div>
-
-                  <button
-                    onClick={handleTranslateLegalText}
-                    disabled={aiLoading || !translationText}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 shadow-lg cursor-pointer"
-                  >
-                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Languages className="w-4 h-4" />}
-                    Terjemahkan Dokumen
-                  </button>
-                </div>
-
-                {/* Translated Text Panel */}
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
-                  <div>
-                    <div className="pb-2 border-b border-slate-850 mb-4">
-                      <h3 className="font-bold text-sm text-slate-200 flex items-center gap-1.5">
-                        <Sparkles className="text-amber-400 w-4 h-4" />
-                        Terjemahan Legal Tersumpah AI
-                      </h3>
-                    </div>
-
-                    {!translationResult && !aiLoading && (
-                      <div className="text-center py-28 text-slate-500">
-                        Hasil terjemahan hukum formal akan muncul di sini beserta kamus glosarium.
-                      </div>
-                    )}
-
-                    {aiLoading && (
-                      <div className="text-center py-28 space-y-3">
-                        <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-500" />
-                        <p className="text-xs text-slate-400 animate-pulse">
-                          Sworn Translator AI sedang menyelaraskan istilah hukum...
-                        </p>
-                      </div>
-                    )}
-
-                    {translationResult && (
-                      <div className="space-y-4 animate-fadeIn">
-                        <div className="p-3.5 bg-slate-900 rounded-xl border border-slate-800 font-serif leading-relaxed text-slate-200 italic whitespace-pre-wrap">
-                          {translationResult.translatedText}
                         </div>
-
-                        {translationResult.glossary && translationResult.glossary.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="font-bold text-slate-400 uppercase text-[9px] font-mono">Glosarium Hukum Terdeteksi:</p>
-                            <div className="grid grid-cols-1 gap-2">
-                              {translationResult.glossary.map((g: any, i: number) => (
-                                <div key={i} className="p-2.5 bg-slate-900 border border-slate-850 rounded-lg text-[10px]">
-                                  <div className="flex gap-2 font-bold text-slate-200">
-                                    <span className="text-rose-400">{g.original}</span>
-                                    <span>→</span>
-                                    <span className="text-emerald-400">{g.translated}</span>
-                                  </div>
-                                  <p className="text-slate-400 mt-1 leading-relaxed">{g.explanation}</p>
-                                </div>
-                              ))}
-                            </div>
+                        <div className="md:w-72 md:ml-auto">
+                          <select value={translationSourceContractId} onChange={(e) => { setTranslationSourceContractId(e.target.value); setTranslationSourceClauseId(""); }} className={fld + " cursor-pointer"}>
+                            <option value="">Muat dari kontrak (opsional)...</option>
+                            {contracts.map((c) => (<option key={c.id} value={c.id}>{c.contractNumber} — {c.title}</option>))}
+                          </select>
+                        </div>
+                        {src && (
+                          <div className="md:w-72">
+                            <select
+                              value={translationSourceClauseId}
+                              onChange={(e) => {
+                                setTranslationSourceClauseId(e.target.value);
+                                if (e.target.value === "__all__") {
+                                  setTranslationText(src.clauses.map((cl) => `${cl.title}\n${stripHtmlOnly(String(cl.content || ""))}`).join("\n\n"));
+                                } else {
+                                  const cl = src.clauses.find((x) => (x.id || "") === e.target.value);
+                                  if (cl) setTranslationText(stripHtmlOnly(String(cl.content || "")));
+                                }
+                              }}
+                              className={fld + " cursor-pointer"}
+                            >
+                              <option value="">Pilih pasal...</option>
+                              <option value="__all__">Seluruh dokumen ({src.clauses.length} pasal)</option>
+                              {src.clauses.map((cl, i) => (<option key={cl.id || i} value={cl.id || ""}>{cl.title}</option>))}
+                            </select>
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                          <h3 className="text-xs font-bold text-rs-900 dark:text-white mb-2">Teks Hukum Asal</h3>
+                          <textarea rows={10} value={translationText} onChange={(e) => setTranslationText(e.target.value)} placeholder="Tempel teks hukum di sini..." className={fld + " resize-none"} />
+                        </div>
+                        <div>
+                          <h3 className="text-xs font-bold text-rs-900 dark:text-white mb-2">Hasil Terjemahan</h3>
+                          <div className={fld + " min-h-[240px] leading-relaxed whitespace-pre-wrap " + (translationResult ? "" : "text-rs-400")}>
+                            {aiLoading ? <span className="inline-flex items-center gap-2 text-rs-400"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Sworn Translator AI sedang menyelaraskan istilah hukum...</span> : translationResult ? translationResult.translatedText : "Hasil akan tampil di sini…"}
+                          </div>
+                        </div>
+                      </div>
+
+                      {translationResult?.glossary && translationResult.glossary.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                          <h3 className="text-xs font-bold text-rs-900 dark:text-white">Glosarium Hukum Terdeteksi</h3>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {translationResult.glossary.map((g: any, i: number) => (
+                              <div key={i} className="p-3 rounded-xl border border-rs-200/80 dark:border-rs-800">
+                                <div className="flex gap-2 text-xs font-bold text-rs-900 dark:text-white"><span className="text-rose-500">{g.original}</span><span>→</span><span className="text-emerald-600">{g.translated}</span></div>
+                                <p className="text-[11px] font-medium text-rs-500 mt-1 leading-relaxed">{g.explanation}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex justify-end gap-2 mt-4">
+                        <button type="button" disabled={!translationResult} onClick={() => { try { navigator.clipboard.writeText(translationResult?.translatedText || ""); showToast("Hasil disalin", "success"); } catch { /* abaikan */ } }}
+                          className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 disabled:opacity-60 disabled:cursor-not-allowed rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"><Copy className="w-3 h-3" /> Salin Hasil</button>
+                        <button type="button" onClick={handleTranslateLegalText} disabled={aiLoading || !translationText}
+                          className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-[#5249E6] disabled:opacity-60 disabled:cursor-not-allowed rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer">
+                          {aiLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />} Terjemahkan
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
           )}
 
           {/* VIEW: REVIEW DOKUMEN */}
           {activeTab === "review-dokumen" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs text-left">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <Search className="text-indigo-400 w-5 h-5" />
-                  Review & Audit Risiko Dokumen Kontrak (Legal Audit)
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Unggah atau tempel seluruh naskah perjanjian untuk mendeteksi deviasi/ketidaksesuaian regulasi Indonesia secara otomatis, menilai skor risiko, dan melihat draf perbaikan.
-                </p>
-              </div>
-              <div className="px-4 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-[11px] text-sky-900/90 leading-relaxed">
-                <b className="text-sky-800">Alat bantu lepas.</b> Analisis di sini tidak menempel pada kontrak. Untuk menandai & mengomentari pasal di dokumen yang sudah ada, buka kontraknya lalu gunakan Mode Tinjau (Word) atau Bagikan Link Review untuk pihak eksternal.
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs text-left">
+              <AiHero Icon={ShieldAlert} title="Audit Risiko Naskah" desc="Deteksi deviasi regulasi, nilai skor risiko, dan dapatkan draf perbaikan otomatis." />
+              <AiNote><b>Alat bantu lepas.</b> Analisis di sini tidak menempel pada kontrak. Untuk menandai &amp; mengomentari pasal pada dokumen yang ada, buka kontrak di workspace.</AiNote>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                 {/* Inputs (5 cols) */}
-                <div className="lg:col-span-5 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
-                  <div className="border-b border-slate-850 pb-2">
-                    <h3 className="font-bold text-sm text-slate-200">Naskah Perjanjian / Draft Kontrak</h3>
-                  </div>
+                <div className="lg:col-span-5 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-4">
+                  <h3 className="text-xs font-bold text-rs-900 dark:text-white">Naskah Perjanjian / Draft Kontrak</h3>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-2">Pilih Preset Teks Kontrak untuk Diuji:</label>
+                    <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">Pilih Preset Teks Kontrak untuk Diuji:</label>
                     <div className="flex flex-col gap-2">
                       <button
                         onClick={() => setReviewText(`PASAL 4: JASA DAN IMBALAN\n1. Karyawan wajib bekerja dengan durasi 60 jam per minggu tanpa adanya upah lembur tambahan.\n2. Perjanjian ini mensyaratkan adanya Masa Percobaan (Probation) selama 3 bulan pertama untuk status Karyawan Kontrak PKWT.\n3. Apabila karyawan memutus hubungan kerja sepihak sebelum masa kontrak berakhir, maka karyawan dilarang menuntut kompensasi PKWT dalam bentuk apapun.`)}
-                        className="p-2.5 bg-slate-905 hover:bg-slate-850 rounded-xl border border-slate-800 text-left text-[11px] leading-relaxed transition"
+                        className="p-3 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-rs-300 text-left transition cursor-pointer"
                       >
-                        <p className="font-bold text-slate-300">Preset Draf PKWT Berisiko Tinggi</p>
-                        <p className="text-[9px] text-slate-500 mt-0.5">Memiliki masa percobaan PKWT & jam kerja melebihi UU.</p>
+                        <p className="text-xs font-bold text-rs-900 dark:text-white">Preset Draf PKWT Berisiko Tinggi</p>
+                        <p className="text-[10px] text-rs-400 font-medium mt-0.5">Memiliki masa percobaan PKWT & jam kerja melebihi UU.</p>
                       </button>
                       
                       <button
                         onClick={() => setReviewText(`PASAL 8: PENGELOLAAN DATA\n1. Para Pihak saling membagikan database data pribadi pelanggan termasuk nama lengkap, KTP, dan nomor telepon tanpa perlu mendapatkan persetujuan dari masing-masing subjek data.\n2. Pihak Kedua dilarang menuntut ganti rugi dalam hal terjadi kebocoran database pada server Pihak Kesatu.`)}
-                        className="p-2.5 bg-slate-905 hover:bg-slate-850 rounded-xl border border-slate-800 text-left text-[11px] leading-relaxed transition"
+                        className="p-3 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-rs-300 text-left transition cursor-pointer"
                       >
-                        <p className="font-bold text-slate-300">Preset Perjanjian Vendor IT Berisiko (UU PDP)</p>
-                        <p className="text-[9px] text-slate-500 mt-0.5">Melanggar UU Pelindungan Data Pribadi.</p>
+                        <p className="text-xs font-bold text-rs-900 dark:text-white">Preset Perjanjian Vendor IT Berisiko (UU PDP)</p>
+                        <p className="text-[10px] text-rs-400 font-medium mt-0.5">Melanggar UU Pelindungan Data Pribadi.</p>
                       </button>
                     </div>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1">Atau Masukkan Teks Dokumen Anda:</label>
+                    <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">Atau Masukkan Teks Dokumen Anda:</label>
                     <textarea
                       value={reviewText}
                       onChange={(e) => setReviewText(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-850 p-3.5 rounded-xl text-slate-200 text-xs focus:outline-none"
+                      className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                       rows={6}
                       placeholder="Tempel naskah kontrak di sini..."
                     />
@@ -15688,33 +15729,31 @@ export default function App() {
                   <button
                     onClick={handleReviewDocumentText}
                     disabled={aiLoading || !reviewText}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 shadow-lg cursor-pointer"
+                    className="w-full py-2.5 bg-[#635BFF] hover:bg-[#5249E6] disabled:opacity-60 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-xl transition flex items-center justify-center gap-1.5 shadow-lg cursor-pointer"
                   >
-                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />}
-                    Jalankan AI Audit & Review
+                    {aiLoading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                    Jalankan AI Audit
                   </button>
                 </div>
 
                 {/* Outputs (7 cols) */}
-                <div className="lg:col-span-7 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between">
+                <div className="lg:col-span-7 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 flex flex-col justify-between">
                   <div>
-                    <div className="flex items-center justify-between pb-3 border-b border-slate-850 mb-4">
-                      <h3 className="font-bold text-sm text-slate-200 flex items-center gap-1.5">
-                        <Sparkles className="text-amber-400 w-4 h-4" />
-                        AI Legal Risk Assessment Report
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-xs font-bold text-rs-900 dark:text-white flex items-center gap-2">
+                        <ShieldAlert className="text-rs-400 w-4 h-4" />
+                        Hasil Audit Risiko
                       </h3>
                     </div>
 
                     {!reviewResult && !aiLoading && (
-                      <div className="text-center py-28 text-slate-500">
-                        Tempel draf kontrak atau gunakan preset di kiri, lalu klik 'Jalankan AI Audit' untuk melihat visualisasi skor risiko perdata/regulasi.
-                      </div>
+                      <AiEmpty Icon={Search} text="Tempel draf kontrak atau gunakan preset di kiri, lalu klik 'Jalankan AI Audit' untuk melihat skor risiko perdata/regulasi." />
                     )}
 
                     {aiLoading && (
                       <div className="text-center py-28 space-y-3">
                         <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-500" />
-                        <p className="text-xs text-slate-400 animate-pulse">
+                        <p className="text-xs text-rs-500 animate-pulse">
                           Gemini sedang memindai pasal-pasal dan memetakan kepatuhan hukum...
                         </p>
                       </div>
@@ -15723,22 +15762,22 @@ export default function App() {
                     {reviewResult && (
                       <div className="space-y-4 animate-fadeIn">
                         {/* Risk Gauge Header */}
-                        <div className="p-3.5 bg-slate-900 rounded-xl border border-slate-800 flex items-center gap-5">
+                        <div className="p-3.5 bg-white dark:bg-rs-900 rounded-xl border border-rs-200/80 flex items-center gap-5">
                           <div className={`w-14 h-14 rounded-full border-4 flex items-center justify-center font-bold text-sm shrink-0 ${
-                            reviewResult.riskScore > 70 ? "border-rose-500 text-rose-400 bg-rose-500/5" : reviewResult.riskScore > 35 ? "border-amber-500 text-amber-400 bg-amber-500/5" : "border-emerald-500 text-emerald-400 bg-emerald-500/5"
+                            reviewResult.riskScore > 70 ? "border-rose-500 text-rose-500 bg-rose-500/5" : reviewResult.riskScore > 35 ? "border-amber-500 text-amber-600 bg-amber-500/5" : "border-emerald-500 text-emerald-600 bg-emerald-500/5"
                           }`}>
                             {reviewResult.riskScore}
                           </div>
                           <div>
-                            <span className="text-[10px] text-slate-500 font-mono block">AI RISK LEVEL: <strong className={reviewResult.riskScore > 70 ? "text-rose-400" : "text-amber-400"}>{reviewResult.riskLevel}</strong></span>
-                            <p className="text-slate-300 text-[11px] leading-relaxed mt-0.5">{reviewResult.summary}</p>
+                            <span className="text-[10px] text-rs-400 font-mono block">AI RISK LEVEL: <strong className={reviewResult.riskScore > 70 ? "text-rose-500" : "text-amber-600"}>{reviewResult.riskLevel}</strong></span>
+                            <p className="text-rs-700 dark:text-rs-300 text-[11px] leading-relaxed mt-0.5">{reviewResult.summary}</p>
                           </div>
                         </div>
 
                         {reviewResult.inconsistencies && reviewResult.inconsistencies.length > 0 && (
                           <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl">
-                            <p className="font-bold text-amber-400 text-[10px] uppercase font-mono mb-1">Inkonsistensi / Kontradiksi:</p>
-                            <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                            <p className="font-bold text-amber-600 text-[10px] uppercase font-mono mb-1">Inkonsistensi / Kontradiksi:</p>
+                            <ul className="list-disc pl-5 space-y-1 text-rs-700 dark:text-rs-300">
                               {reviewResult.inconsistencies.map((inc: string, i: number) => (
                                 <li key={i}>{inc}</li>
                               ))}
@@ -15748,8 +15787,8 @@ export default function App() {
 
                         {reviewResult.missingClauses && reviewResult.missingClauses.length > 0 && (
                           <div className="p-3 bg-rose-500/5 border border-rose-500/10 rounded-xl">
-                            <p className="font-bold text-rose-400 text-[10px] uppercase font-mono mb-1">Pasal Esensial yang Hilang:</p>
-                            <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                            <p className="font-bold text-rose-500 text-[10px] uppercase font-mono mb-1">Pasal Esensial yang Hilang:</p>
+                            <ul className="list-disc pl-5 space-y-1 text-rs-700 dark:text-rs-300">
                               {reviewResult.missingClauses.map((mc: string, i: number) => (
                                 <li key={i}>{mc}</li>
                               ))}
@@ -15766,34 +15805,24 @@ export default function App() {
 
           {/* VIEW: BANDINGKAN DOKUMEN (AI) */}
           {activeTab === "bandingkan-dokumen" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs text-left">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <ArrowLeftRight className="text-indigo-400 w-5 h-5" />
-                  Bandingkan Dokumen (AI)
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Ambil dua dokumen langsung <b className="text-slate-300">dari arsip</b> (termasuk PDF eksternal yang sudah di-OCR) atau tempel manual, lalu bandingkan pasal-per-pasal oleh AI. Cocok untuk mengadu draf vendor/pihak eksternal vs template kita — bukan cuma riwayat versi internal.
-                </p>
-              </div>
-              <div className="px-4 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-[11px] text-sky-900/90 leading-relaxed">
-                <b className="text-sky-800">Untuk dua dokumen bebas.</b> Membandingkan <b>antar versi</b> satu dokumen ada di panel Riwayat Versi dalam workspace kontrak; membandingkan dengan <b>kontrak sebelumnya dari pihak yang sama</b> ada di tombol "Bandingkan dgn Kontrak Sebelumnya" di header workspace.
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs text-left">
+              <AiHero Icon={ArrowLeftRight} title="Bandingkan 2 Dokumen" desc="Ambil dua dokumen dari arsip (termasuk PDF hasil OCR) atau tempel manual, lalu bandingkan pasal per pasal." />
+              <AiNote><b>Untuk dua dokumen bebas.</b> Membandingkan antar versi satu dokumen tersedia di panel Riwayat Versi dalam workspace kontrak.</AiNote>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-3">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-3">
                   <input
                     type="text"
                     value={compareDocLabelA}
                     onChange={(e) => setCompareDocLabelA(e.target.value)}
                     placeholder="Label Dokumen A"
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 font-bold focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-rs-100 dark:bg-rs-800/80 border border-transparent rounded-xl px-3 py-2 text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                   />
                   <select
                     value=""
                     onChange={(e) => pickCompareDoc("A", e.target.value)}
                     title="Muat isi dokumen dari arsip — teks OCR untuk dokumen upload/eksternal, atau pasal untuk dokumen sistem."
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-400 text-[11px] focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    className="w-full bg-rs-100 dark:bg-rs-800/80 border border-transparent rounded-xl px-3 py-2 text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 py-2.5 cursor-pointer"
                   >
                     <option value="">📂 Ambil dari arsip… (atau tempel manual)</option>
                     {contracts.map((c) => (
@@ -15805,22 +15834,22 @@ export default function App() {
                     onChange={(e) => setCompareDocA(e.target.value)}
                     rows={12}
                     placeholder="Tempel isi Dokumen A di sini..."
-                    className="w-full bg-slate-900 border border-slate-850 p-3.5 rounded-xl text-slate-200 text-xs focus:outline-none resize-y"
+                    className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                   />
                 </div>
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-3">
+                <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-3">
                   <input
                     type="text"
                     value={compareDocLabelB}
                     onChange={(e) => setCompareDocLabelB(e.target.value)}
                     placeholder="Label Dokumen B"
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 font-bold focus:outline-none focus:border-indigo-500"
+                    className="w-full bg-rs-100 dark:bg-rs-800/80 border border-transparent rounded-xl px-3 py-2 text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
                   />
                   <select
                     value=""
                     onChange={(e) => pickCompareDoc("B", e.target.value)}
                     title="Muat isi dokumen dari arsip — teks OCR untuk dokumen upload/eksternal, atau pasal untuk dokumen sistem."
-                    className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-400 text-[11px] focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    className="w-full bg-rs-100 dark:bg-rs-800/80 border border-transparent rounded-xl px-3 py-2 text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 py-2.5 cursor-pointer"
                   >
                     <option value="">📂 Ambil dari arsip… (atau tempel manual)</option>
                     {contracts.map((c) => (
@@ -15832,7 +15861,7 @@ export default function App() {
                     onChange={(e) => setCompareDocB(e.target.value)}
                     rows={12}
                     placeholder="Tempel isi Dokumen B di sini..."
-                    className="w-full bg-slate-900 border border-slate-850 p-3.5 rounded-xl text-slate-200 text-xs focus:outline-none resize-y"
+                    className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                   />
                 </div>
               </div>
@@ -15840,41 +15869,41 @@ export default function App() {
               <button
                 onClick={handleCompareDocumentsAi}
                 disabled={isComparingDocs || !compareDocA.trim() || !compareDocB.trim()}
-                className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg cursor-pointer"
+                className="px-3.5 py-2 bg-[#635BFF] hover:bg-[#5249E6] disabled:opacity-60 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-xl transition flex items-center gap-1.5 shadow-md shadow-indigo-500/20 cursor-pointer"
               >
-                {isComparingDocs ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300" />}
-                Bandingkan dengan AI
+                {isComparingDocs ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ArrowLeftRight className="w-3.5 h-3.5" />}
+                Bandingkan Dokumen
               </button>
 
               {compareDocResult && (
-                <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-850 pb-3">
-                    <h3 className="font-bold text-sm text-slate-200">Hasil Perbandingan</h3>
+                <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-4">
+                  <div className="flex items-center justify-between border-b border-rs-200/80 pb-3">
+                    <h3 className="font-bold text-sm text-rs-900 dark:text-white">Hasil Perbandingan</h3>
                     <span className={`px-2.5 py-1 rounded-full font-bold text-[10px] uppercase ${
-                      compareDocResult.riskDelta === "Higher" ? "bg-rose-500/15 text-rose-400"
-                        : compareDocResult.riskDelta === "Lower" ? "bg-emerald-500/15 text-emerald-400"
-                        : "bg-slate-800 text-slate-400"
+                      compareDocResult.riskDelta === "Higher" ? "bg-rose-500/15 text-rose-500"
+                        : compareDocResult.riskDelta === "Lower" ? "bg-emerald-500/15 text-emerald-600"
+                        : "bg-rs-100 text-rs-500"
                     }`}>
                       Risiko {compareDocResult.riskDelta === "Higher" ? "Naik" : compareDocResult.riskDelta === "Lower" ? "Turun" : "Serupa"}
                     </span>
                   </div>
 
-                  <p className="text-slate-300 leading-relaxed">{compareDocResult.overallAssessment}</p>
+                  <p className="text-rs-700 dark:text-rs-300 leading-relaxed">{compareDocResult.overallAssessment}</p>
 
                   {compareDocResult.differences?.length > 0 && (
                     <div className="space-y-2">
-                      <p className="font-bold text-slate-400 text-[10px] uppercase font-mono">Perbedaan Substantif</p>
+                      <p className="font-bold text-rs-500 text-[10px] uppercase font-mono">Perbedaan Substantif</p>
                       {compareDocResult.differences.map((d: any, i: number) => (
-                        <div key={i} className="p-3 bg-slate-900 border border-slate-800 rounded-xl space-y-1.5">
+                        <div key={i} className="p-3 bg-white dark:bg-rs-900 border border-rs-200/80 rounded-xl space-y-1.5">
                           <div className="flex items-center justify-between">
-                            <p className="font-bold text-indigo-300">{d.topic}</p>
-                            <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 uppercase font-bold">
+                            <p className="font-bold text-[#635BFF]">{d.topic}</p>
+                            <span className="text-[9px] px-2 py-0.5 rounded-full bg-rs-100 text-rs-500 uppercase font-bold">
                               Menguntungkan: {d.favors}
                             </span>
                           </div>
-                          <p className="text-slate-400"><span className="font-semibold text-slate-300">{compareDocLabelA}:</span> {d.documentAPosition}</p>
-                          <p className="text-slate-400"><span className="font-semibold text-slate-300">{compareDocLabelB}:</span> {d.documentBPosition}</p>
-                          {d.riskNote && <p className="text-amber-400/90 italic">⚠ {d.riskNote}</p>}
+                          <p className="text-rs-500"><span className="font-semibold text-rs-700 dark:text-rs-300">{compareDocLabelA}:</span> {d.documentAPosition}</p>
+                          <p className="text-rs-500"><span className="font-semibold text-rs-700 dark:text-rs-300">{compareDocLabelB}:</span> {d.documentBPosition}</p>
+                          {d.riskNote && <p className="text-amber-600/90 italic">⚠ {d.riskNote}</p>}
                         </div>
                       ))}
                     </div>
@@ -15882,17 +15911,17 @@ export default function App() {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {compareDocResult.onlyInA?.length > 0 && (
-                      <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                        <p className="font-bold text-slate-400 text-[10px] uppercase font-mono mb-1">Hanya ada di {compareDocLabelA}</p>
-                        <ul className="list-disc pl-4 space-y-1 text-slate-300">
+                      <div className="p-3 bg-white dark:bg-rs-900 border border-rs-200/80 rounded-xl">
+                        <p className="font-bold text-rs-500 text-[10px] uppercase font-mono mb-1">Hanya ada di {compareDocLabelA}</p>
+                        <ul className="list-disc pl-4 space-y-1 text-rs-700 dark:text-rs-300">
                           {compareDocResult.onlyInA.map((x: string, i: number) => <li key={i}>{x}</li>)}
                         </ul>
                       </div>
                     )}
                     {compareDocResult.onlyInB?.length > 0 && (
-                      <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                        <p className="font-bold text-slate-400 text-[10px] uppercase font-mono mb-1">Hanya ada di {compareDocLabelB}</p>
-                        <ul className="list-disc pl-4 space-y-1 text-slate-300">
+                      <div className="p-3 bg-white dark:bg-rs-900 border border-rs-200/80 rounded-xl">
+                        <p className="font-bold text-rs-500 text-[10px] uppercase font-mono mb-1">Hanya ada di {compareDocLabelB}</p>
+                        <ul className="list-disc pl-4 space-y-1 text-rs-700 dark:text-rs-300">
                           {compareDocResult.onlyInB.map((x: string, i: number) => <li key={i}>{x}</li>)}
                         </ul>
                       </div>
@@ -15901,8 +15930,8 @@ export default function App() {
 
                   {compareDocResult.negotiationPoints?.length > 0 && (
                     <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl">
-                      <p className="font-bold text-amber-400 text-[10px] uppercase font-mono mb-1">Poin untuk Dinegosiasikan Ulang</p>
-                      <ul className="list-disc pl-5 space-y-1 text-slate-300">
+                      <p className="font-bold text-amber-600 text-[10px] uppercase font-mono mb-1">Poin untuk Dinegosiasikan Ulang</p>
+                      <ul className="list-disc pl-5 space-y-1 text-rs-700 dark:text-rs-300">
                         {compareDocResult.negotiationPoints.map((x: string, i: number) => <li key={i}>{x}</li>)}
                       </ul>
                     </div>
@@ -15910,8 +15939,8 @@ export default function App() {
 
                   {compareDocResult.recommendation && (
                     <div className="p-3 bg-indigo-500/5 border border-indigo-500/10 rounded-xl">
-                      <p className="font-bold text-indigo-400 text-[10px] uppercase font-mono mb-1">Rekomendasi</p>
-                      <p className="text-slate-300">{compareDocResult.recommendation}</p>
+                      <p className="font-bold text-[#635BFF] text-[10px] uppercase font-mono mb-1">Rekomendasi</p>
+                      <p className="text-rs-700 dark:text-rs-300">{compareDocResult.recommendation}</p>
                     </div>
                   )}
                 </div>
@@ -15921,28 +15950,18 @@ export default function App() {
 
           {/* VIEW: BUAT DRAFT KONTRAK DENGAN AI */}
           {activeTab === "buat-draft-ai" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs text-left">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <Sparkles className="text-amber-400 w-5 h-5" />
-                  Buat Draft Kontrak dengan AI
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Jelaskan kebutuhan bisnis Anda dalam bahasa sehari-hari — AI akan menyusun draft kontrak lengkap (judul, pasal-pasal, variabel) siap dipakai sebagai titik awal, dalam Bahasa Indonesia maupun Inggris.
-                </p>
-              </div>
-              <div className="px-4 py-2.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-[11px] text-sky-900/90 leading-relaxed">
-                <b className="text-sky-800">Menghasilkan naskah, bukan kontrak resmi.</b> Draft di sini <b>belum bernomor</b> dan belum masuk register. Untuk kontrak yang benar-benar terdaftar (bernomor & bisa diajukan approval), pakai "Buat Dokumen Baru" lalu pilih mode penyusunan cerdas.
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs text-left">
+              <AiHero Icon={Sparkles} title="Buat Naskah Draft AI" desc="Hasilkan naskah awal kontrak dari kebutuhan Anda, lalu lanjutkan penyuntingan oleh Legal." />
+              <AiNote tone="amber"><b>Menghasilkan naskah, bukan kontrak resmi.</b> Draft di sini belum bernomor dan belum masuk register. Untuk kontrak resmi, gunakan Pekerjaan Legal atau Dokumen Eksternal.</AiNote>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                <div className="lg:col-span-5 bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
+                <div className="lg:col-span-5 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 space-y-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1">Kategori Kontrak</label>
+                    <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">Kategori Kontrak</label>
                     <select
                       value={draftAiCategory}
                       onChange={(e) => setDraftAiCategory(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500"
+                      className="w-full bg-rs-100 dark:bg-rs-800/80 border border-transparent rounded-xl px-3 py-2.5 text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 cursor-pointer"
                     >
                       {(clauseCategories.length > 0
                         ? clauseCategories
@@ -15954,83 +15973,69 @@ export default function App() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1">Bahasa Draft</label>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => setDraftAiLanguage("id")}
-                        className={`flex-1 py-2 rounded-lg font-semibold transition cursor-pointer ${draftAiLanguage === "id" ? "bg-indigo-600 text-white" : "bg-slate-900 text-slate-400 border border-slate-800"}`}
-                      >
-                        🇮🇩 Indonesia
-                      </button>
-                      <button
-                        onClick={() => setDraftAiLanguage("en")}
-                        className={`flex-1 py-2 rounded-lg font-semibold transition cursor-pointer ${draftAiLanguage === "en" ? "bg-indigo-600 text-white" : "bg-slate-900 text-slate-400 border border-slate-800"}`}
-                      >
-                        🇬🇧 English
-                      </button>
-                    </div>
+                    <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">Bahasa Draft</label>
+                    <select value={draftAiLanguage} onChange={(e) => setDraftAiLanguage(e.target.value as any)} className="w-full bg-rs-100 dark:bg-rs-800/80 border border-transparent rounded-xl px-3 py-2.5 text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 cursor-pointer">
+                      <option value="id">Bahasa Indonesia</option>
+                      <option value="en">English</option>
+                    </select>
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-400 mb-1">Kebutuhan Kontrak</label>
+                    <label className="block text-[11px] font-bold text-rs-600 dark:text-rs-300 mb-2">Kebutuhan Kontrak</label>
                     <textarea
                       value={draftAiPrompt}
                       onChange={(e) => setDraftAiPrompt(e.target.value)}
                       rows={8}
                       placeholder="Contoh: Buatkan draft kontrak sewa kendaraan operasional untuk 2 tahun, termasuk opsi perpanjangan otomatis dan klausul perawatan berkala oleh pihak penyewa."
-                      className="w-full bg-slate-900 border border-slate-850 p-3.5 rounded-xl text-slate-200 text-xs focus:outline-none resize-y"
+                      className="w-full bg-rs-100 dark:bg-rs-800 border border-transparent p-3 rounded-xl text-xs font-medium text-rs-800 dark:text-rs-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 resize-none"
                     />
                   </div>
 
                   <button
                     onClick={handleGenerateDraftAi}
                     disabled={isGeneratingDraft || !draftAiPrompt.trim()}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:cursor-not-allowed text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 shadow-lg cursor-pointer"
+                    className="w-full py-2.5 bg-[#635BFF] hover:bg-[#5249E6] disabled:opacity-60 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-indigo-500/25 cursor-pointer"
                   >
-                    {isGeneratingDraft ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />}
-                    Susun Draft dengan AI
+                    {isGeneratingDraft ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    Buat Draft dengan AI
                   </button>
                 </div>
 
-                <div className="lg:col-span-7 bg-slate-950/40 border border-slate-800 rounded-2xl p-5">
+                <div className="lg:col-span-7 bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 flex flex-col">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2"><FileText className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">Pratinjau Naskah</h3></div>
+                    {draftAiResult && (
+                      <button onClick={handleUseDraftInNewContract} className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 rounded-xl flex items-center gap-1.5 cursor-pointer"><Check className="w-3 h-3" /> Gunakan Draft Ini</button>
+                    )}
+                  </div>
                   {!draftAiResult && !isGeneratingDraft && (
-                    <div className="text-center py-28 text-slate-500">
-                      Isi kebutuhan kontrak di kiri, lalu klik "Susun Draft dengan AI" untuk melihat hasilnya di sini.
-                    </div>
+                    <AiEmpty Icon={Sparkles} text="Isi kebutuhan kontrak, lalu klik Buat Draft dengan AI." />
                   )}
                   {isGeneratingDraft && (
                     <div className="text-center py-28 space-y-3">
                       <RefreshCw className="w-8 h-8 animate-spin mx-auto text-indigo-500" />
-                      <p className="text-xs text-slate-400 animate-pulse">Gemini sedang menyusun pasal-pasal kontrak...</p>
+                      <p className="text-xs text-rs-500 animate-pulse">Gemini sedang menyusun pasal-pasal kontrak...</p>
                     </div>
                   )}
                   {draftAiResult && (
                     <div className="space-y-4">
-                      <div className="flex items-center justify-between border-b border-slate-850 pb-3">
-                        <h3 className="font-bold text-sm text-slate-200">{draftAiResult.title}</h3>
-                        <button
-                          onClick={handleUseDraftInNewContract}
-                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg transition flex items-center gap-1 cursor-pointer shrink-0"
-                        >
-                          <Check className="w-3.5 h-3.5" /> Gunakan Draft Ini
-                        </button>
-                      </div>
+                      <h4 className="text-sm font-bold text-rs-900 dark:text-white">{draftAiResult.title}</h4>
 
                       <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                         {(draftAiResult.clauses || []).map((c: any, i: number) => (
-                          <div key={i} className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                            <p className="font-bold text-indigo-300 mb-1">{c.title}</p>
-                            <p className="text-slate-400 leading-relaxed whitespace-pre-line">{c.content}</p>
+                          <div key={i} className="p-3 bg-white dark:bg-rs-900 border border-rs-200/80 rounded-xl">
+                            <p className="font-bold text-[#635BFF] mb-1">{c.title}</p>
+                            <p className="text-rs-500 leading-relaxed whitespace-pre-line">{c.content}</p>
                           </div>
                         ))}
                       </div>
 
                       {draftAiResult.suggestedVariables?.length > 0 && (
-                        <div className="p-3 bg-slate-900 border border-slate-800 rounded-xl">
-                          <p className="font-bold text-slate-400 text-[10px] uppercase font-mono mb-1.5">Variabel yang Perlu Diisi</p>
+                        <div className="p-3 bg-white dark:bg-rs-900 border border-rs-200/80 rounded-xl">
+                          <p className="font-bold text-rs-500 text-[10px] uppercase font-mono mb-1.5">Variabel yang Perlu Diisi</p>
                           <div className="flex flex-wrap gap-1.5">
                             {draftAiResult.suggestedVariables.map((v: any, i: number) => (
-                              <span key={i} className="px-2 py-1 bg-slate-800 rounded-lg text-[10px] text-slate-300 font-mono">
+                              <span key={i} className="px-2 py-1 bg-rs-100 rounded-lg text-[10px] text-rs-700 dark:text-rs-300 font-mono">
                                 {"{{" + v.key + "}}"} — {v.label}
                               </span>
                             ))}
@@ -16040,11 +16045,11 @@ export default function App() {
 
                       {draftAiResult.riskFlags?.length > 0 && (
                         <div className="p-3 bg-amber-500/5 border border-amber-500/10 rounded-xl">
-                          <p className="font-bold text-amber-400 text-[10px] uppercase font-mono mb-1.5">Pasal yang Perlu Perhatian Ekstra</p>
+                          <p className="font-bold text-amber-600 text-[10px] uppercase font-mono mb-1.5">Pasal yang Perlu Perhatian Ekstra</p>
                           <ul className="space-y-1">
                             {draftAiResult.riskFlags.map((r: any, i: number) => (
-                              <li key={i} className="text-slate-300">
-                                <span className="font-semibold text-amber-300">{r.clauseTitle}:</span> {r.note}
+                              <li key={i} className="text-rs-700 dark:text-rs-300">
+                                <span className="font-semibold text-amber-600">{r.clauseTitle}:</span> {r.note}
                               </li>
                             ))}
                           </ul>
@@ -16059,20 +16064,18 @@ export default function App() {
 
           {/* VIEW: TABULAR REVIEW */}
           {activeTab === "tabular" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto animate-fadeIn text-xs text-left">
-              <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-2">
-                  <LayoutDashboard className="text-indigo-400 w-5 h-5" />
-                  Analisis Tabular & Perbandingan Dokumen (Tabular Review)
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Bandingkan beberapa kontrak secara simultan di dalam kisi tabel terpusat untuk memantau nilai kontrak, kewajiban penyelesaian sengketa, klausul penalti, dan status keabsahan.
-                </p>
-              </div>
+            <div className="space-y-6 animate-fadeIn text-xs text-left">
+              <AiHero Icon={Table2} title="Analisis Tabular" desc="Bandingkan beberapa kontrak sekaligus dalam satu tabel atribut."
+                right={<button type="button" disabled={!tabularReport} onClick={() => {
+                  if (!tabularReport) return;
+                  const esc = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+                  const csv = [tabularReport.headers, ...tabularReport.rows].map((r: any[]) => r.map(esc).join(",")).join("\n");
+                  saveAs(new Blob([csv], { type: "text/csv;charset=utf-8" }), "analisis-tabular.csv");
+                }} className="px-3 py-1.5 text-[11px] font-bold text-rs-700 bg-white hover:bg-rs-50 disabled:opacity-80 disabled:cursor-not-allowed rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"><Download className="w-3 h-3" /> Ekspor</button>} />
 
-              <div className="bg-slate-950/40 border border-slate-800 rounded-2xl p-5 space-y-4">
-                <div className="flex justify-between items-center pb-2 border-b border-slate-850">
-                  <h3 className="font-bold text-sm text-slate-200">Pilih Kontrak untuk Masuk ke Perbandingan Tabular:</h3>
+              <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5">
+                <div className="flex items-center justify-between mb-4 gap-3">
+                  <h3 className="text-xs font-bold text-rs-900 dark:text-white">Pilih Kontrak untuk Masuk ke Perbandingan Tabular:</h3>
                   <button
                     onClick={() => {
                       if (selectedContractsForTabular.length < 2) {
@@ -16102,18 +16105,18 @@ export default function App() {
                       });
                       showToast("Analisis tabular berhasil disinkronkan!", "success");
                     }}
-                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer shadow-lg"
+                    className="px-3.5 py-2 bg-[#635BFF] hover:bg-[#5249E6] text-white text-[11px] rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-indigo-500/20 shrink-0"
                   >
-                    <Sparkles className="w-4 h-4 text-amber-300" />
+                    <Sparkles className="w-3.5 h-3.5" />
                     Bandingkan Secara Tabular
                   </button>
                 </div>
 
-                <div className="flex flex-wrap gap-4 py-2 bg-slate-900/60 p-4 rounded-xl border border-slate-800">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                   {contracts.map(c => {
                     const isChecked = selectedContractsForTabular.includes(c.id);
                     return (
-                      <label key={c.id} className="flex items-center gap-2 bg-slate-950 px-3 py-2 rounded-xl border border-slate-850 cursor-pointer hover:border-slate-700 transition">
+                      <label key={c.id} className="flex items-center gap-2 bg-rs-50 dark:bg-rs-800/60 px-3 py-2 rounded-xl border border-rs-200/80 dark:border-rs-800 cursor-pointer hover:border-[#635BFF] transition">
                         <input
                           type="checkbox"
                           checked={isChecked}
@@ -16124,40 +16127,40 @@ export default function App() {
                               setSelectedContractsForTabular(selectedContractsForTabular.filter(id => id !== c.id));
                             }
                           }}
-                          className="w-4 h-4 rounded text-indigo-600 bg-slate-900 border-slate-850"
+                          className="chk-native"
                         />
-                        <div>
-                          <p className="font-bold text-slate-200">{c.party2Name}</p>
-                          <span className="text-[9px] text-slate-500">{c.contractNumber}</span>
-                        </div>
+                        <span className="text-xs font-semibold text-rs-700 dark:text-rs-200">{c.contractNumber} — {c.title}</span>
                       </label>
                     );
                   })}
                 </div>
 
-                {tabularReport && (
-                  <div className="overflow-x-auto pt-4 animate-fadeIn">
-                    <table className="w-full text-left border-collapse border border-slate-800">
+              </div>
+
+              {tabularReport && (
+                <div className="bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs rounded-2xl p-5 animate-fadeIn">
+                  <div className="overflow-x-auto">
+                    <table className="plain-table w-full text-left border-collapse">
                       <thead>
-                        <tr className="bg-slate-900 border-b border-slate-800 text-[10px] text-indigo-400 font-bold font-mono uppercase">
+                        <tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider">
                           {tabularReport.headers.map((h: string, i: number) => (
-                            <th key={i} className="p-3 border border-slate-800">{h}</th>
+                            <th key={i} className="py-2.5 px-3">{i === 0 ? "Atribut" : h}</th>
                           ))}
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-slate-850">
+                      <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs text-rs-700 dark:text-rs-300">
                         {tabularReport.rows.map((row: any[], rIdx: number) => (
-                          <tr key={rIdx} className="hover:bg-slate-900/40 transition">
+                          <tr key={rIdx}>
                             {row.map((val: any, cIdx: number) => (
-                              <td key={cIdx} className={`p-3 border border-slate-800 text-xs ${cIdx === 0 ? "font-bold text-slate-400 bg-slate-950/40" : "text-slate-200"}`}>{val}</td>
+                              <td key={cIdx} className={`py-3 px-3 ${cIdx === 0 ? "font-bold text-rs-900 dark:text-white whitespace-nowrap" : "font-medium"}`}>{val}</td>
                             ))}
                           </tr>
                         ))}
                       </tbody>
                     </table>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -16258,296 +16261,146 @@ export default function App() {
 
           {/* VIEW: ANALYTICS & RISK — Data nyata + grafik interaktif */}
           {activeTab === "analytics" && !selectedContract && (
-            <div className="space-y-6 max-w-6xl mx-auto">
-              {/* Header */}
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-2xl font-bold text-slate-100 tracking-tight flex items-center gap-2">
-                    <LineChart className="w-6 h-6 text-indigo-400" /> Analitik &amp; Risiko Kontrak
-                  </h2>
-                  <p className="text-slate-400 text-sm mt-1">Visualisasi data kontrak nyata — tren, nilai, kategori, dan perkiraan masa berakhir</p>
-                </div>
-                <button
-                  onClick={() => fetchAnalytics()}
-                  disabled={analyticsLoading}
-                  className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-100 px-4 py-2 rounded-xl font-medium transition cursor-pointer disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-4 h-4 ${analyticsLoading ? "animate-spin" : ""}`} />
-                  {analyticsLoading ? "Memuat..." : "Muat Ulang"}
-                </button>
-              </div>
-
-              {/* Filter real-time: kategori + rentang waktu (zoom in/out tren bulanan) */}
-              <div className="flex flex-wrap items-center gap-3 bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-400">Kategori:</span>
-                  <select
-                    value={analyticsFilterCategory}
-                    onChange={(e) => setAnalyticsFilterCategory(e.target.value)}
-                    className="px-3 py-1.5 bg-slate-950 border border-slate-800 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-                  >
+            <div className="space-y-6 animate-fadeIn">
+              <AiHero Icon={LineChart} title="Analytics & Risk" desc="Visualisasi data kontrak: tren, nilai, kategori, dan perkiraan masa berakhir."
+                right={<>
+                  <select value={analyticsFilterCategory} onChange={(e) => setAnalyticsFilterCategory(e.target.value)} className="px-3 py-2 bg-white rounded-xl text-xs font-medium text-rs-800 border border-transparent focus:outline-none cursor-pointer">
                     <option value="Semua">Semua Kategori</option>
-                    {clauseCategories.map((cat) => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
+                    {clauseCategories.map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
                   </select>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-slate-400">Rentang Tren:</span>
-                  <div className="flex gap-1">
-                    {[3, 6, 12, 24].map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => setAnalyticsFilterMonths(m)}
-                        className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                          analyticsFilterMonths === m
-                            ? "bg-indigo-600 text-white"
-                            : "bg-slate-800 text-slate-400 hover:bg-slate-700"
-                        }`}
-                      >
-                        {m} bln
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {analyticsFilterCategory !== "Semua" && (
-                  <button
-                    onClick={() => setAnalyticsFilterCategory("Semua")}
-                    className="text-xs text-rose-400 hover:text-rose-300 font-semibold ml-auto cursor-pointer"
-                  >
-                    ✕ Hapus filter kategori
-                  </button>
-                )}
-              </div>
+                  <select value={analyticsFilterMonths} onChange={(e) => setAnalyticsFilterMonths(Number(e.target.value))} className="px-3 py-2 bg-white rounded-xl text-xs font-medium text-rs-800 border border-transparent focus:outline-none cursor-pointer">
+                    {[3, 6, 12, 24].map((m) => (<option key={m} value={m}>{m} Bulan</option>))}
+                  </select>
+                  <button type="button" onClick={() => fetchAnalytics()} disabled={analyticsLoading} title="Muat ulang" className="w-9 h-9 bg-white rounded-xl flex items-center justify-center text-rs-700 cursor-pointer disabled:opacity-60"><RefreshCw className={`w-3.5 h-3.5 ${analyticsLoading ? "animate-spin" : ""}`} /></button>
+                </>} />
 
               {analyticsLoading && !analyticsData && (
-                <div className="flex items-center justify-center h-48 text-slate-500">
-                  <RefreshCw className="w-6 h-6 animate-spin mr-3" /> Memuat data analytics...
+                <div className="flex items-center justify-center h-48 text-xs font-semibold text-rs-400">
+                  <RefreshCw className="w-5 h-5 animate-spin mr-3" /> Memuat data analytics...
                 </div>
               )}
 
               {analyticsData && (() => {
                 const { summary, monthlyTrend, byCategory, byVendor, byStatus, expiryForecast } = analyticsData;
-                const maxCreated = Math.max(...monthlyTrend.map((m: any) => m.created), 1);
-                const maxExpiry = Math.max(...expiryForecast.map((m: any) => m.count), 1);
-                const maxCatCount = Math.max(...byCategory.map((c: any) => c.count), 1);
-                const maxVendorVal = Math.max(...byVendor.map((v: any) => v.value), 1);
-
-                const statusColors: Record<string, string> = {
-                  Aktif: "bg-emerald-500", Draft: "bg-blue-500",
-                  Archived: "bg-purple-500", Terminated: "bg-rose-500",
-                };
-
+                const card = "bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5";
+                const COLORS = ["#635BFF", "#A855F7", "#F59E0B", "#10B981", "#94A3B8"];
+                const stats = [
+                  { l: "Total Kontrak Aktif", v: String(summary.aktif), I: FileCheck, c: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]" },
+                  { l: "Total Nilai", v: `Rp ${formatCompactIDR(summary.totalValue)}`, I: TrendingUp, c: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600" },
+                  { l: "Segera Berakhir", v: String(summary.expiringSoon), I: ShieldAlert, c: "bg-rose-50 dark:bg-rose-950/50 text-rose-500" },
+                  { l: "Draft", v: String(summary.draft), I: FilePen, c: "bg-amber-50 dark:bg-amber-950/50 text-amber-500" },
+                ];
+                // Tren: bar (dibuat) + garis (diaktifkan)
+                const W = 700, H = 250, PL = 34, PR = 8, PT = 14, PB = 28;
+                const maxT = Math.max(4, ...monthlyTrend.map((m: any) => Math.max(m.created, m.activated)));
+                const niceMax = Math.ceil(maxT / 5) * 5;
+                const bw = Math.min(30, ((W - PL - PR) / Math.max(1, monthlyTrend.length)) * 0.55);
+                const xAt = (i: number) => PL + ((W - PL - PR) / Math.max(1, monthlyTrend.length)) * (i + 0.5);
+                const yAt = (v: number) => PT + (H - PT - PB) * (1 - v / niceMax);
+                const linePath = monthlyTrend.map((m: any, i: number) => `${i === 0 ? "M" : "L"}${xAt(i)},${yAt(m.activated)}`).join(" ");
+                const ticks = [0, 1, 2, 3, 4, 5].map((t) => (niceMax / 5) * t);
+                // Donut status
+                const totalSt = byStatus.reduce((a: number, x: any) => a + x.count, 0) || 1;
+                const stColor: Record<string, string> = { Aktif: "#10B981", Draft: "#F59E0B", Archived: "#A855F7", Terminated: "#EF4444" };
+                let acc = 0;
+                const R = 70, C = 2 * Math.PI * R;
+                // Forecast
+                const maxE = Math.max(2, ...expiryForecast.map((m: any) => m.count));
+                const niceE = Math.ceil(maxE / 2) * 2;
+                const EW = 360, EH = 220, EPL = 24, EPB = 24, EPT = 10;
+                const maxCat = Math.max(...byCategory.map((c: any) => c.count), 1);
+                const maxVen = Math.max(...byVendor.map((v: any) => v.value), 1);
                 return (
                   <>
-                    {/* KPI Cards */}
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-                      {[
-                        { label: "Total Kontrak", val: summary.total, color: "text-slate-100", bg: "border-slate-700" },
-                        { label: "Aktif", val: summary.aktif, color: "text-emerald-400", bg: "border-emerald-800/50" },
-                        { label: "Draft", val: summary.draft, color: "text-amber-400", bg: "border-amber-800/50" },
-                        { label: "Segera Berakhir", val: summary.expiringSoon, color: "text-rose-400", bg: "border-rose-800/50" },
-                        { label: "Total Nilai", val: `Rp ${formatCompactIDR(summary.totalValue)}`, color: "text-indigo-400", bg: "border-indigo-800/50" },
-                        { label: "Nilai Aktif", val: `Rp ${formatCompactIDR(summary.activeValue)}`, color: "text-cyan-400", bg: "border-cyan-800/50" },
-                      ].map((st, i) => (
-                        <div key={i} className={`bg-slate-900 border ${st.bg} p-4 rounded-xl`}>
-                          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">{st.label}</p>
-                          <p className={`text-xl font-bold ${st.color}`}>{st.val}</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                      {stats.map((t) => (
+                        <div key={t.l} className={card.replace("p-5", "p-4") + " flex items-center gap-4"}>
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${t.c}`}><t.I className="w-5 h-5" /></div>
+                          <div><span className="text-[11px] font-semibold text-rs-400 block">{t.l}</span><span className="text-xl font-extrabold text-rs-900 dark:text-white tracking-tight">{t.v}</span></div>
                         </div>
                       ))}
                     </div>
 
-                    {/* Chart Tabs */}
-                    <div className="flex gap-2 flex-wrap">
-                      {(["trend", "category", "vendor", "expiry"] as const).map((tab) => (
-                        <button
-                          key={tab}
-                          onClick={() => setAnalyticsChartView(tab)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                            analyticsChartView === tab
-                              ? "bg-indigo-600 text-white"
-                              : "bg-slate-800 text-slate-400 hover:bg-slate-700"
-                          }`}
-                        >
-                          {tab === "trend" && "📈 Tren Bulanan"}
-                          {tab === "category" && "🗂 Per Kategori"}
-                          {tab === "vendor" && "🏢 Top Vendor"}
-                          {tab === "expiry" && "⏰ Forecast Berakhir"}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* CHART: Tren Bulanan */}
-                    {analyticsChartView === "trend" && (
-                      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                        <h3 className="font-bold text-slate-100 mb-1 flex items-center gap-2">
-                          <LineChart className="w-4 h-4 text-indigo-400" /> Tren Kontrak per Bulan (12 Bulan Terakhir)
-                        </h3>
-                        <p className="text-xs text-slate-500 mb-5">Bar = Dibuat bulan tsb · Titik = Diaktifkan</p>
-                        <div className="flex items-end gap-2 h-48 overflow-x-auto pb-2">
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                      <div className={`lg:col-span-8 ${card}`}>
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="text-xs font-bold text-rs-900 dark:text-white">Tren Kontrak</h3>
+                          <span className="text-[10px] font-medium text-rs-400">Bar = dibuat bulan tsb · Garis = diaktifkan</span>
+                        </div>
+                        <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Tren kontrak per bulan">
+                          {ticks.map((t, i) => (<g key={i}><line x1={PL} x2={W - PR} y1={yAt(t)} y2={yAt(t)} stroke="#E2E8F0" strokeWidth="1" /><text x={PL - 8} y={yAt(t) + 3} textAnchor="end" fontSize="10" fill="#94A3B8">{Math.round(t)}</text></g>))}
                           {monthlyTrend.map((m: any, i: number) => (
-                            <div key={i} className="flex flex-col items-center gap-1 min-w-[52px] group">
-                              <div className="relative w-full flex flex-col items-center">
-                                {/* Tooltip */}
-                                <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-700 text-slate-100 text-[10px] rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition z-10 pointer-events-none">
-                                  Dibuat: {m.created} · Aktif: {m.activated}
-                                </div>
-                                {/* Bar */}
-                                <div
-                                  className="w-8 bg-indigo-500/70 rounded-t transition-all duration-500 hover:bg-indigo-400"
-                                  style={{ height: `${Math.max(4, (m.created / maxCreated) * 160)}px` }}
-                                />
-                                {/* Activated dot */}
-                                {m.activated > 0 && (
-                                  <div className="absolute top-1 w-2 h-2 bg-emerald-400 rounded-full border border-slate-900" style={{ bottom: `${(m.activated / maxCreated) * 160}px`, top: "auto" }} />
-                                )}
-                              </div>
-                              <span className="text-[9px] text-slate-500 text-center leading-tight">{m.label}</span>
-                              <span className="text-[9px] font-bold text-indigo-400">{m.created}</span>
-                            </div>
+                            <g key={i}>
+                              <title>{`${m.label} — Dibuat: ${m.created} · Aktif: ${m.activated}`}</title>
+                              <rect x={xAt(i) - bw / 2} y={yAt(m.created)} width={bw} height={Math.max(2, yAt(0) - yAt(m.created))} rx="6" fill="#E0E3FF" />
+                              <text x={xAt(i)} y={H - 8} textAnchor="middle" fontSize="10" fill="#94A3B8">{m.label}</text>
+                            </g>
+                          ))}
+                          <path d={linePath} fill="none" stroke="#635BFF" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+                        </svg>
+                      </div>
+
+                      <div className={`lg:col-span-4 ${card}`}>
+                        <h3 className="text-xs font-bold text-rs-900 dark:text-white mb-3">Distribusi Status</h3>
+                        <div className="flex justify-center">
+                          <svg viewBox="0 0 200 200" className="w-44 h-44">
+                            <g transform="rotate(-90 100 100)">
+                              {byStatus.map((st: any, i: number) => { const len = (st.count / totalSt) * C; const el = (<circle key={i} cx="100" cy="100" r={R} fill="none" stroke={stColor[st.status] || "#94A3B8"} strokeWidth="24" strokeDasharray={`${len} ${C - len}`} strokeDashoffset={-acc} />); acc += len; return el; })}
+                            </g>
+                            <text x="100" y="94" textAnchor="middle" fontSize="11" fill="#94A3B8">Total</text>
+                            <text x="100" y="116" textAnchor="middle" fontSize="20" fontWeight="800" fill="#0F172A">{summary.total}</text>
+                          </svg>
+                        </div>
+                        <div className="mt-4 space-y-2 text-xs font-semibold text-rs-700 dark:text-rs-300">
+                          {byStatus.map((st: any, i: number) => (
+                            <div key={i} className="flex items-center justify-between"><span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full" style={{ background: stColor[st.status] || "#94A3B8" }} />{contractStatusLabel(st.status)}</span><span className="font-bold text-rs-900 dark:text-white">{st.count}</span></div>
                           ))}
                         </div>
-                        {/* Nilai kontrak line mini */}
-                        <div className="mt-4 pt-4 border-t border-slate-800">
-                          <p className="text-xs text-slate-400 font-semibold mb-2">💰 Nilai Kontrak per Bulan (IDR)</p>
-                          <div className="flex gap-2 overflow-x-auto">
-                            {monthlyTrend.map((m: any, i: number) => (
-                              <div key={i} className="flex flex-col items-center min-w-[52px]">
-                                <span className="text-[9px] text-slate-400 font-mono">
-                                  {m.value > 0 ? formatCompactIDR(m.value) : "-"}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
                       </div>
-                    )}
+                    </div>
 
-                    {/* CHART: Per Kategori */}
-                    {analyticsChartView === "category" && (
-                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                          <h3 className="font-bold text-slate-100 mb-4 flex items-center gap-2">
-                            <PieChart className="w-4 h-4 text-indigo-400" /> Distribusi per Kategori
-                          </h3>
-                          <div className="space-y-3">
-                            {byCategory.length === 0 && <p className="text-slate-500 text-sm">Belum ada data kategori.</p>}
-                            {byCategory.map((cat: any, i: number) => (
-                              <button
-                                key={i}
-                                onClick={() => {
-                                  setMonitorCategory(cat.name);
-                                  setMonitorStatus("Semua");
-                                  setMonitorSearch("");
-                                  setActiveTab("monitoring");
-                                }}
-                                title={`Lihat semua kontrak kategori ${cat.name} di Monitoring`}
-                                className="group block w-full text-left cursor-pointer"
-                              >
-                                <div className="flex justify-between text-xs mb-1">
-                                  <span className="text-slate-300 font-medium group-hover:text-indigo-300">{cat.name}</span>
-                                  <span className="text-slate-500 font-mono">{cat.count} kontrak</span>
-                                </div>
-                                <div className="h-2.5 w-full bg-slate-800 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-indigo-500 rounded-full transition-all duration-700 group-hover:bg-indigo-400"
-                                    style={{ width: `${(cat.count / maxCatCount) * 100}%` }}
-                                  />
-                                </div>
-                                <p className="text-[10px] text-slate-500 mt-0.5">Nilai: Rp {formatCompactIDR(cat.value)}</p>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                          <h3 className="font-bold text-slate-100 mb-4 flex items-center gap-2">
-                            <CheckCircle className="w-4 h-4 text-emerald-400" /> Breakdown Status
-                          </h3>
-                          <div className="space-y-2">
-                            {byStatus.map((s: any, i: number) => (
-                              <div key={i} className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <div className={`w-2.5 h-2.5 rounded-full ${statusColors[s.status] || "bg-slate-500"}`} />
-                                  <span className="text-xs text-slate-300">{contractStatusLabel(s.status)}</span>
-                                </div>
-                                <span className="text-xs font-bold text-slate-400">{s.count}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* CHART: Top Vendor */}
-                    {analyticsChartView === "vendor" && (
-                      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                        <h3 className="font-bold text-slate-100 mb-4 flex items-center gap-2">
-                          <Users className="w-4 h-4 text-cyan-400" /> Top 10 Vendor/Pihak Kedua (by Nilai Kontrak)
-                        </h3>
-                        <div className="space-y-3">
-                          {byVendor.length === 0 && <p className="text-slate-500 text-sm">Belum ada data vendor.</p>}
-                          {byVendor.map((v: any, i: number) => (
-                            <button
-                              key={i}
-                              onClick={() => {
-                                setMonitorSearch(v.name);
-                                setMonitorCategory("Semua");
-                                setMonitorStatus("Semua");
-                                setActiveTab("monitoring");
-                              }}
-                              title={`Lihat semua kontrak dengan ${v.name} di Monitoring`}
-                              className="group block w-full text-left cursor-pointer"
-                            >
-                              <div className="flex justify-between text-xs mb-1">
-                                <span className="text-slate-300 font-medium truncate max-w-[200px] group-hover:text-cyan-300">#{i + 1} {v.name}</span>
-                                <span className="text-slate-500 font-mono shrink-0 ml-2">
-                                  Rp {formatCompactIDR(v.value)} · {v.count} kontrak
-                                </span>
-                              </div>
-                              <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-cyan-600 rounded-full transition-all duration-700 group-hover:bg-cyan-400"
-                                  style={{ width: `${(v.value / maxVendorVal) * 100}%` }}
-                                />
-                              </div>
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                      <div className={card}>
+                        <h3 className="text-xs font-bold text-rs-900 dark:text-white mb-4">Per Kategori</h3>
+                        <div className="space-y-3.5">
+                          {byCategory.length === 0 && <p className="text-[11px] text-rs-400 italic">Belum ada data kategori.</p>}
+                          {byCategory.slice(0, 6).map((cat: any, i: number) => (
+                            <button key={i} type="button" title={`Lihat kontrak kategori ${cat.name} di Monitoring`}
+                              onClick={() => { setMonitorCategory(cat.name); setMonitorStatus("Semua"); setMonitorSearch(""); setActiveTab("monitoring"); }}
+                              className="w-full flex items-center gap-3 text-xs cursor-pointer text-left">
+                              <span className="w-24 shrink-0 font-semibold text-rs-700 dark:text-rs-300 truncate">{cat.name}</span>
+                              <div className="flex-1 h-2 rounded-full bg-rs-100 dark:bg-rs-800 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(cat.count / maxCat) * 100}%`, background: COLORS[i % COLORS.length] }} /></div>
+                              <span className="w-10 text-right font-bold text-rs-900 dark:text-white">{cat.count}</span>
                             </button>
                           ))}
                         </div>
                       </div>
-                    )}
 
-                    {/* CHART: Expiry Forecast */}
-                    {analyticsChartView === "expiry" && (
-                      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                        <h3 className="font-bold text-slate-100 mb-1 flex items-center gap-2">
-                          <Calendar className="w-4 h-4 text-rose-400" /> Forecast Kontrak Berakhir (6 Bulan ke Depan)
-                        </h3>
-                        <p className="text-xs text-slate-500 mb-5">Jumlah kontrak yang masa berlakunya habis per bulan</p>
-                        <div className="flex items-end gap-4 h-48">
-                          {expiryForecast.map((m: any, i: number) => (
-                            <div key={i} className="flex flex-col items-center gap-1 flex-1 group">
-                              <div className="relative w-full flex flex-col items-center">
-                                <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-700 text-slate-100 text-[10px] rounded px-2 py-1 whitespace-nowrap opacity-0 group-hover:opacity-100 transition z-10">
-                                  {m.count} kontrak berakhir
-                                </div>
-                                <div
-                                  className={`w-full rounded-t transition-all duration-500 ${m.count > 0 ? "bg-rose-500/70 hover:bg-rose-400" : "bg-slate-800"}`}
-                                  style={{ height: `${Math.max(4, (m.count / maxExpiry) * 160)}px` }}
-                                />
-                              </div>
-                              <span className="text-[10px] text-slate-400">{m.label}</span>
-                              <span className={`text-xs font-bold ${m.count > 0 ? "text-rose-400" : "text-slate-600"}`}>{m.count}</span>
-                            </div>
+                      <div className={card}>
+                        <h3 className="text-xs font-bold text-rs-900 dark:text-white mb-4">Nilai per Vendor Teratas</h3>
+                        <div className="space-y-3.5">
+                          {byVendor.length === 0 && <p className="text-[11px] text-rs-400 italic">Belum ada data vendor.</p>}
+                          {byVendor.slice(0, 6).map((v: any, i: number) => (
+                            <button key={i} type="button" title={`Lihat kontrak dengan ${v.name} di Monitoring`}
+                              onClick={() => { setMonitorSearch(v.name); setMonitorCategory("Semua"); setMonitorStatus("Semua"); setActiveTab("monitoring"); }}
+                              className="w-full flex items-center gap-3 text-xs cursor-pointer text-left">
+                              <span className="w-28 shrink-0 font-semibold text-rs-700 dark:text-rs-300 truncate">{v.name}</span>
+                              <div className="flex-1 h-2 rounded-full bg-rs-100 dark:bg-rs-800 overflow-hidden"><div className="h-full rounded-full" style={{ width: `${(v.value / maxVen) * 100}%`, background: COLORS[i % COLORS.length] }} /></div>
+                              <span className="w-14 text-right font-bold text-rs-900 dark:text-white">{formatCompactIDR(v.value)}</span>
+                            </button>
                           ))}
                         </div>
-                        {summary.expiringSoon > 0 && (
-                          <div className="mt-4 p-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-xs text-rose-400 flex items-center gap-2">
-                            <ShieldAlert className="w-4 h-4 shrink-0" />
-                            <span><strong>{summary.expiringSoon} kontrak</strong> berakhir dalam 30 hari ke depan. Segera tinjau dan ambil keputusan perpanjangan.</span>
-                          </div>
-                        )}
                       </div>
-                    )}
+
+                      <div className={card}>
+                        <h3 className="text-xs font-bold text-rs-900 dark:text-white mb-3">Perkiraan Masa Berakhir</h3>
+                        <svg viewBox={`0 0 ${EW} ${EH}`} className="w-full h-auto" role="img" aria-label="Perkiraan kontrak berakhir">
+                          {[0, 1, 2, 3, 4, 5].map((t) => { const v = (niceE / 5) * t; const y = EPT + (EH - EPT - EPB) * (1 - v / niceE); return (<g key={t}><line x1={EPL} x2={EW} y1={y} y2={y} stroke="#E2E8F0" /><text x={EPL - 6} y={y + 3} textAnchor="end" fontSize="9" fill="#94A3B8">{Math.round(v)}</text></g>); })}
+                          {expiryForecast.map((m: any, i: number) => { const slot = (EW - EPL) / expiryForecast.length; const x = EPL + slot * (i + 0.5); const bwE = Math.min(22, slot * 0.5); const y = EPT + (EH - EPT - EPB) * (1 - m.count / niceE); const y0 = EPT + (EH - EPT - EPB); return (
+                            <g key={i}><title>{`${m.label}: ${m.count} kontrak berakhir`}</title><rect x={x - bwE / 2} y={y} width={bwE} height={Math.max(2, y0 - y)} rx="5" fill="#A855F7" /><text x={x} y={EH - 6} textAnchor="middle" fontSize="9" fill="#94A3B8">{m.label}</text></g>); })}
+                        </svg>
+                      </div>
+                    </div>
                   </>
                 );
               })()}
@@ -16660,110 +16513,37 @@ export default function App() {
           {activeTab === "konfigurasi" && !selectedContract && (
             <div className="space-y-6">
               {/* Header halaman */}
-              <div className="card-grad card-soft bg-slate-900 rounded-2xl px-6 py-5 flex items-center gap-4 relative overflow-hidden">
-                <Settings aria-hidden className="pointer-events-none absolute -right-4 -top-8 w-40 h-40 text-soft-blue opacity-[0.12]" strokeWidth={1.2} />
-                <Sliders aria-hidden className="pointer-events-none absolute right-40 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
-                <FileCheck aria-hidden className="pointer-events-none absolute right-80 -top-3 w-16 h-16 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
-                <span className="w-12 h-12 rounded-full bg-peach flex items-center justify-center shrink-0 relative"><Sliders className="w-5 h-5 text-slate-300" /></span>
-                <div className="min-w-0 relative">
-                  <h2 className="text-[22px] leading-tight font-medium text-slate-100">Konfigurasi & Master Data</h2>
-                  <p className="text-xs text-slate-500">Atur jenis dokumen, format nomor, klausul, folder, master data, perusahaan, dan hak akses.</p>
-                </div>
-              </div>
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3"><div>
+                <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">Konfigurasi &amp; Master Data</h2>
+                <p className="text-xs font-medium text-rs-400 mt-0.5">Atur jenis dokumen, penomoran, master data, pengguna, dan hak akses.</p>
+              </div></div>
 
-              <div className="space-y-3">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               {(() => {
-                const CFG_ICON: Record<string, any> = { beranda: LayoutDashboard, dokumen: FileText, master: Users, sistem: Settings, dcsdoctypes: FileText, masterdata: Hash, dcsclauses: FileCheck, clauses: Sliders, folder: Briefcase, vendor: Building2, karyawan: Users, operator: FolderOpen, app: Settings, pengguna: User, hakakses: ShieldAlert, perusahaan: Building2 };
-                const GROUPS = [
-                  // Label dulu menyesatkan: penomoran KONTRAK ada di tab
-                  // bernama "Dropdown Form" (tak ada petunjuk sama sekali),
-                  // sementara "Jenis Dokumen" ternyata khusus DCS. Orang yang
-                  // mencari pengaturan nomor kontrak hampir pasti tidak
-                  // menemukannya. Nama tab sekarang menyebut isinya.
-                  { group: "Dokumen & Template", items: [
-                    // JANGAN beri label ini "…(DCS)": tab dcsdoctypes adalah HUB
-                    // TERPADU berisi ketiga modul (DCS + Kontrak Eksternal +
-                    // Kontrak Karyawan), masing-masing dengan Kode & Format
-                    // Nomor sendiri. Sempat salah dinamai "Jenis Dokumen
-                    // Internal (DCS)" sehingga hub-nya justru tersembunyi.
-                    { k: "dcsdoctypes", label: "Jenis Dokumen (Semua Modul)" },
-                    { k: "masterdata", label: "Format Nomor Default & Dropdown" },
-                    { k: "dcsclauses", label: "Klausul DCS" },
-                    { k: "clauses", label: "Klausul Kontrak", main: "clauses" },
-                    { k: "folder", label: "Kategori Kontrak (Eksternal & Karyawan)" },
-                  ] },
-                  { group: "Master Data", items: [
-                    { k: "vendor", label: "Data Vendor" },
-                    { k: "karyawan", label: "Data Karyawan" },
-                    { k: "operator", label: "Mitra / Operator" },
-                  ] },
-                  { group: "Perusahaan & Sistem", items: [
-                    { k: "app", label: "Perusahaan & e-Meterai" },
-                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "pengguna", label: "Kelola Pengguna" }] : []),
-                    ...(currentUser.role === "admin" || currentUser.role === "super_admin" || currentUser.role === "it_system" ? [{ k: "hakakses", label: "Hak Akses (RBAC)" }] : []),
-                    ...(currentUser.role === "super_admin" ? [{ k: "perusahaan", label: "Kelola Perusahaan" }] : []),
-                  ] },
-                ] as { group: string; items: { k: string; label: string; main?: string }[] }[];
-                // 3 kategori utama (+ Beranda); sub-menu tiap kategori tampil horizontal di bawahnya.
-                const CATS: { id: string; label: string; title: string; sections: { label: string; items: { k: string; label: string; main?: string }[] }[] }[] = [
-                  { id: "dokumen", label: "Dokumen & Template", title: "Menu Dokumen", sections: [{ label: "Dokumen & Template", items: GROUPS[0].items }] },
-                  { id: "master", label: "Master Data", title: "Menu Master Data", sections: [{ label: "Master Data", items: GROUPS[1].items }] },
-                  { id: "sistem", label: "Perusahaan & Sistem", title: "Menu Perusahaan & Sistem", sections: [{ label: "Perusahaan & Sistem", items: GROUPS[2].items }] },
-                ];
-                const activeCat = configTab === "beranda" ? "beranda" : (CATS.find((c) => c.sections.some((sec) => sec.items.some((i) => !i.main && i.k === configTab)))?.id || "dokumen");
-                const cur = CATS.find((c) => c.id === activeCat);
-                const tabBtn = (id: string, label: string, onClick: () => void) => {
-                  const Icon = CFG_ICON[id] || Settings;
-                  const active = activeCat === id;
-                  return (
-                    <button
-                      key={id}
-                      onClick={onClick}
-                      className={`relative min-h-[48px] rounded-[16px] flex items-center justify-center gap-2.5 text-[12.5px] font-bold transition cursor-pointer ${
-                        active ? "bg-soft-blue/20 text-[#3a7fa8] ring-1 ring-soft-blue/40" : "text-slate-500 hover:bg-slate-800/50 hover:text-slate-200"
-                      }`}
-                    >
-                      <span className={`w-8 h-8 rounded-[11px] flex items-center justify-center ${active ? "btn-grad-primary text-white" : "bg-slate-800/70 text-slate-500"}`}><Icon className="w-4 h-4" /></span>
-                      <span>{label}</span>
-                    </button>
-                  );
-                };
+
+                const { CFG_ICON, GROUPS } = getCfg();
+                const itemBtn = (id: string, label: string, Icon: any, active: boolean, onClick: () => void, ext?: boolean) => (
+                  <button key={id} onClick={onClick}
+                    className={`w-full flex items-center gap-3 px-3 ${id === "beranda" ? "py-2.5" : "py-2"} rounded-xl text-xs font-semibold text-left transition-all cursor-pointer ${active ? "bg-[#EFF0FF] dark:bg-indigo-950/60 text-[#635BFF] dark:text-indigo-400 font-bold" : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"}`}>
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate flex-1">{label}</span>
+                    
+                  </button>
+                );
                 return (
-                  <>
-                    <nav aria-label="Kategori konfigurasi" className="card-soft bg-slate-900 rounded-2xl p-1.5 grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                      {tabBtn("beranda", "Beranda", () => setConfigTab("beranda"))}
-                      {CATS.map((c) => tabBtn(c.id, c.label, () => goConfig(c.sections[0].items[0].k, c.sections[0].items[0].main)))}
-                    </nav>
-                    {cur && (
-                      <div className="card-soft bg-slate-900/80 rounded-[20px] px-3 py-2.5 flex items-center gap-3 relative overflow-hidden">
-                        <Scale aria-hidden className="pointer-events-none absolute -right-3 -bottom-6 w-24 h-24 text-peach-strong opacity-20 -rotate-12" strokeWidth={1.2} />
-                        <span className="shrink-0 h-9 px-4 rounded-[12px] bg-soft-blue/20 text-[#3a7fa8] text-[11px] font-extrabold flex items-center relative">{cur.title}</span>
-                        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar min-w-0 relative">
-                          {cur.sections.map((sec) => sec.items.map((t) => {
-                            const Icon = CFG_ICON[t.k] || Settings;
-                            const active = !t.main && configTab === t.k;
-                            return (
-                              <button
-                                key={t.k}
-                                onClick={() => goConfig(t.k, t.main)}
-                                className={`shrink-0 whitespace-nowrap px-3.5 py-2 rounded-full flex items-center gap-1.5 text-[12px] transition cursor-pointer ${
-                                  active ? "btn-grad-primary text-white font-bold" : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-100"
-                                }`}
-                              >
-                                <Icon className="w-3.5 h-3.5" />
-                                {t.label}
-                                {t.main && <ExternalLink className="w-3 h-3 opacity-60" />}
-                              </button>
-                            );
-                          }))}
-                        </div>
-                      </div>
-                    )}
-                  </>
+                  <aside aria-label="Kategori konfigurasi" className="lg:col-span-3 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-3 self-start space-y-0.5">
+                    {itemBtn("beranda", "Beranda", CFG_ICON.beranda || LayoutDashboard, configTab === "beranda", () => setConfigTab("beranda"))}
+                    {GROUPS.map((g) => (
+                      <React.Fragment key={g.group}>
+                        <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider px-3 pt-4 pb-1">{g.group}</div>
+                        {g.items.map((t) => itemBtn(t.k + (t.main || ""), t.label, CFG_ICON[t.k] || Settings, !t.main && configTab === t.k, () => goConfig(t.k, t.main), !!t.main))}
+                      </React.Fragment>
+                    ))}
+                  </aside>
                 );
               })()}
 
-              <div className="cfg-content min-w-0 space-y-5 rounded-2xl bg-slate-900/50 border border-white/70 p-5">
+              <div className="cfg-content lg:col-span-9 min-w-0 space-y-5 rounded-2xl bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs p-6">
               {configTab !== "beranda" && (() => {
                 const META: Record<string, [string, string]> = {
                   dcsdoctypes: ["Jenis Dokumen (Semua Modul)", "Satu tempat untuk jenis dokumen DCS, Dokumen Eksternal, dan Dokumen Karyawan."],
@@ -16782,8 +16562,8 @@ export default function App() {
                 if (!m) return null;
                 return (
                   <div>
-                    <h3 className="text-[17px] font-semibold text-slate-100">{m[0]}</h3>
-                    <p className="text-xs text-slate-500 mt-0.5">{m[1]}</p>
+                    <h3 className="text-sm font-bold text-rs-900 dark:text-white">{m[0]}</h3>
+                    <p className="text-[11px] font-medium text-rs-400 mt-0.5">{m[1]}</p>
                   </div>
                 );
               })()}
@@ -16792,6 +16572,7 @@ export default function App() {
                   setup dengan status nyata dari data yang sudah dimuat. Semua
                   aksi memakai goConfig (sumber navigasi tunggal). */}
               {configTab === "beranda" && (() => {
+                const { CFG_ICON, GROUPS } = getCfg();
                 const q = configSearch.trim().toLowerCase();
                 const results = q
                   ? configSearchIndex.filter((e) =>
@@ -16806,78 +16587,70 @@ export default function App() {
                   { label: "Vendor / Karyawan", desc: "Data pihak kedua (NPWP, rekening, jabatan)", done: vendors.length > 0 || employees.length > 0, tab: "vendor" },
                 ];
                 const doneCount = steps.filter((s) => s.done).length;
+                const HINT: Record<string, string> = {
+                  dcsdoctypes: "Daftar jenis dokumen terkontrol dan kode penomorannya.", masterdata: "Token nomor dokumen dan pilihan dropdown.", dcsclauses: "Klausul baku untuk dokumen terkontrol.", clauses: "Pustaka klausul perjanjian.", folder: "Kategori folder arsip kontrak.",
+                  vendor: "Master vendor dan mitra pihak kedua.", karyawan: "Master karyawan untuk kontrak internal.", operator: "Master mitra operator platform.",
+                  app: "Profil perusahaan dan integrasi e-Meterai.", pengguna: "Akun pengguna dan peran.", hakakses: "Matriks menu per peran.", perusahaan: "Tenant dan kode registrasi (super admin).",
+                };
                 return (
-                  <div className="space-y-6">
-                    {/* Pencarian pengaturan */}
-                    <div className="space-y-2">
-                      <div className="relative max-w-xl">
-                        <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                        <input
-                          type="text"
-                          value={configSearch}
-                          onChange={(e) => setConfigSearch(e.target.value)}
-                          placeholder="Cari pengaturan… (mis. 'NPWP vendor', 'narasi pihak', 'judul bagian SOP')"
-                          className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 focus:outline-none focus:border-indigo-500"
-                        />
+                  <div>
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-rs-900 dark:text-white">Konfigurasi &amp; Master Data</h3>
+                        <p className="text-[11px] text-rs-400 font-medium mt-0.5 mb-5">Pilih area yang ingin diatur.</p>
                       </div>
-                      {q && (
-                        <div className="max-w-xl space-y-1.5">
-                          {results.length === 0 ? (
-                            <p className="text-xs text-slate-500 italic px-1">Tidak ada pengaturan cocok dengan "{configSearch}".</p>
-                          ) : (
-                            results.map((e) => (
-                              <button
-                                key={e.label}
-                                onClick={() => { goConfig(e.tab, e.main); setConfigSearch(""); }}
-                                className="w-full text-left px-4 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-indigo-500/40 rounded-xl transition cursor-pointer flex items-center justify-between gap-3 group"
-                              >
-                                <span className="min-w-0">
-                                  <span className="text-sm font-semibold text-slate-200 block truncate">{e.label}</span>
-                                  <span className="text-[11px] text-slate-500 block truncate">{e.hint}</span>
-                                </span>
-                                <ArrowRight className="w-4 h-4 text-slate-600 group-hover:text-indigo-400 shrink-0" />
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
+                      <div className="relative w-56 max-w-full shrink-0">
+                        <Search className="w-3.5 h-3.5 text-rs-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input type="text" value={configSearch} onChange={(e) => setConfigSearch(e.target.value)} placeholder="Cari pengaturan…"
+                          className="w-full pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800 rounded-xl text-xs font-medium text-rs-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-[#635BFF]/30" />
+                      </div>
                     </div>
-
-                    {/* Checklist setup */}
-                    {!q && (
-                      <div className="space-y-3">
-                        <div className="flex items-center justify-between">
-                          <h3 className="text-sm font-bold text-slate-200">Langkah Penyiapan</h3>
-                        </div>
-                        <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden max-w-xl">
+                    {q ? (
+                      <div className="space-y-2">
+                        {results.length === 0 ? (
+                          <p className="text-xs text-rs-400 italic px-1">Tidak ada pengaturan cocok dengan "{configSearch}".</p>
+                        ) : results.map((e) => (
+                          <button key={e.label} onClick={() => { goConfig(e.tab, e.main); setConfigSearch(""); }}
+                            className="w-full text-left p-4 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-[#635BFF] transition flex items-center justify-between gap-3 cursor-pointer">
+                            <span className="min-w-0">
+                              <span className="block text-xs font-bold text-rs-900 dark:text-white truncate">{e.label}</span>
+                              <span className="block text-[11px] text-rs-400 font-medium mt-0.5 truncate">{e.hint}</span>
+                            </span>
+                            <ArrowRight className="w-4 h-4 text-rs-400 shrink-0" />
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        {GROUPS.map((g, gi) => (
+                          <React.Fragment key={g.group}>
+                            <h4 className={`text-[11px] font-bold text-rs-400 uppercase tracking-wider mb-3 ${gi === 0 ? "mt-0" : "mt-5"}`}>{g.group}</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {g.items.map((t) => { const I = CFG_ICON[t.k] || Settings; return (
+                                <button key={t.k + (t.main || "")} onClick={() => goConfig(t.k, t.main)} className="text-left p-4 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-[#635BFF] transition flex items-start gap-3 cursor-pointer">
+                                  <div className="w-9 h-9 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] flex items-center justify-center shrink-0"><I className="w-4 h-4" /></div>
+                                  <div><h5 className="text-xs font-bold text-rs-900 dark:text-white">{t.label}</h5><p className="text-[11px] text-rs-400 font-medium mt-0.5">{HINT[t.k] || ""}</p></div>
+                                </button>); })}
+                            </div>
+                          </React.Fragment>
+                        ))}
+                        <h4 className="text-[11px] font-bold text-rs-400 uppercase tracking-wider mt-5 mb-3">Langkah Penyiapan · {doneCount}/{steps.length}</h4>
+                        <div className="h-1.5 bg-rs-100 dark:bg-rs-800 rounded-full overflow-hidden mb-3">
                           <div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${(doneCount / steps.length) * 100}%` }} />
                         </div>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
-                          {steps.map((s, i) => (
-                            <button
-                              key={i}
-                              onClick={() => goConfig(s.tab, s.main)}
-                              className="text-left p-4 card-grad card-soft bg-slate-900 hover:brightness-[1.02] rounded-2xl transition cursor-pointer flex items-start gap-3 group relative overflow-hidden"
-                            >
-                              {(() => { const OI = ({ app: Building2, dcsdoctypes: FileText, clauses: Scale, folder: Briefcase, vendor: Users } as Record<string, any>)[s.tab] || Gavel; return <OI aria-hidden className="pointer-events-none absolute -right-2 -bottom-3 w-16 h-16 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />; })()}
-                              <span className={`w-6 h-6 rounded-full shrink-0 mt-0.5 flex items-center justify-center text-[11px] font-bold ${s.done ? "bg-emerald-500 text-white" : "border-2 border-slate-600 text-slate-500"}`}>{i + 1}</span>
-                              <span className="min-w-0 flex-1">
-                                <span className="text-sm font-semibold text-slate-200 flex items-center gap-1.5">
-                                  {s.label}
-                                  <ArrowRight className="w-3.5 h-3.5 text-slate-600 group-hover:text-indigo-400 transition" />
-                                </span>
-                                <span className="text-[11px] text-slate-500 block mt-0.5">{s.desc}</span>
-                                <span className={`text-[10px] font-bold uppercase mt-1.5 inline-block ${s.done ? "text-emerald-400/80" : "text-amber-400/80"}`}>
-                                  {s.done ? "Siap" : "Perlu diisi"}
-                                </span>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {steps.map((st, i) => (
+                            <button key={i} onClick={() => goConfig(st.tab, st.main)} className="text-left p-4 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-[#635BFF] transition flex items-start gap-3 cursor-pointer">
+                              <span className={`w-6 h-6 rounded-full shrink-0 flex items-center justify-center text-[11px] font-bold ${st.done ? "bg-emerald-500 text-white" : "border-2 border-rs-300 text-rs-400"}`}>{i + 1}</span>
+                              <span className="min-w-0">
+                                <span className="block text-xs font-bold text-rs-900 dark:text-white">{st.label}</span>
+                                <span className="block text-[11px] text-rs-400 font-medium mt-0.5">{st.desc}</span>
+                                <span className={`text-[10px] font-bold uppercase mt-1.5 inline-block ${st.done ? "text-emerald-500" : "text-amber-500"}`}>{st.done ? "Siap" : "Perlu diisi"}</span>
                               </span>
                             </button>
                           ))}
                         </div>
-                        <p className="text-[11px] text-slate-500 pt-1">
-                          Butuh pengaturan lain? Pakai kotak pencarian di atas, atau pilih kategori di tab atas.
-                        </p>
-                      </div>
+                      </>
                     )}
                   </div>
                 );
@@ -19020,58 +18793,7 @@ export default function App() {
           {/* VIEW: MONITORING KONTRAK (reminder & review list) */}
           {(activeTab === "monitoring" || activeTab === "kontrak-karyawan") && !selectedContract && (
             <div className="space-y-6">
-              {activeTab === "monitoring" && <div className="-mb-2">{renderLegalTabs()}</div>}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div className="flex items-center gap-3.5">
-                  <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center shrink-0">
-                    {activeTab === "kontrak-karyawan" ? <Users className="w-5 h-5 text-indigo-400" /> : <Bell className="w-5 h-5 text-indigo-400" />}
-                  </span>
-                  <div>
-                    <h2 className="text-xl font-bold text-slate-100">
-                      {activeTab === "kontrak-karyawan" ? "Dokumen Karyawan" : "Dokumen Eksternal"}
-                    </h2>
-                    <p className="text-sm text-slate-400 mt-0.5">
-                      {activeTab === "kontrak-karyawan"
-                        ? "Kontrak kerja karyawan (pihak kedua = Karyawan) dipantau terpisah dari kontrak vendor/mitra."
-                        : "Kontrak dengan vendor/mitra (dibuat di sistem maupun dokumen upload) dipantau masa berlakunya di sini."}
-                    </p>
-                  </div>
-                </div>
-                {isDivisionRole(currentUser?.role) && activeTab === "monitoring" && (
-                  <button onClick={() => setActiveTab("pekerjaan-legal")}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-semibold transition cursor-pointer shrink-0">
-                    <Send className="w-4 h-4" /> Ajukan Permintaan Kontrak
-                  </button>
-                )}
-                {canEditContracts && (activeTab === "kontrak-karyawan" || currentUser?.role !== "hr_ga") && (
-                <button
-                  onClick={() => {
-                    const locked = activeTab === "kontrak-karyawan" ? "employee" : "external";
-                    setCreationLockedParty(locked);
-                    setNewContractForm((f) => ({
-                      ...f,
-                      party2Type: locked === "employee" ? "Karyawan" : (masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type),
-                      // Kontrak eksternal: PT/Platform/Kategori/Jenis dipilih
-                      // sendiri secara berurutan — tidak ada pra-isian kategori.
-                      category: locked === "employee" ? "Employment" : "General",
-                      docType: "",
-                      platform: "",
-                      platformCustom: false,
-                      operator: "",
-                      employmentType: "",
-                      division: "",
-                    }));
-                    setCreationStep(1);
-                    setIsCreating(true);
-                  }}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-sm font-semibold transition cursor-pointer shrink-0"
-                >
-                  <Plus className="w-4 h-4" />
-                  {activeTab === "kontrak-karyawan" ? "Buat Dokumen Baru" : "Buat Dokumen Baru"}
-                </button>
-                )}
-              </div>
-
+              {activeTab === "monitoring" && <div>{renderLegalTabs()}</div>}
               {(() => {
                 const now = new Date();
                 const daysLeftOf = (c: Contract) =>
@@ -19139,6 +18861,13 @@ export default function App() {
                 const searched = scoped
                   .filter((c) => (monitorScope === "all" ? true : monitorScope === "aktif" ? !isInactive(c) : isInactive(c)))
                   .filter(healthMatch)
+                  .filter((c) => {
+                    if (!empTab || empDocTab === "all") return true;
+                    const inForce = wasEverInForce(c.status);
+                    if (empDocTab === "proses") return !inForce && !isInactive(c);
+                    if (empDocTab === "aktif") return inForce && !isInactive(c) && !(daysLeftOf(c) < 0);
+                    return isInactive(c) || (inForce && daysLeftOf(c) < 0);
+                  })
                   .filter((c) => (monitorCategory === "Semua" ? true : c.category === monitorCategory))
                   // Filter berdasarkan unifiedStatus (status gabungan yang sama
                   // dipakai badge kolom "Status" di tabel & di Pekerjaan Legal —
@@ -19250,300 +18979,410 @@ export default function App() {
                   arr.forEach((n, i) => { if (i > 0 && n - arr[i - 1] > 1) out.push("…"); out.push(n); });
                   return out;
                 })();
-                const topBtn = "h-11 px-5 rounded-full bg-slate-900 text-slate-300 hover:text-slate-100 text-sm font-semibold flex items-center gap-2 cursor-pointer transition card-soft";
+                const topBtn = "h-9 px-3.5 rounded-xl bg-white dark:bg-rs-800 text-rs-700 dark:text-rs-200 border border-rs-200 dark:border-rs-700 text-[11px] font-bold flex items-center gap-2 cursor-pointer transition";
 
                 return (
                   <>
-                    {/* Kartu ringkasan = filter cepat (klik untuk saring tabel, klik lagi untuk lepas). */}
-                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                      {([
-                        { key: "expired", count: expired.length, tone: "peach-strong", label: "Sudah Lewat Masa Berlaku", sub: "perlu tindakan segera", orange: true },
-                        { key: "critical", count: critical.length, tone: "peach", label: "Berakhir ≤ 30 Hari", sub: "perpanjang / tinjau", orange: true },
-                        { key: "warning", count: warning.length, tone: "mist-strong", label: "Berakhir 31–90 Hari", sub: "mulai dipantau", orange: false },
-                        { key: "healthy", count: healthy.length, tone: "mist", label: "Aman (> 90 Hari)", sub: "masa berlaku panjang", orange: false },
-                      ] as { key: "expired" | "critical" | "warning" | "healthy"; count: number; tone: string; label: string; sub: string; orange: boolean }[]).map((card) => {
-                        const on = monitorHealth === card.key;
-                        const share = active.length ? Math.round((card.count / active.length) * 100) : 0;
-                        return (
-                          <button
-                            key={card.key}
-                            onClick={() => { setMonitorHealth(on ? "" : card.key); setMonitorPage(1); }}
-                            title={on ? "Klik lagi untuk lepas filter" : "Klik untuk saring tabel ke kontrak ini"}
-                            className={`card-soft text-left p-5 rounded-2xl bg-slate-900 transition cursor-pointer hover:-translate-y-0.5 ${on ? (card.orange ? "ring-2 ring-peach-strong" : "ring-2 ring-soft-blue") : ""}`}
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className={`w-10 h-10 rounded-full flex items-center justify-center bg-${card.tone}`}>
-                                {card.key === "expired" ? <XCircle className={`w-5 h-5 ${card.orange ? "text-brand-orange" : "text-indigo-400"}`} />
-                                  : card.key === "critical" ? <Clock className="w-5 h-5 text-brand-orange" />
-                                  : card.key === "warning" ? <Calendar className="w-5 h-5 text-indigo-400" />
-                                  : <CheckCircle2 className="w-5 h-5 text-indigo-400" />}
-                              </span>
-                              {on && <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-slate-950 text-slate-400">difilter</span>}
-                            </div>
-                            <p className="text-3xl font-bold text-slate-100 mt-4 tabular-nums">{card.count}</p>
-                            <p className="text-xs font-semibold text-slate-300 mt-1">{card.label}</p>
-                            <p className="text-[11px] text-slate-500">{card.sub}</p>
-                            <div className="mt-3 h-1.5 rounded-full bg-slate-950 overflow-hidden" title={`${share}% dari kontrak aktif`}>
-                              <div className={`h-full rounded-full ${card.orange ? "bg-brand-orange" : "bg-soft-blue"}`} style={{ width: `${share}%` }} />
-                            </div>
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {/* Baris aksi: hanya tiga tombol — Search, Filter, Urutkan. */}
-                    <div className="flex flex-wrap items-center gap-3">
-                      <div className="relative min-w-[240px] flex-1 max-w-sm">
-                        <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 18, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
-                        <input
-                          style={{ paddingLeft: 46, paddingRight: 40 }}
-                          type="text"
-                          value={monitorSearch}
-                          onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
-                          placeholder="Cari judul, nomor, pihak, atau isi pasal…"
-                          title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
-                          className="w-full h-11 rounded-full bg-slate-900 card-soft text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-soft-blue/40"
-                        />
-                        {monitorSearch && (
-                          <button onClick={() => { setMonitorSearch(""); setMonitorPage(1); }} aria-label="Hapus pencarian" className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full text-slate-500 hover:text-slate-200 cursor-pointer">×</button>
-                        )}
-                      </div>
-                      <button onClick={() => openFilter()} className={topBtn}>
-                        <SlidersHorizontal className="w-4 h-4 text-indigo-400" /> Filter
-                        {activeFilterCount > 0 && <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-peach text-brand-orange text-[10px] font-bold flex items-center justify-center tabular-nums">{activeFilterCount}</span>}
-                      </button>
-                      <div className="relative">
-                        <button onClick={() => setMonitorSortOpen((o) => !o)} className={topBtn}>
-                          <ArrowUpDown className="w-4 h-4 text-indigo-400" /> Urutkan
-                          {sortLabel && <span className="text-[11px] text-slate-500 font-medium hidden sm:inline">· {sortLabel}</span>}
-                        </button>
-                        {monitorSortOpen && (
-                          <>
-                            <div className="fixed inset-0 z-30" onClick={() => setMonitorSortOpen(false)} />
-                            <div className="absolute left-0 top-full mt-2 z-40 w-44 bg-slate-900 rounded-[20px] p-2" style={{ boxShadow: "var(--shadow-soft)" }}>
-                              {SORT_OPTIONS.map((o) => {
-                                const on = contractSort.dir === o.dir;
-                                return (
-                                  <button
-                                    key={o.dir}
-                                    onClick={() => { setContractSort({ key: "dibuat", dir: o.dir }); setMonitorPage(1); setMonitorSortOpen(false); }}
-                                    className={`w-full flex items-center justify-between px-3 py-2 rounded-full text-xs font-semibold cursor-pointer transition ${on ? "bg-mist text-indigo-400" : "text-slate-300 hover:bg-slate-950"}`}
-                                  >
-                                    {o.label}
-                                    {on && <span className="text-[10px]">✓</span>}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                      {activeFilterCount > 0 && (
-                        <button onClick={resetFilter} className="text-xs font-semibold text-brand-orange hover:underline cursor-pointer flex items-center gap-1">
-                          <XCircle className="w-3.5 h-3.5" /> Reset filter
-                        </button>
-                      )}
-                      <button
-                        onClick={exportRegister}
-                        disabled={filtered.length === 0}
-                        title="Mengunduh persis daftar yang sedang tampil (sudah tersaring & terurut) sebagai CSV — langsung bisa dibuka di Excel."
-                        className="ml-auto h-11 px-5 rounded-full bg-slate-900 card-soft text-slate-300 hover:text-slate-100 text-xs font-semibold flex items-center gap-2 cursor-pointer transition disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        <Download className="w-4 h-4 text-indigo-400" /> Ekspor CSV
-                      </button>
-                    </div>
-                    {isiOnlyCount > 0 && (
-                      <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                        <Search className="w-3.5 h-3.5 shrink-0 text-indigo-400" />
-                        {isiOnlyCount} dokumen cocok dari <b>isi pasal / teks OCR</b>, bukan dari judul atau nomornya — kata kuncinya dicuplik di bawah judul.
-                      </p>
-                    )}
-
-                    <div className="table-card">
-                      <div className="flex items-center justify-between gap-3 flex-wrap px-2 pt-2 pb-3">
-                        <p className="text-sm font-bold text-slate-100">
-                          Daftar Dokumen <span className="text-xs font-medium text-slate-500 ml-1">{filtered.length} dari {scoped.length} dokumen</span>
+                    {/* Header halaman (pack: judul + deskripsi kiri, Ekspor + tombol utama kanan). */}
+                    <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                      <div>
+                        <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">
+                          {empTab ? "Dokumen Karyawan" : "Dokumen Eksternal"}
+                        </h2>
+                        <p className="text-xs font-medium text-rs-400 mt-0.5">
+                          {empTab
+                            ? "Kontrak kerja karyawan (PKWT/PKWTT), addendum, dan surat pengakhiran. Dikelola HR/GA."
+                            : "Monitoring masa berlaku perjanjian dengan pihak kedua yang sudah mengikat (Arsip, Distribusi, Aktif)."}
                         </p>
                       </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-xs">
-                          <thead>
-                            <tr>
-                              {(() => { const onSort = (k: string) => setContractSort((s2) => nextSort(s2, k)); return (
-                                <>
-                                  <SortableTh label="Kontrak" colKey="kontrak" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <SortableTh label="Kategori" colKey="kategori" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <SortableTh label="Pihak Kedua" colKey="pihak" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <SortableTh label="Mulai" colKey="mulai" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <SortableTh label="Berakhir" colKey="akhir" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <SortableTh label="Sisa Waktu" colKey="sisa" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <SortableTh label="Status" colKey="status" sort={contractSort} onSort={onSort} className="px-2 py-3" />
-                                  <th className="px-2 py-3">Dokumen</th>
-                                  <th className="px-2 py-3 text-right">Aksi</th>
-                                </>
-                              ); })()}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {pageRows.length === 0 && (
-                              <tr>
-                                <td colSpan={10} className="px-4 py-10 text-center text-slate-500 italic">
-                                  Tidak ada kontrak yang cocok dengan filter.
-                                </td>
-                              </tr>
-                            )}
-                            {pageRows.map((c) => {
-                              const inactive = isInactive(c);
-                              const d = daysLeftOf(c);
-                              // Guard tanggal berakhir kosong/tidak valid (mis. kontrak
-                              // open-ended tanpa tanggal) — dulu tampil "NaN hari lagi".
-                              const badge = inactive
-                                ? { text: "—", cls: "bg-slate-950 text-slate-500" }
-                                : !Number.isFinite(d)
-                                  ? { text: "Tanpa tanggal", cls: "bg-slate-950 text-slate-500" }
-                                  : d < 0
-                                    ? { text: `Lewat ${Math.abs(d)} hari`, cls: "bg-peach-strong/50 text-brand-orange" }
-                                    : d <= 30
-                                      ? { text: `${d} hari lagi`, cls: "bg-peach text-brand-orange" }
-                                      : d <= 90
-                                        ? { text: `${d} hari lagi`, cls: "bg-mist text-indigo-400" }
-                                        : { text: `${d} hari lagi`, cls: "bg-slate-950 text-indigo-400" };
-                              return (
-                                <tr key={c.id} onClick={() => handleOpenWorkspace(c)} title="Klik baris untuk buka & tinjau kontrak" className={`cursor-pointer ${inactive ? "opacity-60" : ""}`}>
-                                  <td className="px-2 py-3">
-                                    <p className="font-bold text-slate-200 min-w-[120px]">{c.title}</p>
-                                    <p className="font-mono text-[10px] text-slate-500">{c.contractNumber}</p>
-                                    {(() => {
-                                      const adds = addendaOf(c);
-                                      const hit = addendumHit(c);
-                                      if (adds.length === 0) return null;
-                                      return (
-                                        <p className="mt-1 text-[10px] leading-snug">
-                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-600 font-semibold">
-                                            <FileDigit className="w-3 h-3" /> {adds.length} addendum
-                                          </span>
-                                          {hit && <span className="ml-1.5 text-indigo-500">cocok di addendum <b className="font-mono">{hit.contractNumber}</b></span>}
-                                        </p>
-                                      );
-                                    })()}
-                                    {/* Cocok karena ISI dokumen, bukan judul/nomor — tanpa
-                                        cuplikan ini barisnya terlihat muncul tanpa sebab. */}
-                                    {matchContract(c, monitorSearch) === "isi" && (
-                                      <p className="mt-1 text-[10px] text-indigo-400 leading-snug max-w-[300px]">
-                                        <span className="font-semibold">cocok di isi dokumen:</span>{" "}
-                                        <span className="text-slate-400">{contentSnippet(c, monitorSearch)}</span>
-                                      </p>
-                                    )}
-                                  </td>
-                                  <td className="px-2 py-3 text-slate-300">{empTab ? (c.employmentType || <span className="text-slate-500 italic">belum diisi</span>) : c.category}</td>
-                                  <td className="px-2 py-3 text-slate-300 min-w-[110px]">{c.party2Name}</td>
-                                  <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{c.startDate}</td>
-                                  <td className="px-2 py-3 text-slate-400 whitespace-nowrap">{c.endDate}</td>
-                                  <td className="px-2 py-3">
-                                    <span className={`px-2 py-1 rounded-full font-semibold text-[10.5px] whitespace-nowrap ${badge.cls}`}>
-                                      {badge.text}
-                                    </span>
-                                  </td>
-                                  <td className="px-2 py-3">
-                                    <span className={`inline-flex items-center gap-1.5 text-[10.5px] px-2 py-1 rounded-full border font-semibold whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-950 text-slate-400 border-transparent"}`}>
-                                      <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                                      {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || c.unifiedStatus || contractStatusLabel(c.status)}
-                                    </span>
-                                  </td>
-                                  <td className="px-2 py-3">
-                                    {(() => {
-                                      const kind = contractDocKind(c);
-                                      if (kind === "PDF" && c.masterPdfUrl) return (
-                                        <a
-                                          href={`/api/contracts/${c.id}/view-pdf`}
-                                          target="_blank"
-                                          rel="noreferrer"
-                                          onClick={(e) => e.stopPropagation()}
-                                          className="text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-semibold"
-                                        >
-                                          <FileText className="w-3.5 h-3.5" /> PDF
-                                        </a>
-                                      );
-                                      if (kind === "Digital") return <span className="text-slate-500">Digital</span>;
-                                      return (
-                                        <span className={`inline-flex items-center gap-1 font-semibold ${kind === "Word" ? "text-brand-orange" : "text-indigo-400"}`}>
-                                          <FileText className="w-3.5 h-3.5" /> {kind}
-                                        </span>
-                                      );
-                                    })()}
-                                  </td>
-                                  <td className="px-2 py-3">
-                                    <div className="flex items-center justify-end gap-1.5">
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); handleOpenWorkspace(c); }}
-                                        className="px-2.5 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-200 font-semibold transition cursor-pointer"
-                                      >
-                                        Tinjau
-                                      </button>
-                                      {isContractRenewable(c) && (
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); handleOpenRenewModal(c); }}
-                                          title="Muncul setelah matriks approval selesai penuh"
-                                          className="px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded-full text-white font-bold transition flex items-center gap-1 cursor-pointer"
-                                        >
-                                          <RefreshCw className="w-3 h-3" /> Perpanjang
-                                        </button>
-                                      )}
-                                      {canDelete && (
-                                      <button
-                                        onClick={(e) => { e.stopPropagation(); handleDeleteContract(c.id); }}
-                                        className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-brand-orange hover:bg-peach rounded-full transition cursor-pointer"
-                                        title="Hapus Kontrak"
-                                      >
-                                        <Trash2 className="w-3.5 h-3.5" />
-                                      </button>
-                                      )}
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                      <div className="flex items-center gap-2">
+                        <button onClick={exportRegister} disabled={filtered.length === 0}
+                          title="Mengunduh persis daftar yang sedang tampil (sudah tersaring & terurut) sebagai CSV — langsung bisa dibuka di Excel."
+                          className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
+                          <Download className="w-3 h-3" /> Ekspor
+                        </button>
+                        {isDivisionRole(currentUser?.role) && activeTab === "monitoring" && (
+                          <button onClick={() => setActiveTab("pekerjaan-legal")}
+                            className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer">
+                            <Send className="w-3.5 h-3.5" /> Ajukan Permintaan Kontrak
+                          </button>
+                        )}
+                        {canEditContracts && (empTab || currentUser?.role !== "hr_ga") && (
+                          <button
+                            onClick={() => {
+                              const locked = empTab ? "employee" : "external";
+                              setCreationLockedParty(locked);
+                              setNewContractForm((f) => ({
+                                ...f,
+                                party2Type: locked === "employee" ? "Karyawan" : (masterData.partyTypes.find((t) => t !== "Karyawan") || f.party2Type),
+                                category: locked === "employee" ? "Employment" : "General",
+                                docType: "", platform: "", platformCustom: false, operator: "", employmentType: "", division: "",
+                              }));
+                              setCreationStep(1);
+                              setIsCreating(true);
+                            }}
+                            className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"
+                          >
+                            <Plus className="w-3.5 h-3.5" /> {empTab ? "Kontrak Karyawan Baru" : "Buat Dokumen Baru"}
+                          </button>
+                        )}
                       </div>
-                      {filtered.length > MONITOR_PAGE_SIZE && (
-                        <div className="flex items-center justify-between gap-3 flex-wrap px-2 pt-4 pb-2 text-[11px] text-slate-400">
-                          <span>
-                            Menampilkan {(monitorSafePage - 1) * MONITOR_PAGE_SIZE + 1}–{Math.min(monitorSafePage * MONITOR_PAGE_SIZE, filtered.length)} dari {filtered.length} kontrak
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              onClick={() => setMonitorPage((p) => Math.max(1, p - 1))}
-                              disabled={monitorSafePage <= 1}
-                              aria-label="Halaman sebelumnya"
-                              className="w-8 h-8 rounded-full bg-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                            >
-                              ‹
-                            </button>
-                            {pageNumbers.map((n, i) => n === "…" ? (
-                              <span key={`e${i}`} className="w-6 text-center text-slate-500">…</span>
-                            ) : (
-                              <button
-                                key={n}
-                                onClick={() => setMonitorPage(n)}
-                                className={`w-8 h-8 rounded-full text-[11px] font-semibold cursor-pointer tabular-nums ${n === monitorSafePage ? "bg-indigo-600 text-white" : "bg-slate-950 text-slate-300 hover:text-slate-100"}`}
-                              >
-                                {n}
-                              </button>
-                            ))}
-                            <button
-                              onClick={() => setMonitorPage((p) => Math.min(monitorTotalPages, p + 1))}
-                              disabled={monitorSafePage >= monitorTotalPages}
-                              aria-label="Halaman berikutnya"
-                              className="w-8 h-8 rounded-full bg-slate-950 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                            >
-                              ›
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
 
+                    {/* Tombol Filter + Urutkan (pack: tombol Filter di sebelah pencarian). */}
+                    {(() => {
+                      const filterBtns = (
+                        <>
+                          <button onClick={() => openFilter()} className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer">
+                            <SlidersHorizontal className="w-3 h-3" /> Filter
+                            {activeFilterCount > 0 && <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-[#635BFF] text-white text-[10px] font-bold flex items-center justify-center tabular-nums">{activeFilterCount}</span>}
+                          </button>
+                          <div className="relative">
+                            <button onClick={() => setMonitorSortOpen((o) => !o)} className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer">
+                              <ArrowUpDown className="w-3 h-3" /> Urutkan{sortLabel && <span className="font-medium text-rs-400 hidden sm:inline">· {sortLabel}</span>}
+                            </button>
+                            {monitorSortOpen && (
+                              <>
+                                <div className="fixed inset-0 z-30" onClick={() => setMonitorSortOpen(false)} />
+                                <div className="absolute right-0 top-full mt-2 z-40 w-44 bg-white dark:bg-rs-900 border border-rs-200 dark:border-rs-800 rounded-2xl p-2" style={{ boxShadow: "var(--shadow-soft)" }}>
+                                  {SORT_OPTIONS.map((o) => {
+                                    const on = contractSort.dir === o.dir;
+                                    return (
+                                      <button key={o.dir}
+                                        onClick={() => { setContractSort({ key: "dibuat", dir: o.dir }); setMonitorPage(1); setMonitorSortOpen(false); }}
+                                        className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer transition ${on ? "bg-indigo-50 text-[#635BFF]" : "text-rs-600 hover:bg-rs-50 dark:text-rs-300 dark:hover:bg-rs-800"}`}>
+                                        {o.label}{on && <span className="text-[10px]">✓</span>}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                          {activeFilterCount > 0 && (
+                            <button onClick={resetFilter} className="text-[11px] font-bold text-rose-500 hover:underline cursor-pointer flex items-center gap-1">
+                              <XCircle className="w-3 h-3" /> Reset
+                            </button>
+                          )}
+                        </>
+                      );
+                      const searchBox = (ph: string) => (
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+                          <input type="text" value={monitorSearch}
+                            onChange={(e) => { setMonitorSearch(e.target.value); setMonitorPage(1); }}
+                            placeholder={ph}
+                            title="Pencarian juga menembus isi pasal dan teks hasil OCR dokumen unggahan."
+                            className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
+                        </div>
+                      );
+                      const dateShort = (s?: string) => {
+                        if (!s) return "—";
+                        const dt = new Date(s);
+                        return Number.isNaN(dt.getTime()) ? s : dt.toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "2-digit" });
+                      };
+                      const progressOf = (c: Contract) => {
+                        const a = new Date(c.startDate).getTime(), b = new Date(c.endDate).getTime();
+                        if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return null;
+                        return Math.max(0, Math.min(100, Math.round(((now.getTime() - a) / (b - a)) * 100)));
+                      };
+                      const rupiahShort = (v: unknown) => {
+                        const n = Number(v) || 0;
+                        if (!n) return "—";
+                        if (n >= 1e9) return `Rp ${(n / 1e9).toLocaleString("id-ID", { maximumFractionDigits: 3 })} M`;
+                        if (n >= 1e6) return `Rp ${Math.round(n / 1e6).toLocaleString("id-ID")} Jt`;
+                        return `Rp ${n.toLocaleString("id-ID")}`;
+                      };
+                      const STATUS_CHIP: Record<string, string> = {
+                        Draft: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300",
+                        OnReview: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300",
+                        ApprovedInternal: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300",
+                        ReviewEksternal: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300",
+                        FinalReview: "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300",
+                        FullyApproved: "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300",
+                        Arsip: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300",
+                        Distribusi: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300",
+                        Aktif: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300",
+                        TidakAktif: "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300",
+                        Archived: "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300",
+                        Terminated: "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300",
+                      };
+                      const statusChip = (c: Contract) => (
+                        <span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${STATUS_CHIP[c.status] || "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300"}`}>
+                          {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || c.unifiedStatus || contractStatusLabel(c.status)}
+                        </span>
+                      );
+                      const addendumInfo = (c: Contract) => {
+                        const adds = addendaOf(c);
+                        const hit = addendumHit(c);
+                        return (
+                          <>
+                            {adds.length > 0 && (
+                              <span className="block mt-1 text-[10px] leading-snug font-normal">
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-violet-500/15 text-violet-600 font-semibold">
+                                  <FileDigit className="w-3 h-3" /> {adds.length} addendum
+                                </span>
+                                {hit && <span className="ml-1.5 text-indigo-500">cocok di addendum <b className="font-mono">{hit.contractNumber}</b></span>}
+                              </span>
+                            )}
+                            {matchContract(c, monitorSearch) === "isi" && (
+                              <span className="block mt-1 text-[10px] text-indigo-500 leading-snug max-w-[300px] font-normal">
+                                <span className="font-semibold">cocok di isi dokumen:</span>{" "}
+                                <span className="text-rs-400">{contentSnippet(c, monitorSearch)}</span>
+                              </span>
+                            )}
+                          </>
+                        );
+                      };
+                      const thCls = "py-2.5 px-2";
+                      const theadCls = "border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider";
+                      const tbodyCls = "divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300";
+                      const trCls = (inactive: boolean) => `hover:bg-rs-50/50 dark:hover:bg-rs-800/40 cursor-pointer ${inactive ? "opacity-60" : ""}`;
+                      const actBtn = "px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors inline-flex cursor-pointer";
+                      const pager = (
+                        <div className="flex items-center justify-between flex-wrap gap-3 pt-4 mt-2 border-t border-rs-100 dark:border-rs-800">
+                          <span className="text-[11px] font-medium text-rs-400">
+                            {filtered.length === 0 ? "Tidak ada dokumen" : `Menampilkan ${(monitorSafePage - 1) * MONITOR_PAGE_SIZE + 1}–${Math.min(monitorSafePage * MONITOR_PAGE_SIZE, filtered.length)} dari ${filtered.length} ${empTab ? "dokumen" : "kontrak"}`}
+                          </span>
+                          <div className="flex items-center gap-1 text-[11px] font-bold">
+                            <button onClick={() => setMonitorPage((p) => Math.max(1, p - 1))} disabled={monitorSafePage <= 1} aria-label="Halaman sebelumnya"
+                              className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-400 flex items-center justify-center disabled:cursor-not-allowed cursor-pointer"><ChevronLeft className="w-3.5 h-3.5" /></button>
+                            {pageNumbers.map((n, i) => n === "…" ? (
+                              <span key={`e${i}`} className="text-rs-400 px-1">…</span>
+                            ) : (
+                              <button key={n} onClick={() => setMonitorPage(n)}
+                                className={`w-7 h-7 rounded-lg cursor-pointer tabular-nums ${n === monitorSafePage ? "bg-[#635BFF] text-white" : "text-rs-500 hover:bg-rs-100 dark:hover:bg-rs-800"}`}>{n}</button>
+                            ))}
+                            <button onClick={() => setMonitorPage((p) => Math.min(monitorTotalPages, p + 1))} disabled={monitorSafePage >= monitorTotalPages} aria-label="Halaman berikutnya"
+                              className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-500 flex items-center justify-center disabled:cursor-not-allowed cursor-pointer"><ChevronRight className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
+                      );
+                      const isiNote = isiOnlyCount > 0 && (
+                        <p className="text-[11px] text-rs-400 flex items-center gap-1.5">
+                          <Search className="w-3.5 h-3.5 shrink-0 text-[#635BFF]" />
+                          {isiOnlyCount} dokumen cocok dari <b>isi pasal / teks OCR</b>, bukan dari judul atau nomornya — kata kuncinya dicuplik di bawah judul.
+                        </p>
+                      );
+
+                      if (empTab) {
+                        const stat = [
+                          { label: "Total Dokumen", v: scoped.length, tile: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]", I: Users },
+                          { label: "Aktif", v: scoped.filter((c) => wasEverInForce(c.status) && !isInactive(c) && !(daysLeftOf(c) < 0)).length, tile: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600", I: UserCheck },
+                          { label: "PKWT Berakhir ≤ 60 Hari", v: active.filter((c) => { const d = daysLeftOf(c); return /PKWT(?!T)/i.test(c.employmentType || "") && d >= 0 && d <= 60; }).length, tile: "bg-amber-50 dark:bg-amber-950/50 text-amber-500", I: Timer },
+                          { label: "Diakhiri", v: scoped.filter(isInactive).length, tile: "bg-rose-50 dark:bg-rose-950/50 text-rose-500", I: FileX },
+                        ];
+                        const TABS: { k: "all" | "proses" | "aktif" | "berakhir"; l: string }[] = [
+                          { k: "all", l: "Semua" }, { k: "proses", l: "Dalam Proses" }, { k: "aktif", l: "Berlaku" }, { k: "berakhir", l: "Berakhir" },
+                        ];
+                        const AVA = [
+                          "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]", "bg-purple-50 dark:bg-purple-950/50 text-purple-600",
+                          "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600", "bg-amber-50 dark:bg-amber-950/50 text-amber-500",
+                          "bg-rose-50 dark:bg-rose-950/50 text-rose-500", "bg-rs-100 dark:bg-rs-800 text-rs-500",
+                        ];
+                        return (
+                          <>
+                            <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-rs-100 dark:divide-rs-800">
+                              {stat.map((s) => (
+                                <div key={s.label} className="px-5 py-4 flex items-center gap-3">
+                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${s.tile}`}><s.I className="w-4 h-4" /></div>
+                                  <div>
+                                    <span className="text-[11px] font-semibold text-rs-400 block">{s.label}</span>
+                                    <span className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">{s.v}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            {isiNote}
+                            <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+                                <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start text-[11px] font-bold text-rs-500 flex-wrap">
+                                  {TABS.map((t) => (
+                                    <button key={t.k} onClick={() => { setEmpDocTab(t.k); setMonitorPage(1); }}
+                                      className={`px-3 py-1 rounded-lg cursor-pointer ${empDocTab === t.k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>{t.l}</button>
+                                  ))}
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  {searchBox("Cari karyawan, jabatan...")}
+                                  {filterBtns}
+                                </div>
+                              </div>
+                              <div className="overflow-x-auto">
+                                <table className="plain-table w-full text-left border-collapse">
+                                  <thead><tr className={theadCls}>
+                                    <th className={thCls}>Karyawan</th><th className={thCls}>Jenis Dokumen</th><th className={thCls}>Periode</th>
+                                    <th className={`${thCls} text-center`}>Status</th><th className={`${thCls} text-center`}>Aksi</th>
+                                  </tr></thead>
+                                  <tbody className={tbodyCls}>
+                                    {pageRows.length === 0 && (
+                                      <tr><td colSpan={5} className="text-center text-xs font-semibold text-rs-400 py-10">Tidak ada data yang cocok.</td></tr>
+                                    )}
+                                    {pageRows.map((c, idx) => {
+                                      const inactive = isInactive(c);
+                                      const prog = progressOf(c);
+                                      const name = c.party2Name || "—";
+                                      const ini = name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+                                      const jenis = c.employmentType || c.docType || "Dokumen";
+                                      const isPk = /PKWT/i.test(jenis);
+                                      const hasEnd = !!c.endDate && Number.isFinite(new Date(c.endDate).getTime());
+                                      return (
+                                        <tr key={c.id} onClick={() => handleOpenWorkspace(c)} title="Klik baris untuk buka & tinjau dokumen" className={trCls(inactive)}>
+                                          <td className="py-3 px-2">
+                                            <div className="flex items-center gap-2">
+                                              <div className={`w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0 ${AVA[idx % AVA.length]}`}>{ini}</div>
+                                              <div className="min-w-0">
+                                                <span className="font-bold text-rs-900 dark:text-white block">{name}</span>
+                                                <span className="text-[10px] text-rs-400 font-normal block">{c.division || c.title}</span>
+                                                {addendumInfo(c)}
+                                              </div>
+                                            </div>
+                                          </td>
+                                          <td className="py-3 px-2">
+                                            <span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${isPk ? "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300" : "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300"}`}>{jenis}</span>
+                                          </td>
+                                          <td className="py-3 px-2 whitespace-nowrap">
+                                            <span className="text-rs-500 font-medium">
+                                              {inactive ? `Berakhir ${dateShort(c.endDate)}` : hasEnd ? `${dateShort(c.startDate)} – ${dateShort(c.endDate)}` : `Sejak ${dateShort(c.startDate)} · Tetap`}
+                                            </span>
+                                            {(hasEnd || inactive) && prog !== null && (
+                                              <div className="h-1.5 rounded-full bg-rs-100 dark:bg-rs-800 overflow-hidden mt-1.5 w-40">
+                                                <div className={`h-full rounded-full ${inactive || prog >= 85 ? "bg-rose-500" : "bg-[#635BFF]"}`} style={{ width: `${inactive ? 100 : prog}%` }} />
+                                              </div>
+                                            )}
+                                          </td>
+                                          <td className="py-3 px-2 text-center">{statusChip(c)}</td>
+                                          <td className="py-3 px-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                            <button onClick={() => handleOpenWorkspace(c)} title="Tinjau" className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer"><Eye className="w-4 h-4" /></button>
+                                            <details className="relative inline-block align-middle">
+                                              <summary className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer list-none [&::-webkit-details-marker]:hidden"><MoreHorizontal className="w-4 h-4" /></summary>
+                                              <div className="absolute right-0 top-full mt-1 z-20 w-36 bg-white dark:bg-rs-900 border border-rs-200 dark:border-rs-800 rounded-xl p-1 text-left" style={{ boxShadow: "var(--shadow-soft)" }}>
+                                                <button onClick={() => handleOpenWorkspace(c)} className="w-full text-left px-3 py-2 rounded-lg text-[11px] font-semibold text-rs-600 dark:text-rs-300 hover:bg-rs-50 dark:hover:bg-rs-800 cursor-pointer">Tinjau</button>
+                                                {isContractRenewable(c) && <button onClick={() => handleOpenRenewModal(c)} className="w-full text-left px-3 py-2 rounded-lg text-[11px] font-semibold text-rs-600 dark:text-rs-300 hover:bg-rs-50 dark:hover:bg-rs-800 cursor-pointer">Perpanjang</button>}
+                                                {canDelete && <button onClick={() => handleDeleteContract(c.id)} className="w-full text-left px-3 py-2 rounded-lg text-[11px] font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer">Hapus</button>}
+                                              </div>
+                                            </details>
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                              {pager}
+                            </div>
+                          </>
+                        );
+                      }
+
+                      const hcards: { key: "" | "expired" | "critical" | "warning" | "healthy"; count: number; label: string; sub: string; color: string; tile: string; I: any }[] = [
+                        { key: "", count: active.length, label: "Semua Berlaku", sub: "", color: "", tile: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]", I: Layers },
+                        { key: "expired", count: expired.length, label: "Kedaluwarsa", sub: "Lewat masa berlaku", color: "#F43F5E", tile: "bg-rose-50 dark:bg-rose-950/50 text-rose-500", I: AlertOctagon },
+                        { key: "critical", count: critical.length, label: "Kritis ≤ 30 hari", sub: "Perlu tindakan segera", color: "#F59E0B", tile: "bg-amber-50 dark:bg-amber-950/50 text-amber-500", I: AlertTriangle },
+                        { key: "warning", count: warning.length, label: "Peringatan 31–90 hari", sub: "Siapkan perpanjangan", color: "#A855F7", tile: "bg-purple-50 dark:bg-purple-950/50 text-purple-600", I: BellRing },
+                        { key: "healthy", count: healthy.length, label: "Sehat > 90 hari", sub: "Berjalan normal", color: "#10B981", tile: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600", I: ShieldCheck },
+                      ];
+                      return (
+                        <>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                            {hcards.map((h) => {
+                              const on = monitorHealth === h.key;
+                              return (
+                                <button key={h.label}
+                                  onClick={() => { setMonitorHealth(h.key !== "" && on ? "" : h.key); setMonitorPage(1); }}
+                                  title={h.key === "" ? "Tampilkan semua kontrak" : on ? "Klik lagi untuk lepas filter" : "Klik untuk saring tabel ke kontrak ini"}
+                                  style={h.color ? { borderLeftColor: h.color } : undefined}
+                                  className={`text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 flex items-center gap-3 cursor-pointer ${h.color ? "border-l-4 hover:border-rs-300" : ""} ${on ? "ring-2 ring-[#635BFF]" : ""}`}>
+                                  <div className={`w-11 h-11 rounded-2xl flex items-center justify-center ${h.tile}`}><h.I className="w-5 h-5" /></div>
+                                  <div>
+                                    <span className="text-[11px] font-semibold text-rs-400 block">{h.label}</span>
+                                    <span className="text-xl font-extrabold text-rs-900 dark:text-white">{h.count.toLocaleString("en-US")}</span>
+                                    {h.sub && <span className="block text-[10px] text-rs-400 font-medium">{h.sub}</span>}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {isiNote}
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <h3 className="text-xs font-bold text-rs-900 dark:text-white">Kontrak Dipantau <span className="text-[11px] font-medium text-rs-400 ml-1">{filtered.length} dari {scoped.length} dokumen</span></h3>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {searchBox("Cari nomor, judul, partner...")}
+                              {filterBtns}
+                            </div>
+                          </div>
+                          <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                            <div className="overflow-x-auto">
+                              <table className="plain-table w-full text-left border-collapse">
+                                <thead><tr className={theadCls}>
+                                  <th className={thCls}>Kontrak</th><th className={thCls}>Kategori</th><th className={thCls}>Masa Berlaku</th>
+                                  <th className={`${thCls} text-center`}>Sisa Waktu</th><th className={`${thCls} text-center`}>Status</th>
+                                  <th className={`${thCls} text-right`}>Nilai</th><th className={`${thCls} text-center`}>Aksi</th>
+                                </tr></thead>
+                                <tbody className={tbodyCls}>
+                                  {pageRows.length === 0 && (
+                                    <tr><td colSpan={7} className="text-center text-xs font-semibold text-rs-400 py-10">Tidak ada kontrak yang cocok dengan filter.</td></tr>
+                                  )}
+                                  {pageRows.map((c) => {
+                                    const inactive = isInactive(c);
+                                    const d = daysLeftOf(c);
+                                    const finite = Number.isFinite(d);
+                                    const prog = progressOf(c);
+                                    const tone = inactive || !finite
+                                      ? { chip: "text-rs-500 bg-rs-100 dark:bg-rs-800 dark:text-rs-300", bar: "bg-rs-300", text: inactive ? "—" : "Tanpa tanggal" }
+                                      : d < 0
+                                        ? { chip: "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300", bar: "bg-rose-500", text: `Lewat ${Math.abs(d)} hari` }
+                                        : d <= 30
+                                          ? { chip: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300", bar: "bg-[#F59E0B]", text: `${d} hari lagi` }
+                                          : d <= 90
+                                            ? { chip: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300", bar: "bg-[#A855F7]", text: `${d} hari lagi` }
+                                            : { chip: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300", bar: "bg-emerald-500", text: `${d} hari lagi` };
+                                    const kind = contractDocKind(c);
+                                    return (
+                                      <tr key={c.id} onClick={() => handleOpenWorkspace(c)} title="Klik baris untuk buka & tinjau kontrak" className={trCls(inactive)}>
+                                        <td className="py-3 px-2">
+                                          <span className="font-bold text-rs-900 dark:text-white block min-w-[120px]">{c.title}</span>
+                                          <span className="text-[10px] text-rs-400 font-normal block">{c.party2Name}{c.contractNumber ? ` · ${c.contractNumber}` : ""}</span>
+                                          {addendumInfo(c)}
+                                        </td>
+                                        <td className="py-3 px-2">
+                                          <span className="inline-block text-[10px] font-bold text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300 px-2.5 py-1 rounded-lg whitespace-nowrap">{c.category}</span>
+                                        </td>
+                                        <td className="py-3 px-2 w-60">
+                                          <div className="flex justify-between text-[10px] font-semibold text-rs-400 mb-1"><span>{dateShort(c.startDate)}</span><span>{dateShort(c.endDate)}</span></div>
+                                          <div className="h-1.5 rounded-full bg-rs-100 dark:bg-rs-800 overflow-hidden">
+                                            <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${inactive ? 100 : prog ?? 0}%` }} />
+                                          </div>
+                                        </td>
+                                        <td className="py-3 px-2 text-center">
+                                          <span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${tone.chip}`}>{tone.text}</span>
+                                        </td>
+                                        <td className="py-3 px-2 text-center">{statusChip(c)}</td>
+                                        <td className="py-3 px-2 text-right font-bold text-rs-900 dark:text-white whitespace-nowrap">{rupiahShort(c.contractValue)}</td>
+                                        <td className="py-3 px-2 text-center whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                                          <div className="flex items-center justify-center gap-1">
+                                            {isContractRenewable(c) && (
+                                              <button onClick={() => handleOpenRenewModal(c)} title="Muncul setelah matriks approval selesai penuh" className={actBtn}><RefreshCw className="w-3 h-3" /> Perpanjang</button>
+                                            )}
+                                            <button onClick={() => handleOpenWorkspace(c)} className={actBtn}>Tinjau</button>
+                                            {kind === "PDF" && c.masterPdfUrl && (
+                                              <a href={`/api/contracts/${c.id}/view-pdf`} target="_blank" rel="noreferrer" className={actBtn}><FileText className="w-3 h-3" /> PDF</a>
+                                            )}
+                                            {canDelete && (
+                                              <button onClick={() => handleDeleteContract(c.id)} title="Hapus Kontrak" className="p-1.5 text-rs-400 hover:text-rose-500 cursor-pointer"><Trash2 className="w-3.5 h-3.5" /></button>
+                                            )}
+                                          </div>
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                            {pager}
+                          </div>
+                        </>
+                      );
+                    })()}
                     {monitorFilterOpen && (
                       <MonitorFilterDrawer
                         draft={monitorDraft}
@@ -19567,23 +19406,18 @@ export default function App() {
           {/* SOP & INTERNAL MEMO */}
           {activeTab === "internal-docs" && !selectedContract && (
             <div className="space-y-6">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-bold flex items-center gap-2">
-                    <Workflow className="w-5 h-5 text-indigo-400" />
-                    Dokumen Internal (Smart DCS)
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Kontrol dokumen ISO 9001: SOP, IK, Kebijakan, Memo — tidak ada Pihak Kedua, ditandatangani digital di dalam sistem (tidak perlu meterai). Bernomor otomatis, berversi Terbitan/Revisi, dengan alur persetujuan, auto-obsolete, watermark reaktif (CONTROLLED / UNCONTROLLED), dan folder riwayat virtual.
-                  </p>
+                  <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight" title="Kontrol dokumen ISO 9001: bernomor otomatis, berversi Terbitan/Revisi, alur persetujuan, auto-obsolete, watermark CONTROLLED/UNCONTROLLED, ditandatangani digital di dalam sistem.">Dokumen DCS</h2>
+                  <p className="text-xs font-medium text-rs-400 mt-0.5">Dokumen terkontrol (SOP, Instruksi Kerja, Kebijakan, Memo, Standarisasi) dengan versi dan jadwal tinjau ulang.</p>
                 </div>
-                <div className="flex gap-2 self-start">
+                <div className="flex items-center gap-2">
                   <button
                     onClick={() => { setActiveTab("konfigurasi"); setConfigTab("dcsdoctypes"); fetchDcsDocTypes(); fetchDcsNumberingRule(); }}
                     title="Kelola jenis dokumen (SOP/IK/Kebijakan/Memo/dll) beserta template bagian dan kolom tanda tangannya — di Konfigurasi & Master Data."
-                    className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                    className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"
                   >
-                    <Sliders className="w-4 h-4" /> Jenis Dokumen
+                    <Sliders className="w-3 h-3" /> Jenis Dokumen
                   </button>
                   <button
                     onClick={() => {
@@ -19592,130 +19426,154 @@ export default function App() {
                       setDcsCreateOpen(true);
                     }}
                     title="Buat dokumen terkontrol baru — nomor dibuat otomatis, lalu Anda akan diarahkan menyusun isi & diagram alirnya."
-                    className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md"
+                    className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"
                   >
-                    <Plus className="w-4 h-4" /> Buat Dokumen Terkontrol
+                    <FilePlus className="w-3.5 h-3.5" /> Buat Dokumen Terkontrol
                   </button>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-4">
-                {/* Document list — grouped by Departemen like a folder tree, so a
-                    folder always exists first and documents simply land inside it. */}
-                <aside className="space-y-3">
-                  <div className="relative w-full sm:w-72">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
-                    <input
-                      type="text" value={dcsSearch} onChange={(e) => setDcsSearch(e.target.value)}
-                      placeholder="Cari nomor / judul dokumen..."
-                      className="w-full pl-9 pr-3 py-2.5 bg-slate-900 border border-slate-800 rounded-xl text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/15 transition"
-                    />
-                  </div>
-
-                  {/* Filter jenis dokumen — chip mengikuti jenis yang benar-benar
-                      ada (otomatis ikut jenis yang dibuat admin). "" = Semua. */}
-                  {(() => {
-                    const counts = new Map<string, number>();
-                    for (const d of dcsDocs) counts.set(d.docTypeCode, (counts.get(d.docTypeCode) || 0) + 1);
-                    const codes = Array.from(counts.keys()).sort();
-                    if (codes.length <= 1) return null; // 1 jenis saja: filter tak berguna
-                    const nameOf = (code: string) => dcsDocTypes.find((t) => t.code === code)?.name || code;
-                    const chip = (active: boolean) =>
-                      `px-2.5 py-1 rounded-full text-[11px] font-semibold border transition cursor-pointer whitespace-nowrap ${active ? "bg-indigo-600/25 text-indigo-300 border-indigo-500/40" : "bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-600"}`;
-                    return (
-                      <div className="flex flex-wrap gap-1.5" role="tablist" aria-label="Filter jenis dokumen">
-                        <button role="tab" aria-selected={dcsTypeFilter === ""} onClick={() => setDcsTypeFilter("")} className={chip(dcsTypeFilter === "")}>
-                          Semua <span className="opacity-60">{dcsDocs.length}</span>
-                        </button>
-                        {codes.map((code) => (
-                          <button key={code} role="tab" aria-selected={dcsTypeFilter === code} onClick={() => setDcsTypeFilter(dcsTypeFilter === code ? "" : code)} className={chip(dcsTypeFilter === code)} title={nameOf(code)}>
-                            {nameOf(code)} <span className="opacity-60">{counts.get(code)}</span>
-                          </button>
-                        ))}
+              {(() => {
+                const ctrl = (d: DcsDoc) => { const l = d.versions[0]; return !!l && l.status === "effective" && (!l.reviewDueAt || new Date(l.reviewDueAt) >= new Date()); };
+                const overdue = dcsDocs.filter((d) => { const l = d.versions[0]; return !!l && l.status === "effective" && !!l.reviewDueAt && new Date(l.reviewDueAt) < new Date(); }).length;
+                const st = [
+                  { l: "Total Dokumen", v: dcsDocs.length, I: Workflow, c: "text-[#635BFF] bg-indigo-50 dark:bg-indigo-500/10" },
+                  { l: "Diberlakukan", v: dcsDocs.filter(ctrl).length, I: CheckCircle2, c: "text-emerald-600 bg-emerald-50 dark:bg-emerald-500/10" },
+                  { l: "Dalam Proses", v: dcsDocs.filter((d) => d.versions[0] && d.versions[0].status !== "effective").length, I: Hourglass, c: "text-amber-500 bg-amber-50 dark:bg-amber-500/10" },
+                  { l: "Tinjau Ulang Terlewat", v: overdue, I: CalendarClock, c: "text-rose-500 bg-rose-50 dark:bg-rose-500/10" },
+                ];
+                return (
+                  <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-rs-100 dark:divide-rs-800">
+                    {st.map((t) => (
+                      <div key={t.l} className="px-5 py-4 flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${t.c}`}><t.I className="w-4 h-4" /></div>
+                        <div><span className="text-[11px] font-semibold text-rs-400 block">{t.l}</span><span className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">{t.v}</span></div>
                       </div>
-                    );
-                  })()}
+                    ))}
+                  </div>
+                );
+              })()}
 
-                  <div className="space-y-2 max-h-[70vh] overflow-y-auto pr-1">
-                    {(() => {
-                      const filtered = dcsDocs.filter((d) =>
-                        (!dcsTypeFilter || d.docTypeCode === dcsTypeFilter) &&
-                        (!dcsSearch.trim() || d.title.toLowerCase().includes(dcsSearch.toLowerCase()) || d.documentNumber.toLowerCase().includes(dcsSearch.toLowerCase())));
-                      const groups = new Map<string, DcsDoc[]>();
-                      for (const d of filtered) {
-                        const key = d.department || "(Tanpa Departemen)";
-                        if (!groups.has(key)) groups.set(key, []);
-                        groups.get(key)!.push(d);
-                      }
-                      const sortedDepts = Array.from(groups.keys()).sort();
-                      return sortedDepts.map((dept) => {
-                        const collapsed = !!dcsGroupCollapsed[dept];
-                        const docsInDept = groups.get(dept)!;
-                        return (
-                          <div key={dept}>
-                            <button
-                              onClick={() => setDcsGroupCollapsed({ ...dcsGroupCollapsed, [dept]: !collapsed })}
-                              title={`Folder departemen — semua dokumen terkontrol milik ${dept}`}
-                              className="w-full flex items-center gap-2 px-2 py-1.5 rounded-lg text-left text-[11px] font-bold text-slate-400 hover:bg-slate-900 cursor-pointer"
-                            >
-                              <span>{collapsed ? "📁" : "📂"}</span>
-                              <span>{dept}</span>
-                              <span className="ml-auto bg-slate-800 px-1.5 py-0.5 rounded text-[10px]">{docsInDept.length}</span>
-                            </button>
-                            {!collapsed && (
-                              <div className="space-y-2 mt-1 pl-1">
-                                {docsInDept.map((d) => {
-                                  const eff = d.versions.find((v) => v.status === "effective");
-                                  return (
-                                    <button key={d.id}
-                                      onClick={() => { setDcsSelectedId(d.id); const t = dcsBuildTree(d); setDcsSelectedVersionId(t.root?.id ?? null); setDcsHistoryOpen(false); }}
-                                      className={`w-full text-left p-3 rounded-xl border transition cursor-pointer ${dcsSelectedId === d.id ? "bg-indigo-600/20 border-indigo-500/40" : "bg-slate-950 border-slate-800 hover:border-indigo-500/30"}`}
-                                    >
-                                      <div className="flex items-center gap-2 flex-wrap">
-                                        <span className="font-mono text-[10px] font-bold bg-indigo-950 text-indigo-400 px-2 py-0.5 rounded border border-indigo-900">{d.documentNumber}</span>
-                                        {eff
-                                          ? <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-emerald-500/15 text-emerald-400" title="Ada versi Effective yang berlaku saat ini">Efektif T{eff.major}.{eff.minor}</span>
-                                          : <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-amber-500/15 text-amber-400" title="Belum ada versi yang diberlakukan — masih dalam proses penyusunan/persetujuan">Belum efektif</span>}
-                                      </div>
-                                      <h4 className="text-sm font-bold text-slate-100 mt-1.5 truncate">{d.title}</h4>
-                                      <p className="text-[11px] text-slate-500 mt-0.5">{d.docTypeCode} · {d.versions.length} versi</p>
-                                    </button>
-                                  );
-                                })}
+              <div className="space-y-6">
+                {!dcsDocs.some((d) => d.id === dcsSelectedId) && (() => {
+                  const nameOf = (code: string) => dcsDocTypes.find((t) => t.code === code)?.name || code;
+                  const codes: string[] = Array.from(new Set<string>(dcsDocs.map((d) => d.docTypeCode))).sort();
+                  const q = dcsSearch.trim().toLowerCase();
+                  const shown = dcsDocs.filter((d) => (!dcsTypeFilter || d.docTypeCode === dcsTypeFilter) && (!q || d.title.toLowerCase().includes(q) || d.documentNumber.toLowerCase().includes(q)));
+                  const BAR = ["bg-[#635BFF]", "bg-[#A855F7]", "bg-emerald-500", "bg-[#F59E0B]", "bg-rs-400", "bg-rose-500"];
+                  const barOf = (code: string) => BAR[Math.max(0, codes.indexOf(code)) % BAR.length];
+                  const chip = "inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap";
+                  const mmmyy = (iso?: string | null) => { if (!iso) return "—"; const t = new Date(iso); return Number.isNaN(t.getTime()) ? "—" : t.toLocaleDateString("id-ID", { month: "short", year: "2-digit" }); };
+                  const verOf = (d: DcsDoc) => { const v = d.versions.find((x) => x.status === "effective") || d.versions[0]; return v ? `v${v.major}.${v.minor}` : ""; };
+                  const state = (d: DcsDoc) => {
+                    const l = d.versions[0];
+                    const overdue = !!l && l.status === "effective" && !!l.reviewDueAt && new Date(l.reviewDueAt) < new Date();
+                    if (!l) return { label: "Draft", cls: "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300", ctrl: false, overdue: false };
+                    if (l.status === "effective") return { label: "Diberlakukan", cls: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300", ctrl: !overdue, overdue };
+                    if (l.status === "under_review") return { label: "Dalam Review", cls: "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300", ctrl: false, overdue: false };
+                    if (l.status === "approved") return { label: "Menunggu TTD", cls: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300", ctrl: false, overdue: false };
+                    if (l.status === "superseded") return { label: "Obsolete", cls: "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300", ctrl: false, overdue: false };
+                    return { label: "Belum Diberlakukan", cls: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300", ctrl: false, overdue: false };
+                  };
+                  const due = dcsDocs.map((d) => ({ d, at: d.versions.find((v) => v.status === "effective")?.reviewDueAt })).filter((x) => !!x.at)
+                    .sort((a, b) => new Date(a.at as string).getTime() - new Date(b.at as string).getTime()).slice(0, 5);
+                  return (
+                    <>
+                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                        <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start text-[11px] font-bold text-rs-500 flex-wrap" role="tablist" aria-label="Filter jenis dokumen">
+                          <button role="tab" aria-selected={dcsTypeFilter === ""} onClick={() => setDcsTypeFilter("")} className={`px-3 py-1 rounded-lg cursor-pointer ${dcsTypeFilter === "" ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>Semua</button>
+                          {codes.map((code) => (
+                            <button key={code} role="tab" aria-selected={dcsTypeFilter === code} onClick={() => setDcsTypeFilter(dcsTypeFilter === code ? "" : code)} title={nameOf(code)}
+                              className={`px-3 py-1 rounded-lg cursor-pointer ${dcsTypeFilter === code ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>{code}</button>
+                          ))}
+                        </div>
+                        <div className="relative">
+                          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+                          <input type="text" value={dcsSearch} onChange={(e) => setDcsSearch(e.target.value)} placeholder="Cari nomor / judul dokumen..." className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        <div className="lg:col-span-8 grid grid-cols-1 md:grid-cols-2 gap-4 content-start">
+                          {dcsDocs.length === 0 && (
+                            <div className="md:col-span-2 p-8 text-center border border-dashed border-rs-200 dark:border-rs-800 rounded-2xl">
+                              <Workflow className="w-9 h-9 text-rs-300 mx-auto mb-2" />
+                              <p className="text-sm text-rs-500 font-semibold">Belum ada dokumen terkontrol</p>
+                              <p className="text-xs text-rs-400 mt-1">Klik "Buat Dokumen Terkontrol" untuk memulai.</p>
+                            </div>
+                          )}
+                          {dcsDocs.length > 0 && shown.length === 0 && (
+                            <div className="md:col-span-2 text-center text-xs font-semibold text-rs-400 py-10">
+                              Tidak ada dokumen yang cocok.{" "}
+                              <button onClick={() => { setDcsTypeFilter(""); setDcsSearch(""); }} className="text-[#635BFF] hover:underline cursor-pointer">Reset filter</button>
+                            </div>
+                          )}
+                          {shown.map((d) => {
+                            const stt = state(d);
+                            const eff = d.versions.find((v) => v.status === "effective");
+                            return (
+                              <div key={d.id}
+                                onClick={() => { setDcsSelectedId(d.id); const t = dcsBuildTree(d); setDcsSelectedVersionId(t.root?.id ?? null); setDcsHistoryOpen(false); }}
+                                className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs overflow-hidden flex hover:border-rs-300 transition cursor-pointer">
+                                <div className={`w-1.5 ${barOf(d.docTypeCode)}`} />
+                                <div className="p-4 flex-1 min-w-0">
+                                  <div className="flex items-center justify-between mb-1.5">
+                                    <span className="text-[10px] font-bold text-rs-400">{d.documentNumber}</span>
+                                    {stt.ctrl && <span className="text-[9px] font-extrabold tracking-widest text-emerald-600 border border-emerald-500/50 rounded px-1.5 py-0.5 rotate-[-4deg]">CONTROLLED</span>}
+                                  </div>
+                                  <h4 className="text-sm font-bold text-rs-900 dark:text-white leading-snug">{d.title}</h4>
+                                  <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                                    <span className={`${chip} text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300`}>{d.docTypeCode}</span>
+                                    {d.department && <span className={`${chip} text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300`}>{d.department}</span>}
+                                    {verOf(d) && <span className={`${chip} text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300`}>{verOf(d)}</span>}
+                                  </div>
+                                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-rs-100 dark:border-rs-800">
+                                    <span><span className={`${chip} ${stt.cls}`}>{stt.label}</span></span>
+                                    <span className={`text-[10px] font-semibold flex items-center gap-1 ${stt.overdue ? "text-rose-500" : "text-rs-400"}`}><CalendarClock className="w-3 h-3" />Tinjau: {mmmyy(eff?.reviewDueAt)}{stt.overdue ? " (lewat)" : ""}</span>
+                                  </div>
+                                </div>
                               </div>
-                            )}
+                            );
+                          })}
+                        </div>
+                        <div className="lg:col-span-4 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5 self-start">
+                          <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-2"><CalendarClock className="w-4 h-4 text-rs-400" /><h3 className="text-xs font-bold text-rs-900 dark:text-white">Jadwal Tinjau Ulang</h3></div>
+                            <div className="flex items-center gap-2" />
                           </div>
-                        );
-                      });
-                    })()}
-                    {dcsDocs.length === 0 && (
-                      <div className="p-8 text-center border border-dashed border-slate-800 rounded-2xl">
-                        <Workflow className="w-9 h-9 text-slate-700 mx-auto mb-2" />
-                        <p className="text-sm text-slate-400 font-semibold">Belum ada dokumen terkontrol</p>
-                        <p className="text-xs text-slate-500 mt-1">Klik "Buat Dokumen Terkontrol" untuk memulai.</p>
+                          <div className="space-y-4">
+                            {due.length === 0 && <p className="text-xs text-rs-400 text-center py-4">Belum ada jadwal tinjau ulang.</p>}
+                            {due.map(({ d, at }) => {
+                              const days = Math.ceil((new Date(at as string).getTime() - Date.now()) / 86400000);
+                              const tone = days < 0 ? { c: "text-rose-500 bg-rose-50 dark:bg-rose-950/50", t: "text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300", l: "Terlewat" }
+                                : days <= 90 ? { c: "text-amber-500 bg-amber-50 dark:bg-amber-950/50", t: "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300", l: mmmyy(at) }
+                                : { c: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50", t: "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300", l: mmmyy(at) };
+                              return (
+                                <div key={d.id} className="flex items-center justify-between gap-3 cursor-pointer" onClick={() => { setDcsSelectedId(d.id); const t = dcsBuildTree(d); setDcsSelectedVersionId(t.root?.id ?? null); setDcsHistoryOpen(false); }}>
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${tone.c}`}><CalendarClock className="w-4 h-4" /></div>
+                                    <div className="min-w-0"><h4 className="text-xs font-bold text-rs-900 dark:text-white truncate">{d.title}</h4><p className="text-[11px] text-rs-400 font-medium truncate">{d.documentNumber}</p></div>
+                                  </div>
+                                  <span className={`${chip} shrink-0 ${tone.t}`}>{tone.l}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
-                    )}
-                    {dcsDocs.length > 0 && !dcsDocs.some((d) => (!dcsTypeFilter || d.docTypeCode === dcsTypeFilter) && (!dcsSearch.trim() || d.title.toLowerCase().includes(dcsSearch.toLowerCase()) || d.documentNumber.toLowerCase().includes(dcsSearch.toLowerCase()))) && (
-                      <div className="p-6 text-center border border-dashed border-slate-800 rounded-2xl">
-                        <p className="text-sm text-slate-400 font-semibold">Tidak ada dokumen yang cocok</p>
-                        <p className="text-xs text-slate-500 mt-1">
-                          {dcsTypeFilter ? `Tidak ada jenis "${dcsDocTypes.find((t) => t.code === dcsTypeFilter)?.name || dcsTypeFilter}"` : "Tidak ada hasil pencarian"} pada filter ini.
-                        </p>
-                        <button onClick={() => { setDcsTypeFilter(""); setDcsSearch(""); }} className="mt-2 text-[11px] text-indigo-400 hover:underline cursor-pointer">Reset filter</button>
-                      </div>
-                    )}
-                  </div>
-                </aside>
+                    </>
+                  );
+                })()}
 
                 {/* Selected document: virtual tree + smart viewer + workflow */}
                 <section>
+                  {dcsDocs.some((d) => d.id === dcsSelectedId) && (
+                    <button onClick={() => setDcsSelectedId(null)} className="mb-4 px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer">
+                      <ChevronLeft className="w-3.5 h-3.5" /> Semua dokumen
+                    </button>
+                  )}
                   {(() => {
                     const doc = dcsDocs.find((d) => d.id === dcsSelectedId);
-                    if (!doc) return (
-                      <div className="h-full min-h-[50vh] flex items-center justify-center border border-dashed border-slate-800 rounded-2xl">
-                        <p className="text-sm text-slate-500">Pilih dokumen di kiri untuk melihat pohon versi & pratinjau.</p>
-                      </div>
-                    );
+                    if (!doc) return null;
                     const { root, history } = dcsBuildTree(doc);
                     const sel = doc.versions.find((v) => v.id === dcsSelectedVersionId) ?? root;
                     const statusChrome: Record<string, { dot: string; text: string; label: string }> = {
@@ -20325,8 +20183,10 @@ export default function App() {
           {activeTab === "all-docs" && !selectedContract && (() => {
             const adq = allDocsSearch.toLowerCase();
             const onAllDocsSort = (k: string) => setAllDocsSort((s) => nextSort(s, k));
+            const isEmpDoc = (c: Contract) => c.party2Type === "Karyawan" || c.party2Type === "Employee";
             const visibleContracts = sortRows<Contract>(contracts.filter((c) =>
-              (allDocsStatusFilter === "all" ? true : allDocsStatusFilter === "aktif" ? isInForce(c.status) : !isInForce(c.status))
+              (allDocsType === "semua" || (allDocsType === "kontrak" && !isEmpDoc(c)) || (allDocsType === "karyawan" && isEmpDoc(c)))
+              && (allDocsStatusFilter === "all" ? true : allDocsStatusFilter === "aktif" ? isInForce(c.status) : !isInForce(c.status))
               // Sama seperti Monitoring: cocok di metadata ATAU di isi pasal/OCR.
               && matchContract(c, allDocsSearch) !== null
             ), allDocsSort, { tipe: () => "Kontrak", judul: (c) => c.title, status: (c) => c.status });
@@ -20339,7 +20199,8 @@ export default function App() {
               return !latest.reviewDueAt || new Date(latest.reviewDueAt) >= new Date();
             };
             const visibleDcsDocs = sortRows<DcsDoc>(dcsDocs.filter((d) =>
-              (allDocsStatusFilter === "all" ? true : allDocsStatusFilter === "aktif" ? dcsIsControlled(d) : !dcsIsControlled(d))
+              (allDocsType === "semua" || allDocsType === "dcs")
+              && (allDocsStatusFilter === "all" ? true : allDocsStatusFilter === "aktif" ? dcsIsControlled(d) : !dcsIsControlled(d))
               && (!adq || d.title.toLowerCase().includes(adq) || d.documentNumber.toLowerCase().includes(adq))
             ), allDocsSort, { tipe: () => "DCS", judul: (d) => d.title, status: (d) => (dcsIsControlled(d) ? "Aktif" : "Non-Aktif") });
             const totalCount = contracts.length + dcsDocs.length;
@@ -20376,131 +20237,132 @@ export default function App() {
               downloadCsv(`daftar-semua-dokumen-${csvStamp()}.csv`, header, baris);
               showToast(`${baris.length} baris (${barisKontrak.length} kontrak + ${barisDcs.length} DCS) diekspor ke CSV.`, "success");
             };
+            const adChip = "inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap";
+            const dcsLabel: Record<string, string> = { effective: "Efektif", approved: "Disetujui", under_review: "Dalam Review", draft: "Draft", superseded: "Obsolete" };
+            const dcsCls = (st?: string, controlled?: boolean) => st === "effective"
+              ? (controlled ? "text-emerald-600 bg-emerald-50 dark:bg-emerald-950/60 dark:text-emerald-300" : "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300")
+              : st === "under_review" || st === "draft" ? "text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300"
+              : st === "approved" ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300"
+              : "text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300";
+            const adPageNumbers: (number | "…")[] = (() => {
+              if (allDocsTotalPages <= 5) return Array.from({ length: allDocsTotalPages }, (_, i) => i + 1);
+              const set = new Set([1, allDocsTotalPages, allDocsSafePage - 1, allDocsSafePage, allDocsSafePage + 1]);
+              const arr = Array.from(set).filter((n) => n >= 1 && n <= allDocsTotalPages).sort((x, y) => x - y);
+              const out: (number | "…")[] = [];
+              arr.forEach((n, i) => { if (i > 0 && n - arr[i - 1] > 1) out.push("…"); out.push(n); });
+              return out;
+            })();
+            const secBtn = "px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer";
+            const moreItem = "w-full text-left px-3 py-2 rounded-lg text-[11px] font-semibold text-rs-600 dark:text-rs-300 hover:bg-rs-50 dark:hover:bg-rs-800 cursor-pointer";
             return (
             <div className="space-y-6">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
                 <div>
-                  <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3">
-                    <span className="w-11 h-11 rounded-full bg-mist flex items-center justify-center shrink-0"><CheckSquare className="w-5 h-5 text-indigo-400" /></span>
-                    Daftar Semua Dokumen
-                  </h2>
-                  <p className="text-sm text-slate-400 mt-1">
-                    Gabungan kontrak eksternal &amp; dokumen internal (DCS) — kelola dan lakukan aksi massal pada kontrak aktif maupun non-aktif.
-                  </p>
+                  <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">Tabel Semua Dokumen</h2>
+                  <p className="text-xs font-medium text-rs-400 mt-0.5">Satu tabel datar berisi semua kontrak &amp; dokumen DCS untuk aksi massal, penyaringan, dan ekspor CSV.</p>
                 </div>
-                <button
-                  onClick={() => handleOpenActivateModal()}
-                  title="Unggah bukti TTD basah untuk kontrak yang sudah di tahap Proses TTD — statusnya menjadi Arsip"
-                  className="btn-grad-primary px-5 h-11 text-white rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition shrink-0"
-                >
-                  <Upload className="w-3.5 h-3.5" /> Unggah TTD Basah
-                </button>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => { setBulkImportOpen(true); setBulkImportPhase("pilih"); setBulkImportRows([]); setBulkImportInfo(""); }}
+                    title="Migrasi kontrak lama: unggah banyak PDF/scan sekaligus (dibaca OCR), atau impor register dari CSV."
+                    className={secBtn}
+                  >
+                    <Upload className="w-3 h-3" /> Impor Massal
+                  </button>
+                  <button
+                    onClick={() => handleOpenActivateModal()}
+                    title="Unggah bukti TTD basah untuk kontrak yang sudah di tahap Proses TTD — statusnya menjadi Arsip"
+                    className={secBtn}
+                  >
+                    <Upload className="w-3 h-3" /> Unggah TTD Basah
+                  </button>
+                  <button
+                    onClick={exportAllDocs}
+                    disabled={visibleContracts.length + visibleDcsDocs.length === 0}
+                    title="Mengunduh daftar gabungan yang sedang tampil (kontrak + DCS) sebagai CSV — langsung bisa dibuka di Excel."
+                    className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Download className="w-3.5 h-3.5" /> Ekspor CSV
+                  </button>
+                </div>
               </div>
 
-              {/* Search & kontrol lain — dipindah ke baris sendiri di bawah
-                  judul (di atas tabel) atas permintaan user, supaya baris
-                  judul tetap 1 baris ringkas dengan "Unggah & Aktifkan" saja
-                  sebagai aksi utama. State & fungsinya SAMA PERSIS, cuma
-                  lokasi JSX-nya pindah.
-                  Warna teks tombol beraksen (emerald/violet/amber/rose) di
-                  blok ini dipakai shade -400, BUKAN -300 — lihat index.css:
-                  cuma -400 yang dikalibrasi ulang utk kontras di tema
-                  terang ("accent text, icons, active-nav labels on light");
-                  -300 tetap nilai Tailwind standar yg dibuat utk teks di
-                  atas latar GELAP, jadi nyaris tak kebaca di atas
-                  bg-{warna}-600/20 yg pucat di tema terang ini. */}
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="relative w-full sm:w-72">
-                  <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
-                  <input
-                    type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
-                    placeholder="Cari nomor, judul, atau ISI pasal…"
-                    title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
-                    style={{ paddingLeft: 44 }} className="w-full h-11 pr-4 rounded-full bg-slate-950 text-sm text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-soft-blue transition"
-                  />
+              <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start text-[11px] font-bold text-rs-500 flex-wrap">
+                    {([["semua", "Semua"], ["kontrak", "Kontrak"], ["karyawan", "Karyawan"], ["dcs", "DCS"]] as const).map(([k, l]) => (
+                      <button key={k} onClick={() => { setAllDocsType(k); setAllDocsPage(1); setSelectedContractIds([]); }} className={`px-3 py-1 rounded-lg cursor-pointer ${allDocsType === k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>{l}</button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+                      <input
+                        type="text" value={allDocsSearch} onChange={(e) => { setAllDocsSearch(e.target.value); setAllDocsPage(1); }}
+                        placeholder="Cari nomor, judul..."
+                        title="Untuk kontrak, pencarian juga menembus isi pasal dan teks hasil OCR. Dokumen DCS masih dicari per judul/nomor."
+                        className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium"
+                      />
+                    </div>
+                    <select
+                      value={allDocsStatusFilter}
+                      onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); setAllDocsPage(1); }}
+                      className="px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl focus:outline-none cursor-pointer border-0 h-[30px]"
+                    >
+                      <option value="all">Semua Status ({totalCount})</option>
+                      <option value="aktif">Aktif ({aktifCount})</option>
+                      <option value="nonaktif">Non-Aktif ({totalCount - aktifCount})</option>
+                    </select>
+                  </div>
                 </div>
-                <button
-                  onClick={() => { setBulkImportOpen(true); setBulkImportPhase("pilih"); setBulkImportRows([]); setBulkImportInfo(""); }}
-                  title="Migrasi kontrak lama: unggah banyak PDF/scan sekaligus (dibaca OCR), atau impor register dari CSV."
-                  className="btn-grad-soft px-5 h-11 text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
-                >
-                  <Upload className="w-3.5 h-3.5" /> Impor Massal
-                </button>
-                <select
-                  value={allDocsStatusFilter}
-                  onChange={(e) => { setAllDocsStatusFilter(e.target.value as "all" | "aktif" | "nonaktif"); setSelectedContractIds([]); setAllDocsPage(1); }}
-                  className="h-11 px-4 bg-slate-900 card-soft rounded-full text-xs text-slate-200 focus:outline-none cursor-pointer"
-                >
-                  <option value="all">Semua Status ({totalCount})</option>
-                  <option value="aktif">Aktif ({aktifCount})</option>
-                  <option value="nonaktif">Non-Aktif ({totalCount - aktifCount})</option>
-                </select>
-                <button
-                  onClick={exportAllDocs}
-                  disabled={visibleContracts.length + visibleDcsDocs.length === 0}
-                  title="Mengunduh daftar gabungan yang sedang tampil (kontrak + DCS) sebagai CSV — langsung bisa dibuka di Excel."
-                  className="h-11 px-5 bg-slate-900 card-soft text-slate-300 hover:text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  <Download className="w-3.5 h-3.5" /> Ekspor CSV
-                </button>
+
                 {selectedContractIds.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-2 bg-mist p-1.5 rounded-full">
-                    <span className="text-xs font-bold text-indigo-400 px-2">{selectedContractIds.length} Terpilih</span>
-                    {canMove && (
-                    <button onClick={() => setIsBulkMoveModalOpen(true)} className="btn-grad-primary px-4 py-2 text-white rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
-                      <FolderOpen className="w-3.5 h-3.5" /> Pindahkan ke Arsip
-                    </button>
-                    )}
-                    <button onClick={handleBulkDownload} disabled={isBulkDownloading} className="px-4 py-2 bg-slate-900 hover:bg-slate-950 disabled:opacity-50 text-slate-100 rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition border border-slate-700">
-                      {isBulkDownloading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />} Download PDF (Zip)
-                    </button>
-                    <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className="px-4 py-2 bg-peach hover:brightness-95 text-brand-orange rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
-                      <Bell className="w-3.5 h-3.5" /> Kirim Pengingat
-                    </button>
-                    {canDelete && (
-                    <button onClick={handleBulkDelete} className="px-4 py-2 bg-peach hover:brightness-95 text-brand-orange rounded-full text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition">
-                      <Trash2 className="w-3.5 h-3.5" /> Hapus
-                    </button>
-                    )}
+                  <div className="flex items-center justify-between flex-wrap gap-3 mb-3 px-4 py-2.5 rounded-xl bg-[#EFF0FF] dark:bg-indigo-950/40">
+                    <span className="text-xs font-bold text-[#635BFF]">{selectedContractIds.length} dokumen dipilih</span>
+                    <div className="flex gap-2 flex-wrap">
+                      {canMove && (
+                        <button onClick={() => setIsBulkMoveModalOpen(true)} className={secBtn}><FolderOpen className="w-3 h-3" /> Pindahkan ke Arsip</button>
+                      )}
+                      <button onClick={handleBulkDownload} disabled={isBulkDownloading} className={`${secBtn} disabled:opacity-50`}>
+                        {isBulkDownloading ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />} Download PDF (Zip)
+                      </button>
+                      <button onClick={() => { setBulkReminderMsg(""); setBulkReminderOpen(true); }} className={secBtn}><Bell className="w-3 h-3" /> Kirim Pengingat</button>
+                      {canDelete && (
+                        <button onClick={handleBulkDelete} className="px-3 py-1.5 text-[11px] font-bold text-rose-500 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer"><Trash2 className="w-3 h-3" /> Hapus</button>
+                      )}
+                    </div>
                   </div>
                 )}
-              </div>
 
-              <div className="table-card">
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="plain-table w-full text-left border-collapse">
                     <thead>
-                      <tr>
-                        <th className="p-4 w-12 text-center">
+                      <tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider">
+                        <th className="py-2.5 px-2">
                           <input
-                            type="checkbox"
+                            type="checkbox" className="chk-native"
                             title="Pilih semua kontrak (dokumen DCS tidak ikut aksi massal ini)"
                             ref={(el) => { if (el) el.indeterminate = selectedContractIds.length > 0 && selectedContractIds.length < visibleContracts.length; }}
                             checked={visibleContracts.length > 0 && selectedContractIds.length === visibleContracts.length}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setSelectedContractIds(visibleContracts.map(c => c.id));
-                              } else {
-                                setSelectedContractIds([]);
-                              }
-                            }}
+                            onChange={(e) => { if (e.target.checked) setSelectedContractIds(visibleContracts.map(c => c.id)); else setSelectedContractIds([]); }}
                           />
                         </th>
-                        <SortableTh label="Tipe" colKey="tipe" sort={allDocsSort} onSort={onAllDocsSort} className="p-4 text-xs font-semibold text-slate-400 uppercase" />
-                        <SortableTh label="No. / Judul" colKey="judul" sort={allDocsSort} onSort={onAllDocsSort} className="p-4 text-xs font-semibold text-slate-400 uppercase" />
-                        <SortableTh label="Status" colKey="status" sort={allDocsSort} onSort={onAllDocsSort} className="p-4 text-xs font-semibold text-slate-400 uppercase" />
-                        <th className="p-4 text-xs font-semibold text-slate-400 uppercase">Lokasi Arsip</th>
-                        <th className="p-4 text-xs font-semibold text-slate-400 uppercase">Aksi</th>
+                        <SortableTh label="Tipe" colKey="tipe" sort={allDocsSort} onSort={onAllDocsSort} className="py-2.5 px-2" />
+                        <SortableTh label="No. / Judul" colKey="judul" sort={allDocsSort} onSort={onAllDocsSort} className="py-2.5 px-2" />
+                        <SortableTh label="Status" colKey="status" sort={allDocsSort} onSort={onAllDocsSort} className="py-2.5 px-2 !text-center" />
+                        <th className="py-2.5 px-2">Lokasi Arsip</th>
+                        <th className="py-2.5 px-2 text-center">Aksi</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-800/50">
+                    <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
                       {pageContracts.map(c => {
                         const pendingStep = (c.status === "OnReview" || c.status === "FinalReview") ? c.approvalSteps?.find((s) => s.decision === "pending") : undefined;
+                        const emp = isEmpDoc(c);
                         return (
-                        <tr key={c.id} className={`hover:bg-slate-800/20 transition ${selectedContractIds.includes(c.id) ? "bg-mist/40" : ""}`}>
-                          <td className="p-4 text-center">
+                        <tr key={c.id} className={`hover:bg-rs-50/50 dark:hover:bg-rs-800/40 ${selectedContractIds.includes(c.id) ? "bg-[#EFF0FF]/60 dark:bg-indigo-950/20" : ""}`}>
+                          <td className="py-3 px-2 w-8">
                             <input
-                              type="checkbox"
+                              type="checkbox" className="chk-native"
                               checked={selectedContractIds.includes(c.id)}
                               onChange={(e) => {
                                 if (e.target.checked) setSelectedContractIds([...selectedContractIds, c.id]);
@@ -20508,62 +20370,35 @@ export default function App() {
                               }}
                             />
                           </td>
-                          <td className="p-4">
-                            <span className="text-[10px] bg-mist text-indigo-400 px-2.5 py-1 rounded-full font-bold uppercase">Kontrak</span>
+                          <td className="py-3 px-2">
+                            <span className={`${adChip} ${emp ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300" : "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300"}`}>{emp ? "Karyawan" : "Kontrak"}</span>
                           </td>
-                          <td className="p-4">
-                            <p className="font-bold text-slate-200 text-sm">{c.title}</p>
-                            <p className="font-mono text-xs text-slate-500 mt-1">{c.contractNumber}</p>
+                          <td className="py-3 px-2">
+                            <span className="font-bold text-rs-900 dark:text-white block">{c.title}</span>
+                            <span className="text-[10px] text-rs-400 font-normal">{c.contractNumber}</span>
                           </td>
-                          <td className="p-4">
-                            {/* Pakai unifiedStatus (fallback c.status) + peta
-                                CONTRACT_STATUS_LABEL_ID/BADGE_CLASS yang sama
-                                dipakai Monitoring Kontrak & Pekerjaan Legal,
-                                supaya badge di sini tidak lagi beda label
-                                dengan badge status kontrak yang sama di
-                                halaman lain (mis. "Sedang Ditinjau" di sini
-                                vs "Finalisasi" di Monitoring Kontrak). */}
-                            <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase whitespace-nowrap ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || contractStatusBadgeClass(c.status)}`}>
+                          <td className="py-3 px-2 text-center">
+                            {/* unifiedStatus (fallback c.status) + peta label yang sama dengan Monitoring/Pekerjaan Legal. */}
+                            <span className={statusChipCls(c.status)}>
                               {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
                             </span>
                             {pendingStep && (
-                              <p className="text-[10px] text-slate-500 mt-1">Menunggu: {pendingStep.approverName}</p>
+                              <span className="block text-[10px] text-rs-400 font-normal mt-1">Menunggu: {pendingStep.approverName}</span>
                             )}
                           </td>
-                          <td className="p-4 text-xs text-slate-400">
+                          <td className="py-3 px-2 text-rs-500 font-medium">
                             {c.category} {c.subFolderId ? `/ ${subFolders.find(f => f.id === c.subFolderId)?.name || '?'}` : ''}
                           </td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <button onClick={() => handleOpenWorkspace(c)} className="px-4 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-300 text-[11px] font-semibold transition cursor-pointer">
-                                Buka
-                              </button>
-                              {canMove && (
-                              <button
-                                onClick={() => { setSelectedContractIds([c.id]); setIsBulkMoveModalOpen(true); }}
-                                title="Pindahkan dokumen ini ke folder/sub folder arsip lain"
-                                className="w-8 h-8 flex items-center justify-center bg-slate-950 hover:bg-mist rounded-full text-indigo-400 transition cursor-pointer"
-                              >
-                                <FolderOpen className="w-3.5 h-3.5" />
-                              </button>
-                              )}
-                              <button
-                                onClick={() => handleDownloadSingleContract(c)}
-                                title="Unduh PDF dokumen ini"
-                                className="w-8 h-8 flex items-center justify-center bg-slate-950 hover:bg-mist rounded-full text-indigo-400 transition cursor-pointer"
-                              >
-                                <Download className="w-3.5 h-3.5" />
-                              </button>
-                              {canDelete && (
-                              <button
-                                onClick={() => handleDeleteContract(c.id)}
-                                title="Hapus dokumen ini"
-                                className="w-8 h-8 flex items-center justify-center bg-slate-950 hover:bg-peach rounded-full text-brand-orange transition cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                              )}
-                            </div>
+                          <td className="py-3 px-2 text-center whitespace-nowrap">
+                            <button onClick={() => handleOpenWorkspace(c)} title="Buka" className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer align-middle"><Eye className="w-4 h-4" /></button>
+                            <details className="relative inline-block align-middle">
+                              <summary className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer list-none [&::-webkit-details-marker]:hidden"><MoreHorizontal className="w-4 h-4" /></summary>
+                              <div className="absolute right-0 top-full mt-1 z-20 w-44 bg-white dark:bg-rs-900 border border-rs-200 dark:border-rs-800 rounded-xl p-1 text-left" style={{ boxShadow: "var(--shadow-soft)" }}>
+                                {canMove && <button onClick={() => { setSelectedContractIds([c.id]); setIsBulkMoveModalOpen(true); }} className={moreItem}>Pindahkan ke folder arsip</button>}
+                                <button onClick={() => handleDownloadSingleContract(c)} className={moreItem}>Unduh PDF</button>
+                                {canDelete && <button onClick={() => handleDeleteContract(c.id)} className="w-full text-left px-3 py-2 rounded-lg text-[11px] font-semibold text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer">Hapus</button>}
+                              </div>
+                            </details>
                           </td>
                         </tr>
                         );
@@ -20572,71 +20407,58 @@ export default function App() {
                         const latest = d.versions[0];
                         const controlled = dcsIsControlled(d);
                         return (
-                        <tr key={d.id} className="hover:bg-slate-800/20 transition">
-                          <td className="p-4 text-center text-slate-700">—</td>
-                          <td className="p-4">
-                            <span className="text-[10px] bg-peach text-brand-orange px-2.5 py-1 rounded-full font-bold uppercase">DCS · {d.docTypeCode}</span>
+                        <tr key={d.id} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40">
+                          <td className="py-3 px-2 w-8 text-rs-300">—</td>
+                          <td className="py-3 px-2">
+                            <span className={`${adChip} text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300`} title={d.docTypeCode}>DCS</span>
                           </td>
-                          <td className="p-4">
-                            <p className="font-bold text-slate-200 text-sm">{d.title}</p>
-                            <p className="font-mono text-xs text-slate-500 mt-1">{d.documentNumber}</p>
+                          <td className="py-3 px-2">
+                            <span className="font-bold text-rs-900 dark:text-white block">{d.title}</span>
+                            <span className="text-[10px] text-rs-400 font-normal">{d.documentNumber}</span>
                           </td>
-                          <td className="p-4">
-                            <span className={`text-[10px] px-2.5 py-1 rounded-full font-bold uppercase ${controlled ? "bg-mist text-indigo-400" : "bg-peach text-brand-orange"}`}>
-                              {latest?.status || "—"}
-                            </span>
+                          <td className="py-3 px-2 text-center">
+                            <span className={`${adChip} ${dcsCls(latest?.status, controlled)}`}>{dcsLabel[latest?.status || ""] || latest?.status || "—"}</span>
                             {latest?.status === "effective" && !controlled && (
-                              <p className="text-[10px] text-rose-400 mt-1">Jadwal tinjau ulang lewat</p>
+                              <span className="block text-[10px] text-rose-500 font-normal mt-1">Jadwal tinjau ulang lewat</span>
                             )}
                           </td>
-                          <td className="p-4 text-xs text-slate-400">
-                            {d.archiveCategory || <span className="text-slate-600">Tidak ditandai</span>}
+                          <td className="py-3 px-2 text-rs-500 font-medium">
+                            {d.archiveCategory || <span className="text-rs-300 font-normal">Tidak ditandai</span>}
                           </td>
-                          <td className="p-4">
+                          <td className="py-3 px-2 text-center whitespace-nowrap">
                             <button
                               onClick={() => { setActiveTab("internal-docs"); setDcsSelectedId(d.id); setDcsSelectedVersionId(latest?.id || null); }}
-                              className="px-4 py-1.5 bg-slate-950 hover:bg-mist hover:text-indigo-400 rounded-full text-slate-300 text-[11px] font-semibold transition cursor-pointer"
-                            >
-                              Buka
-                            </button>
+                              title="Buka" className="p-1.5 text-rs-400 hover:text-[#635BFF] cursor-pointer"
+                            ><Eye className="w-4 h-4" /></button>
                           </td>
                         </tr>
                         );
                       })}
                       {visibleContracts.length === 0 && visibleDcsDocs.length === 0 && (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-slate-500 text-sm">Tidak ada dokumen</td>
+                          <td colSpan={6} className="py-10 text-center text-xs font-semibold text-rs-400">Tidak ada dokumen</td>
                         </tr>
                       )}
                     </tbody>
                   </table>
                 </div>
-                {allDocsTotal > ALL_DOCS_PAGE_SIZE && (
-                  <div className="flex items-center justify-between gap-3 flex-wrap px-4 py-3 border-t border-slate-800 text-[11px] text-slate-400">
-                    <span>
-                      Menampilkan {allDocsStart + 1}–{Math.min(allDocsEnd, allDocsTotal)} dari {allDocsTotal} dokumen
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={() => setAllDocsPage((p) => Math.max(1, p - 1))}
-                        disabled={allDocsSafePage <= 1}
-                        className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                      >
-                        Sebelumnya
-                      </button>
-                      <span className="px-2 font-semibold text-slate-300">
-                        {allDocsSafePage} / {allDocsTotalPages}
-                      </span>
-                      <button
-                        onClick={() => setAllDocsPage((p) => Math.min(allDocsTotalPages, p + 1))}
-                        disabled={allDocsSafePage >= allDocsTotalPages}
-                        className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                      >
-                        Berikutnya
-                      </button>
-                    </div>
+                <div className="flex items-center justify-between flex-wrap gap-3 pt-4 mt-2 border-t border-rs-100 dark:border-rs-800">
+                  <span className="text-[11px] font-medium text-rs-400">
+                    {allDocsTotal === 0 ? "Tidak ada dokumen" : `Menampilkan ${allDocsStart + 1}–${Math.min(allDocsEnd, allDocsTotal)} dari ${allDocsTotal} dokumen`}
+                  </span>
+                  <div className="flex items-center gap-1 text-[11px] font-bold">
+                    <button onClick={() => setAllDocsPage((p) => Math.max(1, p - 1))} disabled={allDocsSafePage <= 1} aria-label="Halaman sebelumnya"
+                      className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-400 flex items-center justify-center disabled:cursor-not-allowed cursor-pointer"><ChevronLeft className="w-3.5 h-3.5" /></button>
+                    {adPageNumbers.map((n, i) => n === "…" ? (
+                      <span key={`e${i}`} className="text-rs-400 px-1">…</span>
+                    ) : (
+                      <button key={n} onClick={() => setAllDocsPage(n)}
+                        className={`w-7 h-7 rounded-lg cursor-pointer tabular-nums ${n === allDocsSafePage ? "bg-[#635BFF] text-white" : "text-rs-500 hover:bg-rs-100 dark:hover:bg-rs-800"}`}>{n}</button>
+                    ))}
+                    <button onClick={() => setAllDocsPage((p) => Math.min(allDocsTotalPages, p + 1))} disabled={allDocsSafePage >= allDocsTotalPages} aria-label="Halaman berikutnya"
+                      className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-500 flex items-center justify-center disabled:cursor-not-allowed cursor-pointer"><ChevronRight className="w-3.5 h-3.5" /></button>
                   </div>
-                )}
+                </div>
               </div>
             </div>
             );
@@ -20653,21 +20475,18 @@ export default function App() {
             const arsipDcsDocs = arsipIsInternal ? dcsDocs : [];
             if (!arsipIsInternal) return (
               <div className="space-y-6">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
                   <div>
-                    <h2 className="text-xl font-bold flex items-center gap-2">
-                      <FolderOpen className="w-5 h-5 text-indigo-400" />
-                      Arsip Dokumen Eksternal
-                    </h2>
-                    <p className="text-sm text-slate-400 mt-1">
+                    <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">Arsip Eksternal</h2>
+                    <p className="text-xs font-medium text-rs-400 mt-0.5">
                       Tersusun per <b>PT › Jenis Dokumen › Platform › Mitra/Operator › Draft/Aktif</b>, otomatis dari isian form saat dokumen dibuat atau didaftarkan.
                     </p>
                   </div>
                   <button
                     onClick={() => { setDocRegForm((f) => ({ ...f, category: "General", docType: "", platform: "", platformCustom: false, operator: "", companyId: f.companyId || defaultNumberCompanyId })); setIsRegisteringDoc(true); }}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg cursor-pointer shrink-0"
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-[#635BFF] hover:bg-indigo-700 text-white rounded-xl text-[11px] font-bold shadow-md shadow-indigo-500/20 transition cursor-pointer shrink-0"
                   >
-                    <Plus className="w-4 h-4" />
+                    <Upload className="w-3.5 h-3.5" />
                     Daftarkan Dokumen Upload
                   </button>
                 </div>
@@ -20680,7 +20499,7 @@ export default function App() {
                   onOpen={(c) => handleOpenWorkspace(c)}
                   onClassify={(c) => setClassifyTarget({ contract: c, requestingDivision: c.requestingDivision || "", value: { companyId: c.companyId || "", platform: c.platform || "", platformCustom: false, operator: c.operator || "", category: c.category || "", docType: c.docType || "" } })}
                   renderStatus={(c) => (
-                    <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase shrink-0 border ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-800 text-slate-400"}`}>
+                    <span className={statusChipCls(c.status)}>
                       {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
                     </span>
                   )}
@@ -20692,13 +20511,12 @@ export default function App() {
             // (Departemen › Jenis DCS). Tidak memakai kategori/platform eksternal.
             return (
               <div className="space-y-6">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
                   <div>
-                    <h2 className="text-xl font-bold flex items-center gap-2">
-                      <FolderOpen className="w-5 h-5 text-indigo-400" />
-                      Arsip Dokumen Internal
+                    <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">
+                      Arsip Internal
                     </h2>
-                    <p className="text-sm text-slate-400 mt-1">
+                    <p className="text-xs font-medium text-rs-400 mt-0.5">
                       {arsipInternalTab === "karyawan"
                         ? <>Kontrak karyawan tersusun per <b>PT › Jenis Dokumen › Draft/Aktif</b>.</>
                         : <>Dokumen DCS yang sudah full sign, tersusun per <b>Departemen › Jenis</b>.</>}
@@ -20707,17 +20525,17 @@ export default function App() {
                   {arsipInternalTab === "karyawan" && (
                     <button
                       onClick={() => { setDocRegForm((f) => ({ ...f, companyId: f.companyId || defaultNumberCompanyId, employmentType: "", docType: "", division: "", party2Type: "Karyawan", category: "Employment" })); setIsRegisteringDoc(true); }}
-                      className="flex items-center gap-2 px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-semibold transition shadow-lg cursor-pointer shrink-0"
+                      className="flex items-center gap-1.5 px-3.5 py-2 bg-[#635BFF] hover:bg-indigo-700 text-white rounded-xl text-[11px] font-bold shadow-md shadow-indigo-500/20 transition cursor-pointer shrink-0"
                     >
-                      <Plus className="w-4 h-4" />
+                      <Upload className="w-3.5 h-3.5" />
                       Daftarkan Dokumen Upload
                     </button>
                   )}
                 </div>
-                <div className="flex gap-1 border-b border-slate-800">
+                <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start w-fit text-[11px] font-bold text-rs-500 flex-wrap">
                   {([["karyawan", "Dokumen Karyawan"], ["dcs", "Dokumen DCS"]] as const).map(([k, label]) => (
                     <button key={k} onClick={() => setArsipInternalTab(k)}
-                      className={`px-4 py-2 text-xs font-bold rounded-t-lg border border-b-0 cursor-pointer ${arsipInternalTab === k ? "bg-slate-900 text-slate-100 border-slate-800" : "text-slate-500 border-transparent hover:text-slate-300"}`}>
+                      className={`px-3 py-1 rounded-lg cursor-pointer ${arsipInternalTab === k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>
                       {label}
                     </button>
                   ))}
@@ -20732,7 +20550,7 @@ export default function App() {
                     onOpen={(c) => handleOpenWorkspace(c)}
                     onClassify={(c) => setClassifyInternal({ contract: c, value: { companyId: c.companyId || "", employmentType: c.employmentType || "", docType: c.docType || "", division: c.division || "" } })}
                     renderStatus={(c) => (
-                      <span className={`text-[9px] px-2 py-0.5 rounded-full font-bold uppercase shrink-0 border ${CONTRACT_STATUS_BADGE_CLASS[c.unifiedStatus || c.status] || "bg-slate-800 text-slate-400"}`}>
+                      <span className={statusChipCls(c.status)}>
                         {CONTRACT_STATUS_LABEL_ID[c.unifiedStatus || c.status] || contractStatusLabel(c.status)}
                       </span>
                     )}
@@ -23183,42 +23001,44 @@ export default function App() {
           {/* VIEW: CLAUSE LIBRARY */}
           {activeTab === "clauses" && (
             <div className="space-y-6 animate-fadeIn">
-              {/* Header */}
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden">
-                {/* Ornamen ikon hukum samar (dekoratif) */}
-                <Scale aria-hidden className="pointer-events-none absolute -right-2 -top-5 w-36 h-36 text-soft-blue opacity-[0.13]" strokeWidth={1.2} />
-                <Gavel aria-hidden className="pointer-events-none absolute right-44 -bottom-6 w-24 h-24 text-peach-strong opacity-30 -rotate-12" strokeWidth={1.2} />
-                <ScrollText aria-hidden className="pointer-events-none absolute right-[26rem] -top-3 w-16 h-16 text-soft-blue opacity-[0.12] rotate-6" strokeWidth={1.2} />
-                <div className="relative z-10">
-                  <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
-                    <Sliders className="text-indigo-400 w-5 h-5" />
-                    Clause Library (Pustaka Klausul Master)
-                  </h2>
-                  <p className="text-xs text-slate-400">
-                    Setiap pasal merupakan objek modular yang dapat dimasukkan
-                    sebagai brick penyusun template kontrak.
-                  </p>
+              {/* Header (gaya Prodex) */}
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">Library Klausul &amp; Template</h2>
+                  <p className="text-xs font-medium text-rs-400 mt-0.5">Pustaka klausul baku dan template perjanjian yang dipakai saat menyusun draft kontrak.</p>
                 </div>
-
-                <div className="relative z-10 flex flex-nowrap gap-2.5 shrink-0 self-start sm:self-center">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => setIsManagingCategories(!isManagingCategories)} className="px-3.5 py-2 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 cursor-pointer"><Sliders className="w-3.5 h-3.5" /> Kelola Kategori</button>
+                  <button onClick={() => openClauseCopy("dariDcs")} title="Ambil klausul yang sudah ditulis di library Dokumen Internal (DCS) tanpa mengetik ulang." className="px-3.5 py-2 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 cursor-pointer"><Workflow className="w-3.5 h-3.5" /> Salin dari Library DCS</button>
                   <button
-                    onClick={() =>
-                      setIsManagingCategories(!isManagingCategories)
-                    }
-                    className="btn-grad-soft px-4 py-2 text-slate-100 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
-                  >
-                    <Sliders className="w-4 h-4" />
-                    Kelola Rumah/Kategori Klausul
-                  </button>
+                    onClick={() => {
+                      setIsAddingClause(true);
+                      setEditingClauseId(null);
+                      setNewClauseForm({ title: "", content: "", category: "General", tags: "", isMandatory: false, isProtected: false });
+                    }}
+                    className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"
+                  ><Plus className="w-3.5 h-3.5" /> Klausul Baru</button>
                   <button
-                    onClick={() => openClauseCopy("dariDcs")}
-                    title="Ambil klausul yang sudah ditulis di library Dokumen Internal (DCS) tanpa mengetik ulang."
-                    className="btn-grad-soft px-4 py-2 text-slate-100 rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
-                  >
-                    <Workflow className="w-4 h-4" />
-                    Salin dari Library DCS
-                  </button>
+                    onClick={() => {
+                      setIsBuildingTemplate(true);
+                      setTemplateForm({ id: "", name: "", description: "", category: "General", clauseIds: [], requiredVariables: [], parties: ["Pihak Pertama", "Pihak Kedua"], openingParagraph: "", closingParagraph: "", addendumRecitalParagraph: "" });
+                    }}
+                    className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"
+                  ><FilePlus className="w-3.5 h-3.5" /> Template Baru</button>
                 </div>
+              </div>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  { l: "Total Klausul", v: clauses.length, I: BookOpen, c: "text-[#635BFF] bg-indigo-50 dark:bg-indigo-500/10" },
+                  { l: "Template", v: templates.length, I: FileStack, c: "text-purple-600 bg-purple-50 dark:bg-purple-950/50" },
+                  { l: "Klausul Wajib", v: clauses.filter((c) => c.isMandatory).length, I: ShieldCheck, c: "text-rose-500 bg-rose-50 dark:bg-rose-500/10" },
+                  { l: "Terlindungi", v: clauses.filter((c) => c.isProtected).length, I: Lock, c: "text-amber-500 bg-amber-50 dark:bg-amber-500/10" },
+                ].map((t) => (
+                  <div key={t.l} className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 flex items-center gap-4">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${t.c}`}><t.I className="w-5 h-5" /></div>
+                    <div><span className="text-[11px] font-semibold text-rs-400 block">{t.l}</span><span className="text-xl font-extrabold text-rs-900 dark:text-white tracking-tight">{t.v}</span></div>
+                  </div>
+                ))}
               </div>
 
               {/* Category Management */}
@@ -23636,104 +23456,116 @@ export default function App() {
                 </div>
               )}
 
-              {/* Master Clauses List Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {clauses.map((c) => (
-                  <div
-                    key={c.id}
-                    className="card-grad card-soft bg-slate-900 p-5 rounded-2xl flex flex-col justify-between space-y-3"
-                  >
-                    <div className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] font-mono text-slate-500">
-                            ID: {c.id} • {c.category || "General"}
-                          </span>
-                          <button
-                            onClick={() => {
-                              setIsAddingClause(true);
-                              setEditingClauseId(c.id);
-                              setNewClauseForm({
-                                title: c.title,
-                                content: c.content,
-                                category: c.category || "General",
-                                tags: c.tags.join(", "),
-                                isMandatory: c.isMandatory,
-                                isProtected: c.isProtected,
-                              });
-                            }}
-                            className="text-[10px] text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 bg-mist px-2 py-0.5 rounded-full cursor-pointer"
-                          >
-                            Edit
-                          </button>
-                        </div>
-                        <div className="flex gap-1">
-                          {c.isMandatory && (
-                            <span className="bg-mist text-indigo-400 px-2 py-0.5 rounded-full text-[9px] font-bold">
-                              Mandatory
-                            </span>
-                          )}
-                          {c.isProtected && (
-                            <span className="bg-peach text-brand-orange px-2 py-0.5 rounded-full text-[9px] font-bold">
-                              Protected
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <h4 className="font-bold text-sm text-slate-200">
-                        {c.title}
-                      </h4>
-                      <p className="text-xs text-slate-400 leading-relaxed line-clamp-3 bg-slate-950/70 p-3 rounded-2xl font-mono">
-                        {c.content}
-                      </p>
+              {/* Daftar Klausul / Template (gaya Prodex) */}
+              {(() => {
+                const q = libSearch.trim().toLowerCase();
+                const shownClauses = clauses.filter((c) => (clauseCatFilter === "Semua" || c.category === clauseCatFilter)
+                  && (!q || [c.title, c.content, c.category, ...(c.tags || [])].join(" ").toLowerCase().includes(q)));
+                const shownTemplates = templates.filter((t) => (clauseCatFilter === "Semua" || t.category === clauseCatFilter)
+                  && (!q || [t.name, t.description, t.category].join(" ").toLowerCase().includes(q)));
+                const chip = "inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap";
+                return (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-3 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 self-start">
+                  <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider px-3 mb-2">Kategori</div>
+                  <div className="space-y-1">
+                    {["Semua", ...clauseCategories].map((cat) => {
+                      const n = libTab === "template"
+                        ? (cat === "Semua" ? templates.length : templates.filter((t) => t.category === cat).length)
+                        : (cat === "Semua" ? clauses.length : clauses.filter((c) => c.category === cat).length);
+                      const on = clauseCatFilter === cat;
+                      return (
+                        <button key={cat} onClick={() => setClauseCatFilter(cat)} className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-semibold text-left cursor-pointer ${on ? "bg-[#EFF0FF] dark:bg-indigo-950/60 text-[#635BFF]" : "text-rs-500 hover:bg-rs-100 dark:hover:bg-rs-800/60"}`}>
+                          <span className="truncate">{cat}</span><span className="text-[10px] font-bold text-rs-400">{n}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <div className="lg:col-span-9 min-w-0 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 mb-4">
+                    <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start text-[11px] font-bold text-rs-500 flex-wrap">
+                      {([["klausul", "Klausul"], ["template", "Template"]] as const).map(([k, l]) => (
+                        <button key={k} onClick={() => setLibTab(k)} className={`px-3 py-1 rounded-lg cursor-pointer ${libTab === k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>{l}</button>
+                      ))}
                     </div>
-
-                    <div className="pt-3 border-t border-slate-850/60 flex items-center justify-between">
-                      <div className="flex flex-wrap gap-1">
-                        {c.tags.map((t) => (
-                          <span
-                            key={t}
-                            className="bg-slate-950 px-2 py-0.5 rounded-full text-[9px] text-slate-400"
-                          >
-                            #{t}
-                          </span>
-                        ))}
-                      </div>
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+                      <input type="text" value={libSearch} onChange={(e) => setLibSearch(e.target.value)} placeholder="Cari klausul, template..." className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
                     </div>
                   </div>
-                ))}
-              </div>
-
-              {/* Templates section */}
-              <div className="pt-6 border-t border-slate-800">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
-                  <h3 className="font-bold text-base flex items-center gap-1.5 text-slate-300">
-                    <FileCheck className="text-indigo-400 w-5 h-5" />
-                    Daftar Master Template Kontrak ({templates.length})
-                  </h3>
-                  <button
-                    onClick={() => {
-                      setIsBuildingTemplate(true);
-                      setTemplateForm({
-                        id: "",
-                        name: "",
-                        description: "",
-                        category: "General",
-                        clauseIds: [],
-                        requiredVariables: [],
-                        parties: ["Pihak Pertama", "Pihak Kedua"],
-                        openingParagraph: "",
-                        closingParagraph: "",
-                        addendumRecitalParagraph: "",
-                      });
-                    }}
-                    className="btn-grad-primary px-4 py-2 text-white rounded-full text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shrink-0"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Tambah Template
-                  </button>
+                  {libTab === "klausul" ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {shownClauses.length === 0 && <p className="md:col-span-2 text-center text-xs font-semibold text-rs-400 py-10">Tidak ada klausul yang cocok.</p>}
+                      {shownClauses.map((c) => (
+                        <div key={c.id} className="p-4 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-rs-300 transition" title={(c.tags || []).length ? (c.tags || []).map((t) => `#${t}`).join(" ") : undefined}>
+                          <div className="flex items-start justify-between gap-2 mb-1.5">
+                            <h4 className="text-xs font-bold text-rs-900 dark:text-white">{c.title}</h4>
+                            <div className="flex gap-1">
+                              {c.isMandatory && <span className={`${chip} text-rose-500 bg-rose-50 dark:bg-rose-950/60 dark:text-rose-300`}>Wajib</span>}
+                              {c.isProtected && <span className={`${chip} text-purple-600 bg-purple-50 dark:bg-purple-950/60 dark:text-purple-300`}>Terlindungi</span>}
+                            </div>
+                          </div>
+                          <p className="text-[11px] text-rs-500 dark:text-rs-400 font-medium leading-relaxed line-clamp-2">{c.content}</p>
+                          <div className="flex items-center justify-between mt-3">
+                            <div className="flex gap-1.5">
+                              <span className={`${chip} text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300`}>{c.category || "General"}</span>
+                              <span className={`${chip} text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300`}>v{c.version || 1}</span>
+                            </div>
+                            <button
+                              onClick={() => {
+                                setIsAddingClause(true);
+                                setEditingClauseId(c.id);
+                                setNewClauseForm({ title: c.title, content: c.content, category: c.category || "General", tags: c.tags.join(", "), isMandatory: c.isMandatory, isProtected: c.isProtected });
+                              }}
+                              title="Edit klausul"
+                              className="p-1 text-rs-400 hover:text-[#635BFF] cursor-pointer"
+                            ><Pencil className="w-4 h-4" /></button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      {shownTemplates.length === 0 && <p className="md:col-span-2 text-center text-xs font-semibold text-rs-400 py-10">Tidak ada template yang cocok.</p>}
+                      {shownTemplates.map((tpl) => (
+                        <div key={tpl.id} className="p-4 rounded-xl border border-rs-200/80 dark:border-rs-800 hover:border-rs-300 transition">
+                          <div className="flex items-center gap-3 mb-3">
+                            <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-950/50 text-purple-600 flex items-center justify-center shrink-0"><FileStack className="w-5 h-5" /></div>
+                            <div className="min-w-0">
+                              <h4 className="text-xs font-bold text-rs-900 dark:text-white truncate">{tpl.name}</h4>
+                              <p className="text-[11px] text-rs-400 font-medium">{tpl.clauseIds.length} klausul • {(tpl.parties || []).length} pihak</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className={`${chip} text-rs-600 bg-rs-100 dark:bg-rs-800 dark:text-rs-300`}>{tpl.category}</span>
+                            <div className="flex items-center">
+                              <button
+                                onClick={() => {
+                                  setIsBuildingTemplate(true);
+                                  setTemplateForm({ id: tpl.id, name: tpl.name, description: tpl.description, category: tpl.category, clauseIds: tpl.clauseIds, requiredVariables: tpl.requiredVariables, parties: tpl.parties, openingParagraph: tpl.openingParagraph || "", closingParagraph: tpl.closingParagraph || "", addendumRecitalParagraph: tpl.addendumRecitalParagraph || "" });
+                                }}
+                                title="Edit template" className="p-1 text-rs-400 hover:text-[#635BFF] cursor-pointer"
+                              ><Pencil className="w-4 h-4" /></button>
+                              <button
+                                onClick={async () => {
+                                  if (!(await askConfirm(`Template "${tpl.name}" akan dihapus permanen.`, { title: "Hapus Template" }))) return;
+                                  await fetch(`/api/templates/${tpl.id}`, { method: "DELETE" });
+                                  showToast("Template dihapus", "success");
+                                  fetchInitialData();
+                                }}
+                                title="Hapus template" className="p-1 text-rs-400 hover:text-rose-500 cursor-pointer"
+                              ><Trash2 className="w-4 h-4" /></button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
+              </div>
+                );
+              })()}
 
                 {isBuildingTemplate && (
                   <div className="modal-backdrop fixed inset-0 z-[60] flex items-center justify-center p-4" onClick={() => setIsBuildingTemplate(false)}>
@@ -24080,98 +23912,6 @@ export default function App() {
                   </form>
                   </div>
                 )}
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {templates.map((tpl) => (
-                    <div
-                      key={tpl.id}
-                      className="card-grad card-soft bg-slate-900 p-5 rounded-2xl space-y-3 relative group"
-                    >
-                      <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1.5">
-                        <button
-                          onClick={() => {
-                            setIsBuildingTemplate(true);
-                            setTemplateForm({
-                              id: tpl.id,
-                              name: tpl.name,
-                              description: tpl.description,
-                              category: tpl.category,
-                              clauseIds: tpl.clauseIds,
-                              requiredVariables: tpl.requiredVariables,
-                              parties: tpl.parties,
-                              openingParagraph: tpl.openingParagraph || "",
-                              closingParagraph: tpl.closingParagraph || "",
-                              addendumRecitalParagraph: tpl.addendumRecitalParagraph || "",
-                            });
-                          }}
-                          className="btn-grad-primary text-white w-8 h-8 flex items-center justify-center rounded-full cursor-pointer"
-                          title="Edit template"
-                        >
-                          <Sliders className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={async () => {
-                            if (!(await askConfirm(`Template "${tpl.name}" akan dihapus permanen.`, { title: "Hapus Template" }))) return;
-                            await fetch(`/api/templates/${tpl.id}`, { method: "DELETE" });
-                            showToast("Template dihapus", "success");
-                            fetchInitialData();
-                          }}
-                          className="btn-grad-soft text-brand-orange w-8 h-8 flex items-center justify-center rounded-full cursor-pointer"
-                          title="Hapus template"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                      <div>
-                        <span className="text-[9px] bg-mist text-indigo-400 px-2.5 py-0.5 rounded-full font-bold uppercase">
-                          {tpl.category}
-                        </span>
-                        <h4 className="font-bold text-sm text-slate-200 mt-2">
-                          {tpl.name}
-                        </h4>
-                        <p className="text-xs text-slate-400 leading-snug mt-1">
-                          {tpl.description}
-                        </p>
-                      </div>
-
-                      <div className="space-y-1 pt-3 border-t border-slate-800/60">
-                        <p className="text-[10px] text-slate-500 uppercase font-bold">
-                          Pasal Terkait ({tpl.clauseIds.length}):
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {tpl.clauseIds.map((cid) => {
-                            const cl = clauses.find((c) => c.id === cid);
-                            return cl ? (
-                              <span
-                                key={cid}
-                                className="bg-slate-950 text-slate-400 text-[10px] px-2 py-0.5 rounded-full"
-                              >
-                                {cl.title.split(" - ")[0]}
-                              </span>
-                            ) : null;
-                          })}
-                        </div>
-                      </div>
-
-                      <div className="space-y-1">
-                        <p className="text-[10px] text-slate-500 uppercase font-bold">
-                          Variabel Wajib ({tpl.requiredVariables.length}):
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {tpl.requiredVariables.map((v) => (
-                            <span
-                              key={v}
-                              className="bg-slate-950 text-indigo-400 text-[10px] px-2 py-0.5 rounded-full font-mono"
-                            >
-                              {v}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
             </div>
           )}
 
@@ -24407,203 +24147,145 @@ export default function App() {
 
           {/* VIEW: AUDIT TRAILS & INTEGRATION SUITE */}
 
-          {activeTab === "audits" && (
-            <div className="space-y-6 animate-fadeIn text-xs">
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3 mb-1">
-                  <span className="w-10 h-10 rounded-full bg-mist flex items-center justify-center shrink-0"><History className="text-indigo-400 w-5 h-5" /></span>
-                  Audit Trail & Integrasi HRIS/ERP
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Log forensik lengkap seluruh aktivitas penandatanganan,
-                  pembuatan kontrak, persetujuan legal counsel, dan sinkronisasi
-                  real-time database rekanan.
-                </p>
+          {activeTab === "audits" && (() => {
+            const list = audits as any[];
+            const today = new Date().toDateString();
+            const n = (f: (a: any) => boolean) => list.filter(f).length;
+            const stats = [
+              { l: "Aktivitas Hari Ini", v: n((a) => new Date(a.timestamp).toDateString() === today), I: Activity, c: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]" },
+              { l: "Persetujuan", v: n((a) => auditCatOf(a).k === "Approval"), I: Stamp, c: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600" },
+              { l: "Perubahan Data", v: n((a) => ["Revisi", "Dokumen Baru"].includes(auditCatOf(a).k)), I: PencilLine, c: "bg-amber-50 dark:bg-amber-950/50 text-amber-500" },
+              { l: "Peringatan", v: n((a) => ["Penolakan", "Penghapusan"].includes(auditCatOf(a).k)), I: ShieldAlert, c: "bg-rose-50 dark:bg-rose-950/50 text-rose-500" },
+            ];
+            const q = auditSearch.toLowerCase();
+            const users: string[] = Array.from(new Set<string>(list.map((a) => String(a.userName || "")).filter(Boolean))).sort();
+            const searched = list.filter((a) => (!auditUser || a.userName === auditUser) && (!q ||
+              String(a.userName || "").toLowerCase().includes(q) ||
+              String(a.action || "").toLowerCase().includes(q) ||
+              String(a.details || "").toLowerCase().includes(q) ||
+              String(a.contractNumber || "").toLowerCase().includes(q) ||
+              String(a.userRole || "").toLowerCase().includes(q)));
+            const rows = sortRows(searched, auditSort, {
+              pengguna: (a) => a.userName,
+              aktivitas: (a) => a.action,
+              detail: (a) => a.details,
+              kontrak: (a) => a.contractNumber,
+              waktu: (a) => new Date(a.timestamp).getTime(),
+            });
+            const AUDIT_PAGE_SIZE = 10;
+            const totalPages = Math.max(1, Math.ceil(rows.length / AUDIT_PAGE_SIZE));
+            const safePage = Math.min(auditPage, totalPages);
+            const pageRows = rows.slice((safePage - 1) * AUDIT_PAGE_SIZE, safePage * AUDIT_PAGE_SIZE);
+            const dayLabel = (t: any) => new Date(t).toLocaleDateString("id-ID", { day: "2-digit", month: "short", year: "2-digit" });
+            const byCat = new Map<string, { n: number; tone: string }>();
+            searched.forEach((a) => { const c = auditCatOf(a); const e = byCat.get(c.k) || { n: 0, tone: c.tone }; e.n++; byCat.set(c.k, e); });
+            const catRows = Array.from(byCat.entries()).sort((x, y) => y[1].n - x[1].n);
+            const maxCat = Math.max(1, ...catRows.map(([, v]) => v.n));
+            const exportCsv = () => {
+              const esc = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+              const csv = ["Waktu,Pengguna,Peran,Aktivitas,Detail,No. Kontrak,IP"].concat(rows.map((a) => [new Date(a.timestamp).toLocaleString("id-ID"), a.userName, a.userRole, a.action, a.details, a.contractNumber, a.ipAddress].map(esc).join(","))).join("\n");
+              saveAs(new Blob([csv], { type: "text/csv;charset=utf-8" }), "audit-trail.csv");
+            };
+            const btnCls = "px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer";
+            let lastDay = "";
+            return (
+            <div className="space-y-6 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">Audit Trail</h2>
+                  <p className="text-xs font-medium text-rs-400 mt-0.5">Jejak lengkap aktivitas pengguna dan sistem pada seluruh modul.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={exportCsv} className={btnCls}><Download className="w-3 h-3" /> Ekspor</button>
+                </div>
               </div>
 
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-                {/* Audit Logs Table (8 cols) */}
-                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <h3 className="font-bold text-sm">
-                      Log Forensik Aktivitas Sistem
-                    </h3>
-                    <div className="relative w-full sm:w-72">
-                      <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
-                      <input
-                        type="text" value={auditSearch} onChange={(e) => { setAuditSearch(e.target.value); setAuditPage(1); }}
+              <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs grid grid-cols-2 lg:grid-cols-4 divide-x divide-y lg:divide-y-0 divide-rs-100 dark:divide-rs-800">
+                {stats.map((t) => (
+                  <div key={t.l} className="px-5 py-4 flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${t.c}`}><t.I className="w-4 h-4" /></div>
+                    <div><span className="text-[11px] font-semibold text-rs-400 block">{t.l}</span><span className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">{t.v}</span></div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div className="lg:col-span-9 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                  <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 mb-2">
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+                      <input type="text" value={auditSearch} onChange={(e) => { setAuditSearch(e.target.value); setAuditPage(1); }}
                         placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
-                        style={{ paddingLeft: 44 }} className="w-full h-11 pr-4 rounded-full bg-slate-950 text-sm text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-soft-blue transition"
-                      />
+                        className="w-72 max-w-full pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => setAuditSort((s) => nextSort(s, "waktu"))} className={btnCls}><ArrowUpDown className="w-3 h-3" /> Urutkan waktu</button>
+                      <label className={btnCls + " relative"}>
+                        <User className="w-3 h-3" />
+                        <select value={auditUser} onChange={(e) => { setAuditUser(e.target.value); setAuditPage(1); }} className="bg-transparent outline-none cursor-pointer font-bold text-[11px] max-w-[9rem]">
+                          <option value="">Semua Pengguna</option>
+                          {users.map((u) => <option key={u} value={u}>{u}</option>)}
+                        </select>
+                      </label>
                     </div>
                   </div>
 
-                  {(() => {
-                    const q = auditSearch.toLowerCase();
-                    const searched = (audits as any[]).filter((a) => !q ||
-                      String(a.userName || "").toLowerCase().includes(q) ||
-                      String(a.action || "").toLowerCase().includes(q) ||
-                      String(a.details || "").toLowerCase().includes(q) ||
-                      String(a.contractNumber || "").toLowerCase().includes(q) ||
-                      String(a.userRole || "").toLowerCase().includes(q));
-                    const rows = sortRows(searched, auditSort, {
-                      pengguna: (a) => a.userName,
-                      aktivitas: (a) => a.action,
-                      detail: (a) => a.details,
-                      kontrak: (a) => a.contractNumber,
-                      waktu: (a) => new Date(a.timestamp).getTime(),
-                    });
-                    const onSort = (k: string) => setAuditSort((s) => nextSort(s, k));
-                    const AUDIT_PAGE_SIZE = 10;
-                    const totalPages = Math.max(1, Math.ceil(rows.length / AUDIT_PAGE_SIZE));
-                    const safePage = Math.min(auditPage, totalPages);
-                    const pageRows = rows.slice((safePage - 1) * AUDIT_PAGE_SIZE, safePage * AUDIT_PAGE_SIZE);
+                  {pageRows.length === 0 && <p className="py-10 text-center text-xs text-rs-400 italic">Tidak ada log yang cocok.</p>}
+                  {pageRows.map((a, i) => {
+                    const c = auditCatOf(a); const tn = AUDIT_TONE[c.tone]; const d = dayLabel(a.timestamp);
+                    const head = d !== lastDay; lastDay = d;
                     return (
-                  <>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase">
-                          <SortableTh label="Pengguna & Jabatan" colKey="pengguna" sort={auditSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Aktivitas" colKey="aktivitas" sort={auditSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Detail Perubahan" colKey="detail" sort={auditSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="No. Kontrak" colKey="kontrak" sort={auditSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Waktu & IP" colKey="waktu" sort={auditSort} onSort={onSort} className="py-2.5 px-3" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-850">
-                        {pageRows.length === 0 && (
-                          <tr><td colSpan={5} className="py-8 text-center text-slate-500 italic">Tidak ada log yang cocok.</td></tr>
-                        )}
-                        {pageRows.map((a, i) => (
-                          <tr
-                            key={a.id || i}
-                            className="hover:bg-slate-900/40 transition"
-                          >
-                            <td className="py-3 px-3">
-                              <p className="font-bold text-slate-200">
-                                {a.userName}
-                              </p>
-                              <span className="text-[9px] text-indigo-400 font-semibold">
-                                {a.userRole}
-                              </span>
-                            </td>
-                            <td className="py-3 px-3">
-                              <span className={`inline-block px-2.5 py-1 rounded-full font-semibold text-[10.5px] ${/delete|hapus|reject|tolak|terminate|revoke/i.test(String(a.action)) ? "bg-peach text-brand-orange" : "bg-mist text-indigo-400"}`}>
-                                {a.action}
-                              </span>
-                            </td>
-                            <td className="py-3 px-3 text-slate-300">
-                              {a.details}
-                            </td>
-                            <td className="py-3 px-3 font-mono text-indigo-400">
-                              {a.contractNumber || "-"}
-                            </td>
-                            <td className="py-3 px-3 text-slate-500">
-                              <p>
-                                {new Date(a.timestamp).toLocaleString("id-ID")}
-                              </p>
-                              <span className="text-[9px]">{a.ipAddress}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                      <React.Fragment key={a.id || i}>
+                        {head && <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider pt-4 pb-2 pl-12">{d}</div>}
+                        <div className="relative flex gap-4 pb-4">
+                          <div className="absolute left-[19px] top-10 bottom-0 w-px bg-rs-200 dark:bg-rs-800" />
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 z-[1] ${tn.ic}`}><c.I className="w-4 h-4" /></div>
+                          <div className="flex-1 min-w-0 rounded-xl border border-rs-200/80 dark:border-rs-800 px-4 py-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-xs font-bold text-rs-900 dark:text-white">{a.userName}</span>
+                                <span className="text-[10px] text-rs-400 font-medium">{a.userRole}</span>
+                                <span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${tn.chip}`}>{a.action}</span>
+                              </div>
+                              <span className="text-[10px] font-semibold text-rs-400">{new Date(a.timestamp).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }).replace(".", ":")}</span>
+                            </div>
+                            <p className="text-[11px] text-rs-500 dark:text-rs-400 font-medium mt-1">{a.details}</p>
+                            {(a.contractNumber || a.ipAddress) && <p className="text-[10px] text-rs-400 font-semibold mt-1">{a.contractNumber || ""}{a.contractNumber && a.ipAddress ? " · " : ""}{a.ipAddress}</p>}
+                          </div>
+                        </div>
+                      </React.Fragment>
+                    );
+                  })}
+
                   {rows.length > AUDIT_PAGE_SIZE && (
-                    <div className="flex items-center justify-between pt-2 text-[11px] text-slate-400">
-                      <span>
-                        Menampilkan {(safePage - 1) * AUDIT_PAGE_SIZE + 1}–{Math.min(safePage * AUDIT_PAGE_SIZE, rows.length)} dari {rows.length} log
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => setAuditPage((p) => Math.max(1, p - 1))}
-                          disabled={safePage <= 1}
-                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                        >
-                          Sebelumnya
-                        </button>
-                        <span className="px-2 font-semibold text-slate-300">
-                          {safePage} / {totalPages}
-                        </span>
-                        <button
-                          onClick={() => setAuditPage((p) => Math.min(totalPages, p + 1))}
-                          disabled={safePage >= totalPages}
-                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                        >
-                          Berikutnya
-                        </button>
+                    <div className="flex items-center justify-between pt-3 mt-1 border-t border-rs-100 dark:border-rs-800 text-[11px] font-medium text-rs-400">
+                      <span>Menampilkan {(safePage - 1) * AUDIT_PAGE_SIZE + 1}–{Math.min(safePage * AUDIT_PAGE_SIZE, rows.length)} dari {rows.length} log</span>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setAuditPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-rs-100 dark:hover:bg-rs-800 disabled:opacity-40 cursor-pointer"><ChevronLeft className="w-3.5 h-3.5" /></button>
+                        <span className="px-2 font-bold text-rs-600 dark:text-rs-300">{safePage} / {totalPages}</span>
+                        <button onClick={() => setAuditPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages} className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-rs-100 dark:hover:bg-rs-800 disabled:opacity-40 cursor-pointer"><ChevronRight className="w-3.5 h-3.5" /></button>
                       </div>
                     </div>
                   )}
-                  </>
-                    ); })()}
                 </div>
 
-                {/* Database Integration Simulation (4 cols) */}
-                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-2xl p-6 space-y-5">
-                  <div className="border-b border-slate-800 pb-2">
-                    <h3 className="font-bold text-sm">
-                      Sinkronisasi Database Eksternal
-                    </h3>
-                    <p className="text-[10px] text-slate-500">
-                      Menampilkan data simulasi terintegrasi HR & Vendor
-                    </p>
-                  </div>
-
-                  {/* Employees */}
-                  <div className="space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Integrated Employee List (HR Module)
-                    </span>
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                      {employees.map((emp) => (
-                        <div
-                          key={emp.id}
-                          className="p-3 bg-slate-950 rounded-2xl flex items-center justify-between text-[11px]"
-                        >
-                          <div>
-                            <p className="font-bold text-slate-200">
-                              {emp.name}
-                            </p>
-                            <p className="text-[10px] text-slate-500">
-                              {emp.id} • {emp.position}
-                            </p>
-                          </div>
-                          <span className="text-indigo-400 font-semibold">
-                            Rp {emp.salary.toLocaleString("id-ID")}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Vendors */}
-                  <div className="space-y-2 pt-3 border-t border-slate-850">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Integrated Vendor List (Procurement Module)
-                    </span>
-                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                      {vendors.map((v) => (
-                        <div
-                          key={v.id}
-                          className="p-3 bg-slate-950 rounded-2xl text-[11px] space-y-0.5"
-                        >
-                          <p className="font-bold text-slate-200">{v.name}</p>
-                          <p className="text-[10px] text-slate-400">
-                            NPWP: {v.npwp}
-                          </p>
-                          <p className="text-[9px] text-slate-500 line-clamp-1">
-                            Alamat: {v.address}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
+                <div className="lg:col-span-3 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5 self-start">
+                  <div className="flex items-center justify-between mb-4"><h3 className="text-xs font-bold text-rs-900 dark:text-white">Aktivitas per Jenis</h3></div>
+                  <div className="space-y-3.5">
+                    {catRows.length === 0 && <p className="text-[11px] text-rs-400 italic">Belum ada aktivitas.</p>}
+                    {catRows.map(([k, v]) => (
+                      <div key={k} className="flex items-center gap-3 text-xs">
+                        <span className="w-36 shrink-0 font-semibold text-rs-600 dark:text-rs-300 truncate">{k}</span>
+                        <div className="flex-1 h-2 rounded-full bg-rs-100 dark:bg-rs-800 overflow-hidden"><div className={`h-full rounded-full ${AUDIT_TONE[v.tone].bar}`} style={{ width: `${Math.max(6, (v.n / maxCat) * 100)}%` }} /></div>
+                        <span className="w-10 text-right font-bold text-rs-900 dark:text-white">{v.n}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {activeTab === "audit-kontrak-dcs" && (() => {
             // Halaman baru: SUMBER DATA SAMA dgn tab "Audit Trail" di atas
@@ -24670,178 +24352,104 @@ export default function App() {
               if (m === "karyawan") return <span className="px-2.5 py-1 rounded-full bg-peach text-brand-orange font-semibold text-[10.5px]">Karyawan</span>;
               return <span className="px-2.5 py-1 rounded-full bg-mist text-indigo-400 font-semibold text-[10.5px]">Eksternal</span>;
             };
+            const exportCsv = () => {
+              const esc = (v: any) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+              const csv = ["Waktu,Pengguna,Peran,Modul,Aktivitas,Detail,No. Dokumen,IP"].concat(rows.map((a) => [new Date(a.timestamp).toLocaleString("id-ID"), a.userName, a.userRole, a.__modul, a.action, a.details, a.contractNumber, a.ipAddress].map(esc).join(","))).join("\n");
+              saveAs(new Blob([csv], { type: "text/csv;charset=utf-8" }), "audit-kontrak-dcs.csv");
+            };
+            const stat = [
+              { l: "Dokumen Eksternal", v: countEksternal, I: Briefcase, c: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]" },
+              { l: "Dokumen Karyawan", v: countKaryawan, I: Users, c: "bg-amber-50 dark:bg-amber-950/50 text-amber-500" },
+              { l: "Dokumen DCS", v: countDcs, I: Workflow, c: "bg-purple-50 dark:bg-purple-950/50 text-purple-600" },
+              { l: "Total Aktivitas", v: scoped.length, I: Activity, c: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600" },
+            ];
+            const initials = (nm: string) => String(nm || "?").split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+            const pn: (number | "…")[] = (() => {
+              if (totalPages <= 5) return Array.from({ length: totalPages }, (_, i) => i + 1);
+              const set = new Set([1, 2, 3, safePage]);
+              const out: (number | "…")[] = [];
+              Array.from(set).filter((x) => x <= totalPages).sort((x, y) => x - y).forEach((x) => { if (out.length && (out[out.length - 1] as number) + 1 < x) out.push("…"); out.push(x); });
+              if ((out[out.length - 1] as number) < totalPages) { out.push("…"); }
+              return out;
+            })();
+            const mChip = (m: string) => m === "dcs" ? AUDIT_TONE.indigo.chip : m === "karyawan" ? AUDIT_TONE.amber.chip : AUDIT_TONE.indigo.chip;
+            const mLabel = (m: string) => m === "dcs" ? "DCS" : m === "karyawan" ? "Karyawan" : "Eksternal";
+            const btnCls = "px-3 py-1.5 text-[11px] font-bold text-rs-600 dark:text-rs-300 bg-rs-100 dark:bg-rs-800 hover:bg-rs-200 dark:hover:bg-rs-700 rounded-xl flex items-center gap-1.5 transition-colors cursor-pointer";
             return (
-            <div className="space-y-6 animate-fadeIn text-xs">
-              <div className="card-grad card-soft bg-slate-900 p-6 rounded-2xl">
-                <h2 className="text-xl font-bold text-slate-100 flex items-center gap-3 mb-1">
-                  <span className="w-10 h-10 rounded-full bg-mist flex items-center justify-center shrink-0"><Layers className="text-indigo-400 w-5 h-5" /></span>
-                  Audit Trail Kontrak &amp; DCS
-                </h2>
-                <p className="text-xs text-slate-400">
-                  Log forensik yang sama dengan halaman "Audit Trail" utama, disaring
-                  khusus tiga kategori: Dokumen Eksternal, Dokumen Karyawan (internal),
-                  dan Dokumen Internal (DCS) — tanpa aktivitas modul lain (pengguna,
-                  pengaturan, master data, dst).
-                </p>
+            <div className="space-y-6 animate-fadeIn">
+              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">Audit Kontrak &amp; DCS</h2>
+                  <p className="text-xs font-medium text-rs-400 mt-0.5">Audit Trail yang sama, disaring khusus Dokumen Eksternal, Dokumen Karyawan, dan Dokumen DCS.</p>
+                </div>
+                <div className="flex items-center gap-2"><button onClick={exportCsv} className={btnCls}><Download className="w-3 h-3" /> Ekspor</button></div>
               </div>
 
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
-                {/* Log Kontrak & DCS (8 cols) */}
-                <div className="xl:col-span-8 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
-                  <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <h3 className="font-bold text-sm">
-                      Log Aktivitas Kontrak &amp; DCS
-                    </h3>
-                    <div className="relative w-full sm:w-72">
-                      <Search className="w-4 h-4 text-indigo-400 pointer-events-none" style={{ position: "absolute", left: 16, top: "50%", transform: "translateY(-50%)", zIndex: 1 }} />
-                      <input
-                        type="text" value={auditKdSearch} onChange={(e) => { setAuditKdSearch(e.target.value); setAuditKdPage(1); }}
-                        placeholder="Cari pengguna / aktivitas / detail / no. kontrak..."
-                        style={{ paddingLeft: 44 }} className="w-full h-11 pr-4 rounded-full bg-slate-950 text-sm text-slate-100 placeholder:text-slate-500 border border-transparent focus:outline-none focus:border-soft-blue transition"
-                      />
-                    </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {stat.map((t) => (
+                  <div key={t.l} className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 flex items-center gap-4">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${t.c}`}><t.I className="w-5 h-5" /></div>
+                    <div><span className="text-[11px] font-semibold text-rs-400 dark:text-rs-500 block">{t.l}</span><span className="text-xl font-extrabold text-rs-900 dark:text-white tracking-tight">{t.v.toLocaleString("id-ID")}</span></div>
                   </div>
+                ))}
+              </div>
 
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {([
-                      ["semua", `Semua (${scoped.length})`],
-                      ["eksternal", `Dokumen Eksternal (${countEksternal})`],
-                      ["karyawan", `Dokumen Karyawan (${countKaryawan})`],
-                      ["dcs", `DCS (${countDcs})`],
-                    ] as const).map(([key, label]) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => { setAuditKdModule(key); setAuditKdPage(1); }}
-                        className={`px-3.5 py-1.5 rounded-full text-[11px] font-semibold cursor-pointer transition ${
-                          auditKdModule === key
-                            ? "bg-mist text-indigo-400"
-                            : "bg-slate-950 text-slate-400 hover:text-slate-200"
-                        }`}
-                      >
-                        {label}
-                      </button>
+              <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl self-start text-[11px] font-bold text-rs-500 flex-wrap">
+                    {([["semua", "Semua Modul"], ["eksternal", "Eksternal"], ["karyawan", "Karyawan"], ["dcs", "DCS"]] as const).map(([key, label]) => (
+                      <button key={key} type="button" onClick={() => { setAuditKdModule(key); setAuditKdPage(1); }}
+                        className={`px-3 py-1 rounded-lg cursor-pointer ${auditKdModule === key ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : "hover:text-rs-900 dark:hover:text-white"}`}>{label}</button>
                     ))}
                   </div>
-
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="border-b border-slate-800 text-slate-400 text-[10px] uppercase">
-                          <SortableTh label="Pengguna & Jabatan" colKey="pengguna" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Modul" colKey="modul" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Aktivitas" colKey="aktivitas" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Detail Perubahan" colKey="detail" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="No. Kontrak/Dokumen" colKey="kontrak" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
-                          <SortableTh label="Waktu & IP" colKey="waktu" sort={auditKdSort} onSort={onSort} className="py-2.5 px-3" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-850">
-                        {pageRows.length === 0 && (
-                          <tr><td colSpan={6} className="py-8 text-center text-slate-500 italic">Tidak ada log yang cocok.</td></tr>
-                        )}
-                        {pageRows.map((a, i) => (
-                          <tr
-                            key={a.id || i}
-                            className="hover:bg-slate-900/40 transition"
-                          >
-                            <td className="py-3 px-3">
-                              <p className="font-bold text-slate-200">
-                                {a.userName}
-                              </p>
-                              <span className="text-[9px] text-indigo-400 font-semibold">
-                                {a.userRole}
-                              </span>
-                            </td>
-                            <td className="py-3 px-3">{moduleBadge(a.__modul)}</td>
-                            <td className="py-3 px-3">
-                              <span className={`inline-block px-2.5 py-1 rounded-full font-semibold text-[10.5px] ${/delete|hapus|reject|tolak|terminate|revoke/i.test(String(a.action)) ? "bg-peach text-brand-orange" : "bg-mist text-indigo-400"}`}>
-                                {a.action}
-                              </span>
-                            </td>
-                            <td className="py-3 px-3 text-slate-300">
-                              {a.details}
-                            </td>
-                            <td className="py-3 px-3 font-mono text-indigo-400">
-                              {a.contractNumber || "-"}
-                            </td>
-                            <td className="py-3 px-3 text-slate-500">
-                              <p>
-                                {new Date(a.timestamp).toLocaleString("id-ID")}
-                              </p>
-                              <span className="text-[9px]">{a.ipAddress}</span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
+                    <input type="text" value={auditKdSearch} onChange={(e) => { setAuditKdSearch(e.target.value); setAuditKdPage(1); }} placeholder="Cari aktivitas, no. dokumen..."
+                      className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
                   </div>
-                  {rows.length > KD_PAGE_SIZE && (
-                    <div className="flex items-center justify-between pt-2 text-[11px] text-slate-400">
-                      <span>
-                        Menampilkan {(safePage - 1) * KD_PAGE_SIZE + 1}–{Math.min(safePage * KD_PAGE_SIZE, rows.length)} dari {rows.length} log
-                      </span>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => setAuditKdPage((p) => Math.max(1, p - 1))}
-                          disabled={safePage <= 1}
-                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                        >
-                          Sebelumnya
-                        </button>
-                        <span className="px-2 font-semibold text-slate-300">
-                          {safePage} / {totalPages}
-                        </span>
-                        <button
-                          onClick={() => setAuditKdPage((p) => Math.min(totalPages, p + 1))}
-                          disabled={safePage >= totalPages}
-                          className="px-3.5 py-1.5 rounded-full bg-slate-950 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed hover:text-slate-100 cursor-pointer"
-                        >
-                          Berikutnya
-                        </button>
-                      </div>
-                    </div>
-                  )}
                 </div>
-
-                {/* Ringkasan per Modul (4 cols) */}
-                <div className="xl:col-span-4 card-soft bg-slate-900 rounded-2xl p-6 space-y-4">
-                  <div className="border-b border-slate-800 pb-2">
-                    <h3 className="font-bold text-sm">
-                      Ringkasan per Modul
-                    </h3>
-                    <p className="text-[10px] text-slate-500">
-                      Total aktivitas tercatat, semua waktu
-                    </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider">
+                        {([["Waktu", "waktu"], ["Pengguna & Jabatan", "pengguna"], ["Modul", "modul"], ["Aktivitas", "aktivitas"], ["Detail Perubahan", "detail"], ["No. Dokumen", "kontrak"]] as const).map(([l, k]) => (
+                          <th key={k} onClick={() => onSort(k)} className="py-2.5 px-2 cursor-pointer select-none">{l}{auditKdSort?.key === k ? (auditKdSort.dir === "asc" ? " ↑" : " ↓") : ""}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
+                      {pageRows.length === 0 && <tr><td colSpan={6} className="py-10 text-center text-xs font-semibold text-rs-400">Tidak ada data yang cocok.</td></tr>}
+                      {pageRows.map((a, i) => {
+                        const c = auditCatOf(a);
+                        const d = new Date(a.timestamp);
+                        return (
+                          <tr key={a.id || i} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40">
+                            <td className="py-3 px-2 font-medium text-rs-500 whitespace-nowrap">{d.toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "2-digit" })} • {d.toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }).replace(".", ":")}</td>
+                            <td className="py-3 px-2">
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 rounded-full bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] text-[10px] font-bold flex items-center justify-center shrink-0">{initials(a.userName)}</div>
+                                <div><span className="font-bold text-rs-900 dark:text-white block">{a.userName}</span><span className="text-[10px] text-rs-400 font-normal">{a.userRole}</span></div>
+                              </div>
+                            </td>
+                            <td className="py-3 px-2"><span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${mChip(a.__modul)}`}>{mLabel(a.__modul)}</span></td>
+                            <td className="py-3 px-2"><span className={`inline-block text-[10px] font-bold px-2.5 py-1 rounded-lg whitespace-nowrap ${AUDIT_TONE[c.tone].chip}`}>{a.action}</span></td>
+                            <td className="py-3 px-2 font-medium">{a.details}</td>
+                            <td className="py-3 px-2 text-rs-400 font-medium whitespace-nowrap">{a.contractNumber || "-"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex items-center justify-between pt-4 mt-2 border-t border-rs-100 dark:border-rs-800">
+                  <span className="text-[11px] font-medium text-rs-400">Menampilkan {rows.length === 0 ? 0 : (safePage - 1) * KD_PAGE_SIZE + 1}–{Math.min(safePage * KD_PAGE_SIZE, rows.length)} dari {rows.length.toLocaleString("id-ID")} aktivitas</span>
+                  <div className="flex items-center gap-1 text-[11px] font-bold">
+                    <button onClick={() => setAuditKdPage((p) => Math.max(1, p - 1))} disabled={safePage <= 1} className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-400 flex items-center justify-center disabled:opacity-50 cursor-pointer"><ChevronLeft className="w-3.5 h-3.5" /></button>
+                    {pn.map((x, i) => x === "…" ? <span key={"e" + i} className="text-rs-400 px-1">…</span> : (
+                      <button key={x} onClick={() => setAuditKdPage(x)} className={`w-7 h-7 rounded-lg cursor-pointer ${x === safePage ? "bg-[#635BFF] text-white" : "text-rs-500 hover:bg-rs-100 dark:hover:bg-rs-800"}`}>{x}</button>
+                    ))}
+                    <button onClick={() => setAuditKdPage((p) => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages} className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-500 flex items-center justify-center disabled:opacity-50 cursor-pointer"><ChevronRight className="w-3.5 h-3.5" /></button>
                   </div>
-                  <div className="space-y-2.5">
-                    <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-slate-200">Dokumen Eksternal</p>
-                        <p className="text-[10px] text-slate-500">Vendor / Customer / Mitra</p>
-                      </div>
-                      <span className="text-lg font-bold text-indigo-400">{countEksternal}</span>
-                    </div>
-                    <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-slate-200">Dokumen Karyawan</p>
-                        <p className="text-[10px] text-slate-500">Internal (PKWT/PKWTT)</p>
-                      </div>
-                      <span className="text-lg font-bold text-brand-orange">{countKaryawan}</span>
-                    </div>
-                    <div className="p-3.5 bg-slate-950 rounded-2xl flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-slate-200">Dokumen DCS</p>
-                        <p className="text-[10px] text-slate-500">SOP / IK / Memo / Kebijakan</p>
-                      </div>
-                      <span className="text-lg font-bold text-soft-blue">{countDcs}</span>
-                    </div>
-                  </div>
-                  <p className="text-[10px] text-slate-600 pt-2 border-t border-slate-850">
-                    Sumber data sama dengan halaman "Audit Trail" utama — cuma
-                    disaring. Aktivitas modul lain (pengguna, pengaturan, master
-                    data, vendor, dst) tidak ditampilkan di sini.
-                  </p>
                 </div>
               </div>
             </div>

@@ -32,6 +32,11 @@ import { clauseToPluginBlocks, extractImageSrcs } from "./clause-html.js";
 import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap, type LetterheadInput, type SignatureInput, type SignatureOptions, type DigitalSignatureInput, readLayout, patchLayout, type LayoutPatch, listVariables, setVariables, listTranslatable, applyTranslations, setLanguageMode, readLanguage, refreshEnglishVars, refreshRangkapTail, signaturePageText, hasTwoCopies, type DocLanguage, type BilingualLayoutMode, type LangStash, unhideLegacyLanguage } from "./template-docx.js";
 import { readChangeHistory, acceptAllChanges, hasTrackedChanges, originalTextOf } from "./review-changes.js";
 import { buildExternalCopy, mergeExternalMarkup } from "./review-isolation.js";
+import {
+  summarizeReviewActivity, EMPTY_ACTIVITY, addedByAuthor, savedChangesDetails,
+  REVIEW_EDITOR_AUDIT_ACTION, REVIEW_SAVED_AUDIT_ACTION, COMMENT_EDIT_AUDIT_ACTION, COMMENT_DELETE_AUDIT_ACTION,
+  type SessionReviewer, type ReviewSessionActivity,
+} from "./review-session.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
@@ -4249,6 +4254,77 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
   res.json({ success: true, contract });
 });
 
+// ---------------------------------------------------------------------------
+// ATURAN SESI REVIEW: reviewer (internal & eksternal) hanya boleh "Setujui" bila pada SESI review yang sedang
+// berjalan ia tidak menambah komentar/balasan, mengedit atau menghapus komentar, membuat usulan coret/ganti,
+// maupun Track Changes di berkas Word. Ada satu saja → Setujui ditolak (409); "Minta/Ajukan Revisi" tetap bisa.
+// Hanya membuka/membaca dokumen BUKAN aktivitas. Logika murni ada di review-session.ts; di sini hanya membaca
+// data (komentar + jejak audit) — tidak ada riwayat yang dihapus atau diubah.
+// Sesi = satu putaran: internal mulai saat dokumen diajukan (giliran langkah pertama), eksternal mulai saat
+// ronde dibuka. Pengajuan ulang/ronde baru = sesi baru.
+// ---------------------------------------------------------------------------
+function reviewSessionStartOf(contract: Contract, kind: "internal" | "external"): string | null {
+  if (kind === "external") {
+    const round = (contract.externalRounds || []).find((r) => r.round === contract.externalRoundCount);
+    return round?.sentAt || null;
+  }
+  const starts = (contract.approvalSteps || []).map((st) => st.startedAt).filter((x): x is string => !!x).sort();
+  return starts[0] || null;
+}
+/** Gagal teknis TIDAK memblokir persetujuan (dicatat di log); yang memblokir hanya aktivitas yang benar-benar terdeteksi. */
+function loadReviewActivity(db: any, contract: Contract, reviewer: SessionReviewer): ReviewSessionActivity {
+  const sessionStart = reviewSessionStartOf(contract, reviewer.kind);
+  try {
+    return summarizeReviewActivity({
+      reviewer, sessionStart,
+      comments: ((db.clauseComments as ClauseComment[]) || []).filter((c) => c.contractId === contract.id),
+      audits: ((db.audits as AuditTrail[]) || []).filter((a) => a.contractId === contract.id),
+    });
+  } catch (err) {
+    logger.warn({ err, contractId: contract.id }, "Gagal memeriksa aktivitas sesi review — persetujuan tidak diblokir");
+    return EMPTY_ACTIVITY(sessionStart);
+  }
+}
+const REVIEW_ACTIVITY_MSG = "Anda sudah menambah/mengubah markup pada sesi review ini, jadi tombol Setujui dikunci. Gunakan \"Minta Revisi\" (internal) atau \"Ajukan Revisi\" (eksternal).";
+
+/** Berkas tinjauan tersimpan berisi perubahan/komentar BARU → catat per penulis (dasar aktivitas "tersimpan"). */
+async function recordSavedReviewChanges(
+  db: any, contract: Contract, actor: AuthedRequest, claims: { iat?: number }, prevBuf: Buffer, nextBuf: Buffer,
+) {
+  const kind = contract.status === "ReviewEksternal" ? "external" : isInternalApprovalStage(contract.status) ? "internal" : null;
+  if (!kind) return;
+  // Penjaga editor lama: editor yang dibuka SEBELUM sesi ini mulai (token `iat`) tidak dihitung sebagai aktivitas sesi ini.
+  const start = reviewSessionStartOf(contract, kind);
+  const iatMs = Number(claims.iat) * 1000;
+  if (start && Number.isFinite(iatMs) && iatMs < Date.parse(start)) return;
+  const added = addedByAuthor(await readChangeHistory(prevBuf), await readChangeHistory(nextBuf));
+  for (const [author, n] of added) {
+    pushAudit(db, actor, { contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_SAVED_AUDIT_ACTION, details: savedChangesDetails(author, n) });
+  }
+}
+
+// Aktivitas sesi reviewer yang sedang login (dipakai tampilan untuk menonaktifkan tombol Setujui).
+app.get("/api/contracts/:id/review-session", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  res.json(loadReviewActivity(db, contract, { kind: "internal", userId: req.user!.id, name: req.user!.name }));
+});
+// Editor Word melaporkan reviewer baru mengubah dokumen (berkas baru tersimpan setelah editor ditutup, jadi
+// penandanya dicatat SEGERA — satu per sesi per reviewer).
+app.post("/api/contracts/:id/review-session/activity", requireAuth, (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (!isInternalApprovalStage(contract.status)) return res.json({ recorded: false });
+  if (!canReviewContract(viewerOf(db, req), contract, actionOverridesFor(db, contract.tenantId))) return res.status(403).json({ error: "Anda belum ditunjuk untuk meninjau dokumen ini." });
+  const act = loadReviewActivity(db, contract, { kind: "internal", userId: req.user!.id, name: req.user!.name });
+  if (act.counts.editorChanges > 0) return res.json({ recorded: false });
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_EDITOR_AUDIT_ACTION, details: `${req.user!.name} mengubah dokumen di editor Word pada sesi review ini (belum tersimpan).` });
+  saveDB(db);
+  res.json({ recorded: true });
+});
+
 // Approve/reject step approval matrix yang sedang giliran approver ybs.
 app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
@@ -4297,6 +4373,13 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
     && (req.user!.role === "admin" || req.user!.role === "super_admin");
   if (!isOwnTurn && !isDelegate && !isAdminOverride) {
     return res.status(403).json({ error: "Bukan giliran Anda menyetujui dokumen ini." });
+  }
+  // Aturan sesi review: ada markup/komentar baru dari orang yang menekan tombol pada sesi ini → Setujui ditolak.
+  const revisionActivity = decision === "approved"
+    ? loadReviewActivity(db, contract, { kind: "internal", userId: req.user!.id, name: req.user!.name })
+    : null;
+  if (revisionActivity?.hasActivity) {
+    return res.status(409).json({ code: "REVIEW_ACTIVITY_DETECTED", error: REVIEW_ACTIVITY_MSG, activity: revisionActivity });
   }
 
   const overrideNote = isDelegate
@@ -6972,7 +7055,7 @@ async function externalSafeDocx(contract: Contract, buf: Buffer): Promise<Buffer
 
 /** Simpan hasil review eksternal: berkas kerja eksternal selalu disimpan; markupnya digabung ke master bila bisa. */
 async function saveExternalReviewResult(
-  contract: Contract, buf: Buffer, reviewer: string, ip: string | undefined,
+  contract: Contract, buf: Buffer, reviewer: string, ip: string | undefined, iat?: number,
 ): Promise<{ ok: true; message?: undefined } | { ok: false; message: string }> {
   const copy = contract.externalReviewCopy;
   if (!copy || copy.round !== (contract.externalRoundCount || 0)) return { ok: false, message: "Salinan eksternal ronde ini tidak ditemukan." };
@@ -6980,6 +7063,7 @@ async function saveExternalReviewResult(
   // Penjaga: tamu hanya boleh menambah jejak. Tampilan "Original" harus sama dengan salinan yang dikirim.
   if ((await originalTextOf(buf)) !== (await originalTextOf(baselineBuf))) return { ok: false, message: "Ada perubahan di luar Track Changes. Aktifkan Lacak Perubahan lalu ulangi." };
   const safeId = contract.id.replace(/[^\w-]/g, "");
+  const prevWorkBuf = await readStoredDocument(copy.workFile, uploadDir);
   const workStored = await storeFile(buf, `contractdoc-${safeId}-ext-r${copy.round}-work-${Date.now()}.docx`, DOCX_MIME);
   const workRef = buildDocumentRef(buf, workStored, copy.baselineFile.fileName, "docx", reviewer);
   // Selalu digabung dari master awal ronde + berkas kerja terbaru, sehingga simpan berulang tidak menggandakan markup.
@@ -6997,6 +7081,7 @@ async function saveExternalReviewResult(
   c.externalReviewCopy.workFile = workRef;
   const actor = { user: { id: "external", name: reviewer, role: "External" }, ip, query: { tenantId: c.tenantId }, body: {} } as unknown as AuthedRequest;
   const now = new Date().toISOString();
+  await recordSavedReviewChanges(db, c, actor, { iat }, prevWorkBuf, buf);
   if (merged.ok && mergedRef) {
     const versions = uploadedDocumentVersions(db, c);
     const cur = currentDocumentVersionNumber(c, versions);
@@ -7103,7 +7188,7 @@ app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
     if (claims.userId === "external") {
       // Tamu eksternal bekerja di SALINAN bersih; markupnya digabung ke master (master tidak pernah dikirim ke tamu).
       if (contract.status !== "ReviewEksternal") return fail("Review eksternal sedang tidak dibuka.");
-      const saved = await saveExternalReviewResult(contract, buf, claims.reviewer || "Pihak Eksternal", req.ip);
+      const saved = await saveExternalReviewResult(contract, buf, claims.reviewer || "Pihak Eksternal", req.ip, (claims as { iat?: number }).iat);
       return saved.ok ? res.json({ error: 0 }) : fail(saved.message);
     }
     // Selama Review Eksternal berjalan, master dikunci: perubahan internal akan tertimpa saat markup eksternal digabung.
@@ -7136,6 +7221,7 @@ app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
       contractId: contract.id, contractNumber: contract.contractNumber, action: "Review Track Changes",
       details: `${claims.reviewer || "Peninjau"} menyimpan perubahan tinjauan (Track Changes) · SHA-256 ${file.sha256.slice(0, 16)}…`,
     });
+    await recordSavedReviewChanges(db, contract, { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest, claims as { iat?: number }, base.buf, buf);
     saveDB(db);
     res.json({ error: 0 });
   } catch (err: any) {
@@ -8698,6 +8784,7 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   // resolving a thread is a collaborative action (Google-Docs style: anyone
   // who addressed the feedback should be able to mark it resolved, not just
   // whoever originally wrote it) — gating both the same way blocked that.
+  const beforeEdit = { text: comment.text, anchor: JSON.stringify(comment.anchor || null) };
   if (req.body.text !== undefined) {
     if (!isOwnerOrPrivileged) return res.status(403).json({ error: "Tidak dapat mengedit teks komentar orang lain" });
     comment.text = req.body.text.trim();
@@ -8740,6 +8827,14 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
     }
   }
   comment.updatedAt = new Date().toISOString();
+  // Komentar yang ISI/sorotannya diubah dicatat (isi sebelum & sesudah) — jejak ini juga menandai aktivitas sesi review.
+  if (comment.text !== beforeEdit.text || JSON.stringify(comment.anchor || null) !== beforeEdit.anchor) {
+    const parent = (db.contracts as Contract[]).find((c) => c.id === comment.contractId && c.tenantId === tid);
+    pushAudit(db, req, {
+      contractId: comment.contractId, contractNumber: parent?.contractNumber, action: COMMENT_EDIT_AUDIT_ACTION,
+      details: `${req.user!.name} mengubah komentar pada "${comment.clauseTitle}". Sebelum: "${beforeEdit.text.slice(0, 300)}" → Sesudah: "${comment.text.slice(0, 300)}"`,
+    });
+  }
   saveDB(db);
   res.json({ success: true, comment });
 });
@@ -8756,6 +8851,11 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
   if (comment.userId !== req.user!.id && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
     return res.status(403).json({ error: "Tidak dapat menghapus komentar orang lain" });
   }
+  const parentOfDeleted = (db.contracts as Contract[]).find((c) => c.id === comment.contractId && c.tenantId === tid);
+  pushAudit(db, req, {
+    contractId: comment.contractId, contractNumber: parentOfDeleted?.contractNumber, action: COMMENT_DELETE_AUDIT_ACTION,
+    details: `${req.user!.name} menghapus komentar pada "${comment.clauseTitle}" (penulis: ${comment.userName}). Isi: "${String(comment.text || "").slice(0, 300)}"`,
+  });
   db.clauseComments.splice(idx, 1);
   saveDB(db);
   res.json({ success: true });
@@ -9500,6 +9600,28 @@ app.get("/api/external-review/:token/review-changes", apiLimiter, async (req, re
   } catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
 });
 
+// PUBLIK (dijaga token) — aktivitas sesi tamu; tampilan memakainya untuk menonaktifkan tombol Setujui.
+app.get("/api/external-review/:token/review-session", apiLimiter, (req, res) => {
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
+  res.json(loadReviewActivity(loadDB(), contract, { kind: "external" }));
+});
+app.post("/api/external-review/:token/review-session/activity", apiLimiter, (req, res) => {
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
+  if (contract.status !== "ReviewEksternal" || contract.externalReviewLocked) return res.json({ recorded: false });
+  const db = loadDB();
+  const act = loadReviewActivity(db, contract, { kind: "external" });
+  if (act.counts.editorChanges > 0) return res.json({ recorded: false });
+  const name = String(req.body?.name || "").replace(/[<>"]/g, "").trim().slice(0, 60) || "Pihak Eksternal";
+  const actor = { user: { id: "external", name, role: "External" }, ip: req.ip, query: { tenantId: contract.tenantId }, body: {} } as unknown as AuthedRequest;
+  pushAudit(db, actor, { contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_EDITOR_AUDIT_ACTION, details: `${name} (pihak eksternal) mengubah dokumen di editor Word pada sesi review ini (belum tersimpan).` });
+  saveDB(db);
+  res.json({ recorded: true });
+});
+
 // PUBLIK — tamu eksternal klik "OK / Setuju" (klausul sudah sesuai). Sekali
 // disetujui, sesi ini TERKUNCI (tak bisa komentar/setuju lagi lewat token yang
 // sama) sampai pemilik dokumen membuka akses kembali (endpoint /unlock di atas).
@@ -9514,6 +9636,11 @@ app.post("/api/external-review/:token/approve", apiLimiter, (req, res) => {
   if (!name) return res.status(400).json({ error: "Nama wajib diisi." });
   const db = loadDB();
   const live = (db.contracts as Contract[]).find((c) => c.id === contract.id)!;
+  // Aturan sesi review: tamu yang sudah memberi markup/komentar pada sesi ini tidak bisa Setujui.
+  const activity = loadReviewActivity(db, live, { kind: "external" });
+  if (activity.hasActivity) {
+    return res.status(409).json({ code: "REVIEW_ACTIVITY_DETECTED", error: REVIEW_ACTIVITY_MSG, activity });
+  }
   if (!live.externalApprovals) live.externalApprovals = [];
   live.externalApprovals.push({ name: name.slice(0, 80), approvedAt: new Date().toISOString(), note: String(req.body?.note || "").slice(0, 300) || undefined });
   live.externalReviewLocked = true;

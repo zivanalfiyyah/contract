@@ -14,6 +14,7 @@ import { isFullAccessRole, ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, rol
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import DashboardView from "./DashboardView";
 import ReviewTrackPanel from "./ReviewTrackPanel";
+import { useReviewActivity, describeReviewActivity } from "./review-activity";
 import WordLayoutBar from "./WordLayoutBar";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
@@ -1874,6 +1875,11 @@ function ExternalReviewPage({ token }: { token: string }) {
   const [draftReplacement, setDraftReplacement] = useState(""); // teks pengganti (usulan "Ganti" pada pasal)
   const [activeId, setActiveId] = useState<string | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
+  // Aturan sesi review: tamu yang sudah memberi komentar/markup pada sesi ini tidak bisa Setuju (server memvalidasi ulang).
+  const reviewActivity = useReviewActivity(token ? `/api/external-review/${token}/review-session` : null, `${okDone}-${(data?.comments || []).length}`);
+  const reviewActivityNote = reviewActivity.hasActivity
+    ? `Tombol Setuju dikunci: Anda sudah ${describeReviewActivity(reviewActivity.counts) || "memberi markup"} pada sesi review ini. Gunakan Ajukan Revisi.`
+    : "";
   // Alur baru: tamu bisa "Ajukan Revisi" → dokumen kembali ke tim internal.
   const [paused, setPaused] = useState(false);
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -2169,8 +2175,9 @@ function ExternalReviewPage({ token }: { token: string }) {
           <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama Anda (wajib untuk komentar/persetujuan)" disabled={data.locked}
               className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
-            <button onClick={approve} disabled={busy || okDone || data.locked}
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
+            <button onClick={approve} disabled={busy || okDone || data.locked || reviewActivity.hasActivity}
+              title={reviewActivityNote || undefined}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
               {okDone || data.locked ? "✓ Sudah Disetujui" : "Setuju / OK"}
             </button>
             {data.canRequestRevision && !okDone && (
@@ -2181,6 +2188,9 @@ function ExternalReviewPage({ token }: { token: string }) {
               </button>
             )}
           </div>
+          {reviewActivity.hasActivity && !data.locked && !okDone && (
+            <p className="text-[11px] text-amber-400 mt-2">{reviewActivityNote}</p>
+          )}
           {data.locked ? (
             <p className="text-[11px] text-indigo-400 mt-2 flex items-center gap-1.5">
               🔒 <b>Review ini sudah terkunci</b> sejak disetujui — komentar/persetujuan baru butuh akses dibuka kembali oleh pemilik dokumen.
@@ -2237,7 +2247,12 @@ function ExternalReviewPage({ token }: { token: string }) {
                 </div>
               )}
               {trackStarted && !trackOff && (
-                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }} height="75vh" />
+                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }}
+                  onDirtyChange={(dirty) => {
+                    // Tamu mengubah dokumen di editor → laporkan ke server (aturan sesi review: Setuju dikunci).
+                    if (dirty) fetch(`/api/external-review/${token}/review-session/activity`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) }).then(() => reviewActivity.refresh()).catch(() => {});
+                  }}
+                  height="75vh" />
               )}
               <div className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start ${c.documentMarkup && !trackOff && !data.locked ? "hidden" : ""}`}>
               <div className="min-w-0">
@@ -9455,8 +9470,17 @@ export default function App() {
   // Approve/reject langkah approval matrix yang sedang giliran approver ybs
   // (dicek server-side; tombol ini hanya tampil kalau currentUser memang
   // approver step yang pending, tapi endpoint tetap divalidasi ulang).
+  // Aturan sesi review: ada komentar/markup baru dari saya pada sesi ini → tombol Setujui dikunci (server memvalidasi ulang).
+  const reviewActivity = useReviewActivity(
+    selectedContract && (selectedContract.status === "OnReview" || selectedContract.status === "FinalReview") ? `/api/contracts/${selectedContract.id}/review-session` : null,
+    clauseComments.length,
+  );
+  const reviewActivityNote = reviewActivity.hasActivity
+    ? `Setujui dikunci: Anda sudah ${describeReviewActivity(reviewActivity.counts) || "mengubah markup"} pada sesi review ini. Gunakan Minta Revisi.`
+    : "";
   const handleApprovalDecision = async (decision: "approved" | "rejected") => {
     if (!selectedContract) return;
+    if (decision === "approved" && reviewActivity.hasActivity) { showToast(reviewActivityNote, "warning"); return; }
     const openInternal = clauseComments.filter((c) => c.contractId === selectedContract.id && !c.parentId && !c.resolved && !c.external);
     if (decision === "rejected" && !approvalDecisionComment.trim() && openInternal.length === 0) {
       showToast("Tandai dulu bagian yang perlu direvisi di Mode Tinjau (komentar / coret / ganti), atau isi catatan revisi.", "warning");
@@ -22654,12 +22678,16 @@ export default function App() {
                                   </button>
                                   <button
                                     onClick={() => handleApprovalDecision("approved")}
-                                    disabled={isDecidingApproval}
-                                    className="py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-600/30 transition cursor-pointer disabled:opacity-50"
+                                    disabled={isDecidingApproval || reviewActivity.hasActivity}
+                                    title={reviewActivityNote || undefined}
+                                    className="py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-600/30 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                                   >
                                     Setujui
                                   </button>
                                 </div>
+                                {reviewActivity.hasActivity && (
+                                  <p className="text-[10px] text-amber-600 leading-snug">{reviewActivityNote}</p>
+                                )}
                               </div>
                             )}
                             {selectedContract.approvalHistory && selectedContract.approvalHistory.length > 0 && (
@@ -27777,8 +27805,9 @@ export default function App() {
                   >Minta Revisi</button>
                   <button
                     onClick={() => handleApprovalDecision("approved")}
-                    disabled={isDecidingApproval}
-                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer whitespace-nowrap disabled:opacity-50"
+                    disabled={isDecidingApproval || reviewActivity.hasActivity}
+                    title={reviewActivityNote || undefined}
+                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                   >✓ Setujui</button>
                 </div>
               )}

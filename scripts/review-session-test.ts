@@ -142,7 +142,13 @@ t("server: Setujui divalidasi di backend (internal & eksternal); jam berkas tida
   assert.ok(src.includes('"/api/contracts/:id/review-session/activity"') && src.includes('"/api/external-review/:token/review-session/activity"'));
   // callback: perubahan baru dicatat (REVIEW_SAVED_AUDIT_ACTION), dengan penjaga editor lama (iat)
   const cb = src.slice(src.indexOf('"/api/onlyoffice/review-callback/:id"'), src.indexOf("async function changeHistoryOf"));
-  assert.ok(cb.includes("REVIEW_SAVED_AUDIT_ACTION") && cb.includes("iat"));
+  assert.ok(cb.includes("recordSavedReviewChanges") && cb.includes("iat"));
+  // pencatatan ada di satu helper (dipakai callback internal & penyimpanan eksternal), dengan penjaga editor lama (iat)
+  const helper = src.slice(src.indexOf("async function recordSavedReviewChanges"), src.indexOf("// Aktivitas sesi reviewer yang sedang login"));
+  assert.ok(helper.includes("REVIEW_SAVED_AUDIT_ACTION") && helper.includes("iatMs") && helper.includes("addedByAuthor"));
+  assert.ok(src.slice(src.indexOf("async function saveExternalReviewResult"), src.indexOf("function reviewEditorConfig")).includes("recordSavedReviewChanges"));
+  // komentar diedit/dihapus meninggalkan jejak audit (tanda aktivitas sesi)
+  assert.ok(src.includes("COMMENT_EDIT_AUDIT_ACTION") && src.includes("COMMENT_DELETE_AUDIT_ACTION"));
   // riwayat tidak boleh dihapus oleh logika sesi, dan tanggal berkas (w:date) tidak dipakai di modul
   const mod = fs.readFileSync(path.resolve(__dirname, "../review-session.ts"), "utf8");
   const code = mod.replace(/\/\/.*$/gm, "");

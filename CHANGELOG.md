@@ -1,5 +1,17 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #33] — Aturan sesi review dipasang di server & tampilan (Setujui dikunci bila ada markup)
+
+### Ringkasan
+- Reviewer **internal** (Review Internal & Review Final) dan **eksternal** hanya bisa **Setujui / Setuju-OK** bila pada **sesi review yang sedang berjalan** ia tidak menambah komentar/balasan, mengedit atau menghapus komentar, membuat usulan coret/ganti, maupun Track Changes di berkas Word. Ada satu saja → Setujui ditolak server (**409**, `code: "REVIEW_ACTIVITY_DETECTED"`) dan tombolnya nonaktif di tampilan; **Minta/Ajukan Revisi tetap bisa**. Hanya membuka/membaca dokumen **bukan** aktivitas.
+- **Sesi** = satu putaran review. Internal: mulai saat dokumen diajukan (giliran langkah pertama). Eksternal: mulai saat ronde dibuka. Pengajuan ulang / ronde baru = sesi baru. Aktivitas dihitung **per reviewer**.
+- Markup yang dibatalkan sendiri (mis. komentar dihapus) **tetap mengunci** — jejaknya tercatat, jadi aturan tidak bisa dilewati dengan "tambah lalu hapus".
+- Server: `POST /api/contracts/:id/approval-decision` dan `POST /api/external-review/:token/approve` memeriksa aktivitas sebelum menyetujui. Endpoint baru: `GET /api/contracts/:id/review-session`, `POST /api/contracts/:id/review-session/activity`, `GET /api/external-review/:token/review-session`, `POST /api/external-review/:token/review-session/activity`.
+- Komentar yang diubah/dihapus kini meninggalkan jejak audit (**Edit Comment** berisi isi sebelum & sesudah, **Delete Comment** berisi isi yang dihapus); berkas tinjauan yang tersimpan dengan perubahan baru dicatat per penulis (**Review Changes Saved**), dengan penjaga editor lama (token `iat` harus setelah sesi mulai).
+- Pemeriksaan hanya **membaca** komentar & jejak audit; tidak ada riwayat yang dihapus/diubah. Bila pemeriksaan gagal secara teknis, persetujuan **tidak** diblokir (dicatat di log).
+- Tampilan: hook `src/review-activity.ts` (segar tiap 10 dtk & saat komentar berubah). Tombol Setujui internal (panel samping & toolbar) dan tombol Setuju/OK halaman eksternal nonaktif + keterangan aktivitas yang terdeteksi.
+- Tidak ada perubahan skema data & tidak perlu migrasi. Uji: `npx tsx scripts/review-session-test.ts`.
+
 ## [Unreleased #32] — Pemisahan markup internal ↔ eksternal (satu master, riwayat utuh)
 
 ### Ringkasan

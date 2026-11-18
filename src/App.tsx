@@ -14,7 +14,6 @@ import { isFullAccessRole, ROLE_DEFS, DEFAULT_MENUS_BY_ROLE, isDivisionRole, rol
 import UploadedDocumentWorkspace, { ReadOnlyDocumentView } from "./UploadedDocumentWorkspace";
 import DashboardView from "./DashboardView";
 import ReviewTrackPanel from "./ReviewTrackPanel";
-import { useReviewActivity, describeReviewActivity } from "./review-activity";
 import WordLayoutBar from "./WordLayoutBar";
 import { ContractDocumentMarkup, DocxMarkupView, acceptDocxMarkup, type MarkupItem, type MarkupSeed } from "./DocxMarkupReview";
 import DocumentDownloadModal, { buildDocumentDownloadUrl, type SourceDocFormat } from "./DocumentDownloadModal";
@@ -1554,6 +1553,27 @@ function AiHero({ Icon, title, desc, right }: { Icon: any; title: string; desc: 
   );
 }
 
+function Pager({ page, total, size, onPage, noun = "data" }: { page: number; total: number; size: number; onPage: (p: number) => void; noun?: string }) {
+  const pages = Math.max(1, Math.ceil(total / size));
+  const cur = Math.min(page, pages);
+  if (total <= size) return null;
+  const nums: (number | "…")[] = [];
+  const set = Array.from(new Set([1, 2, cur - 1, cur, cur + 1, pages])).filter((x) => x >= 1 && x <= pages).sort((x, y) => x - y);
+  set.forEach((x) => { if (nums.length && (nums[nums.length - 1] as number) + 1 < x) nums.push("…"); nums.push(x); });
+  return (
+    <div className="flex items-center justify-between pt-4 mt-2 border-t border-rs-100 dark:border-rs-800">
+      <span className="text-[11px] font-medium text-rs-400">Menampilkan {(cur - 1) * size + 1}–{Math.min(cur * size, total)} dari {total.toLocaleString("id-ID")} {noun}</span>
+      <div className="flex items-center gap-1 text-[11px] font-bold">
+        <button type="button" onClick={() => onPage(Math.max(1, cur - 1))} disabled={cur <= 1} className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-500 flex items-center justify-center disabled:opacity-50 cursor-pointer"><ChevronLeft className="w-3.5 h-3.5" /></button>
+        {nums.map((x, i) => x === "…" ? <span key={"e" + i} className="text-rs-400 px-1">…</span> : (
+          <button key={x} type="button" onClick={() => onPage(x)} className={`w-7 h-7 rounded-lg cursor-pointer ${x === cur ? "bg-[#635BFF] text-white" : "text-rs-500 hover:bg-rs-100 dark:hover:bg-rs-800"}`}>{x}</button>
+        ))}
+        <button type="button" onClick={() => onPage(Math.min(pages, cur + 1))} disabled={cur >= pages} className="w-7 h-7 rounded-lg bg-rs-100 dark:bg-rs-800 text-rs-500 flex items-center justify-center disabled:opacity-50 cursor-pointer"><ChevronRight className="w-3.5 h-3.5" /></button>
+      </div>
+    </div>
+  );
+}
+
 function AiNote({ children, tone = "indigo" }: { children: React.ReactNode; tone?: "indigo" | "amber" }) {
   return (
     <div className={`rounded-xl px-4 py-3 text-[11px] font-medium flex items-start gap-2 ${tone === "amber" ? "text-amber-600 bg-amber-50 dark:bg-amber-950/60 dark:text-amber-300" : "text-indigo-600 bg-indigo-50 dark:bg-indigo-950/60 dark:text-indigo-300"}`}>
@@ -1601,6 +1621,9 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
   const [path, setPath] = useState<Path>({});
   const [arTab, setArTab] = useState<"all" | "aktif" | "nonaktif">("all");
   const [arQ, setArQ] = useState("");
+  const [arPage, setArPage] = useState(1);
+  const AR_PAGE = 6;
+  useEffect(() => { setArPage(1); }, [path, arTab, arQ]);
   const internal = mode === "internal";
   const classified = (c: Contract) => internal
     ? !!(c.companyId && c.employmentType && c.docType)
@@ -1740,7 +1763,7 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {shown.length === 0 && <p className="col-span-full text-center text-xs font-semibold text-rs-400 py-10">Belum ada dokumen di folder ini.</p>}
-          {shown.map((c) => {
+          {shown.slice((Math.min(arPage, Math.max(1, Math.ceil(shown.length / AR_PAGE))) - 1) * AR_PAGE, Math.min(arPage, Math.max(1, Math.ceil(shown.length / AR_PAGE))) * AR_PAGE).map((c) => {
             const signed = isSigned(c);
             const kind = contractDocKind(c);
             return (
@@ -1776,6 +1799,7 @@ function ExternalArchiveBrowser({ contracts, companies, docTypes, operatorGroups
             );
           })}
         </div>
+        <Pager page={arPage} total={shown.length} size={AR_PAGE} onPage={setArPage} noun="dokumen" />
       </div>
     </div>
   );
@@ -1875,11 +1899,6 @@ function ExternalReviewPage({ token }: { token: string }) {
   const [draftReplacement, setDraftReplacement] = useState(""); // teks pengganti (usulan "Ganti" pada pasal)
   const [activeId, setActiveId] = useState<string | null>(null);
   const [confirmApprove, setConfirmApprove] = useState(false);
-  // Aturan sesi review: tamu yang sudah memberi komentar/markup pada sesi ini tidak bisa Setuju (server memvalidasi ulang).
-  const reviewActivity = useReviewActivity(token ? `/api/external-review/${token}/review-session` : null, `${okDone}-${(data?.comments || []).length}`);
-  const reviewActivityNote = reviewActivity.hasActivity
-    ? `Tombol Setuju dikunci: Anda sudah ${describeReviewActivity(reviewActivity.counts) || "memberi markup"} pada sesi review ini. Gunakan Ajukan Revisi.`
-    : "";
   // Alur baru: tamu bisa "Ajukan Revisi" → dokumen kembali ke tim internal.
   const [paused, setPaused] = useState(false);
   const [revisionOpen, setRevisionOpen] = useState(false);
@@ -2175,9 +2194,8 @@ function ExternalReviewPage({ token }: { token: string }) {
           <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:items-center">
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nama Anda (wajib untuk komentar/persetujuan)" disabled={data.locked}
               className="flex-1 px-3 py-2 bg-slate-900 border border-slate-800 rounded-lg text-sm focus:outline-none focus:border-indigo-500 disabled:opacity-50" />
-            <button onClick={approve} disabled={busy || okDone || data.locked || reviewActivity.hasActivity}
-              title={reviewActivityNote || undefined}
-              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
+            <button onClick={approve} disabled={busy || okDone || data.locked}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-sm font-bold rounded-lg cursor-pointer whitespace-nowrap">
               {okDone || data.locked ? "✓ Sudah Disetujui" : "Setuju / OK"}
             </button>
             {data.canRequestRevision && !okDone && (
@@ -2188,9 +2206,6 @@ function ExternalReviewPage({ token }: { token: string }) {
               </button>
             )}
           </div>
-          {reviewActivity.hasActivity && !data.locked && !okDone && (
-            <p className="text-[11px] text-amber-400 mt-2">{reviewActivityNote}</p>
-          )}
           {data.locked ? (
             <p className="text-[11px] text-indigo-400 mt-2 flex items-center gap-1.5">
               🔒 <b>Review ini sudah terkunci</b> sejak disetujui — komentar/persetujuan baru butuh akses dibuka kembali oleh pemilik dokumen.
@@ -2247,12 +2262,7 @@ function ExternalReviewPage({ token }: { token: string }) {
                 </div>
               )}
               {trackStarted && !trackOff && (
-                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }}
-                  onDirtyChange={(dirty) => {
-                    // Tamu mengubah dokumen di editor → laporkan ke server (aturan sesi review: Setuju dikunci).
-                    if (dirty) fetch(`/api/external-review/${token}/review-session/activity`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim() }) }).then(() => reviewActivity.refresh()).catch(() => {});
-                  }}
-                  height="75vh" />
+                <ReviewTrackPanel contractId="external" mode="external" token={token} reviewerName={name.trim()} onUnavailable={() => { setTrackOff(true); setTrackStarted(false); }} height="75vh" />
               )}
               <div className={`grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px] gap-5 items-start ${c.documentMarkup && !trackOff && !data.locked ? "hidden" : ""}`}>
               <div className="min-w-0">
@@ -3764,17 +3774,32 @@ const LEGAL_STAGE_BAR: Record<string, string> = {
   ReviewPihakKedua: "bg-[#F59E0B]", RevisiNegosiasi: "bg-[#F59E0B]", Finalisasi: "bg-[#635BFF]", ProsesTTD: "bg-[#635BFF]",
   DokumenKembali: "bg-[#635BFF]", Arsip: "bg-emerald-500", Distribusi: "bg-emerald-500", Aktif: "bg-emerald-500",
 };
+const LEGAL_STAGE_TILE: Record<string, string> = {
+  rs: "bg-rs-100 dark:bg-rs-800 text-rs-500",
+  purple: "bg-purple-50 dark:bg-purple-950/50 text-purple-600",
+  amber: "bg-amber-50 dark:bg-amber-950/50 text-amber-500",
+  indigo: "bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]",
+  emerald: "bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600",
+};
+const LEGAL_STAGE_ICON: Record<string, any> = {
+  PekerjaanMasuk: Inbox, BelumDiproses: Hourglass, Draft: FilePen, ReviewInternal: Eye, ReviewPihakKedua: Users, RevisiNegosiasi: RefreshCw,
+  Finalisasi: FileCheck, ProsesTTD: PencilLine, DokumenKembali: Stamp, Distribusi: Send, Arsip: Archive, Aktif: CheckCircle,
+};
 function LegalStatCard({ status, count, active, onClick, index, total }: { key?: any; status: string; count: number; active?: boolean; onClick: () => void; index?: number; total?: number }) {
   const hasFlow = typeof index === "number" && typeof total === "number";
   const isLast = hasFlow && index === total - 1;
+  const bar = LEGAL_STAGE_BAR[status] || "bg-rs-400";
+  const tone = bar.includes("A855F7") ? "purple" : bar.includes("F59E0B") ? "amber" : bar.includes("635BFF") ? "indigo" : bar.includes("emerald") ? "emerald" : "rs";
+  const I = LEGAL_STAGE_ICON[status] || Layers;
   return (
     <>
       <button onClick={onClick}
-        className={`shrink-0 w-36 text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-3 relative overflow-hidden transition cursor-pointer hover:border-rs-300 ${active ? "ring-2 ring-[#635BFF]" : ""}`}>
-        <span className={`absolute top-0 left-0 right-0 h-1 ${LEGAL_STAGE_BAR[status] || "bg-rs-400"}`} />
-        {hasFlow && <span className="text-[10px] font-bold text-rs-400">{String(index + 1).padStart(2, "0")}</span>}
-        <span className="block text-xl font-extrabold text-rs-900 dark:text-white tracking-tight leading-tight">{count.toLocaleString("en-US")}</span>
-        <span className="block text-[11px] font-semibold text-rs-500 dark:text-rs-400 leading-snug">{status === "Distribusi" ? "Distribusi / Implementasi" : LEGAL_STATUS_LABEL[status]}</span>
+        className={`shrink-0 w-52 text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 flex items-center gap-3 transition cursor-pointer hover:border-rs-300 ${active ? "ring-2 ring-[#635BFF]" : ""}`}>
+        <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${LEGAL_STAGE_TILE[tone]}`}><I className="w-5 h-5" /></div>
+        <div className="min-w-0">
+          <span className="block text-[11px] font-semibold text-rs-400 leading-snug truncate">{status === "Distribusi" ? "Distribusi / Implementasi" : LEGAL_STATUS_LABEL[status]}</span>
+          <span className="block text-xl font-extrabold text-rs-900 dark:text-white tracking-tight leading-tight">{count.toLocaleString("en-US")}</span>
+        </div>
       </button>
       {hasFlow && !isLast && <div aria-hidden className="shrink-0 self-center text-rs-300"><ChevronRight className="w-4 h-4" /></div>}
     </>
@@ -3951,7 +3976,10 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
   const [rejectJob, setRejectJob] = useState<LegalJob | null>(null);
   const [detailJob, setDetailJob] = useState<LegalJobWithLink | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>("semua");
-  const [jobView, setJobView] = useState<"board" | "table">("board");
+  const PJ_PAGE = 6;
+  const [incPage, setIncPage] = useState(1);
+  const [mainPage, setMainPage] = useState(1);
+  const [rejPage, setRejPage] = useState(1);
   // Divisi bisnis = PEMINTA (ajukan Permintaan Kontrak, pantau progresnya);
   // Legal/Admin = PEMROSES (setujui/tolak, buat kontrak). Manajemen hanya lihat.
   const isRequester = isDivisionRole(currentUser?.role);
@@ -3978,6 +4006,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
   const incoming = jobs.filter((j) => j.status === "menunggu_persetujuan").sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const rejected = jobs.filter((j) => j.status === "ditolak").sort((a, b) => (b.rejectedAt || "").localeCompare(a.rejectedAt || ""));
   const [jobSearch, setJobSearch] = useState("");
+  useEffect(() => { setMainPage(1); }, [statusFilter, jobSearch]);
   const mainJobs = jobs
     // "Semua": tabel utama tanpa Pekerjaan Masuk/Ditolak (punya tabel sendiri);
     // filter tahap tertentu: tampilkan persis pekerjaan pada tahap itu.
@@ -4013,11 +4042,6 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
       <LegalHero Icon={Briefcase} title={isRequester ? "Permintaan Kontrak" : "Pekerjaan Legal"}
         sub={isRequester ? `Ajukan kebutuhan kontrak ke Legal & pantau progresnya — divisi ${roleLabelOf(currentUser?.role)}.` : "Alur dokumen dari permintaan masuk sampai aktif. Klik tahap untuk menyaring."}
         right={<>
-          <div className="flex items-center bg-rs-100 dark:bg-rs-800 p-1 rounded-xl text-[11px] font-bold text-rs-500">
-            {([["board", "Board", Columns3], ["table", "Tabel", Table2]] as const).map(([k, l, I]) => (
-              <button key={k} onClick={() => setJobView(k)} className={`px-3 py-1 rounded-lg flex items-center gap-1.5 cursor-pointer ${jobView === k ? "bg-white dark:bg-rs-700 text-rs-900 dark:text-white shadow-xs" : ""}`}><I className="w-3 h-3" /> {l}</button>
-            ))}
-          </div>
           {isRequester ? (
           <button onClick={() => setRequestOpen(true)} className="px-3.5 py-2 text-[11px] font-bold text-white bg-[#635BFF] hover:bg-indigo-700 rounded-xl flex items-center gap-1.5 shadow-md shadow-indigo-500/20 transition-colors cursor-pointer"><Send className="w-4 h-4" /> Ajukan Permintaan Kontrak</button>
         ) : isLegalSide ? (
@@ -4030,11 +4054,9 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
         <div className="relative"><Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-rs-400" />
           <input value={jobSearch} onChange={(e) => setJobSearch(e.target.value)} placeholder="Cari judul, mitra, jenis, status…" className="w-56 pl-9 pr-3 py-2 bg-rs-100 dark:bg-rs-800/80 text-xs text-rs-800 dark:text-rs-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/40 border border-transparent font-medium" />
         </div>}>
-        <button onClick={() => setStatusFilter("semua")} className={`shrink-0 w-28 text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-3 relative overflow-hidden cursor-pointer ${statusFilter === "semua" ? "ring-2 ring-[#635BFF]" : ""}`}>
-          <span className="absolute top-0 left-0 right-0 h-1 bg-[#635BFF]" />
-          <span className="text-[10px] font-bold text-rs-400">SEMUA</span>
-          <span className="block text-xl font-extrabold text-rs-900 dark:text-white leading-tight tabular">{jobs.length}</span>
-          <span className="block text-[11px] font-semibold text-rs-500">Pekerjaan</span>
+        <button onClick={() => setStatusFilter("semua")} className={`shrink-0 w-44 text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 flex items-center gap-3 cursor-pointer hover:border-rs-300 ${statusFilter === "semua" ? "ring-2 ring-[#635BFF]" : ""}`}>
+          <div className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF]"><Layers className="w-5 h-5" /></div>
+          <div><span className="block text-[11px] font-semibold text-rs-400 leading-snug">Semua Pekerjaan</span><span className="block text-xl font-extrabold text-rs-900 dark:text-white tracking-tight leading-tight">{jobs.length}</span></div>
         </button>
         <div aria-hidden className="shrink-0 self-center text-rs-300"><ChevronRight className="w-4 h-4" /></div>
         {cardStatuses.map((s, i) => (
@@ -4057,7 +4079,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
             <table className="w-full text-left border-collapse plain-table">
               <thead><tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider"><th className="py-2.5 px-2">Judul Pekerjaan</th><th className="py-2.5 px-2">Badan Hukum</th><th className="py-2.5 px-2">Partner/Pihak</th><th className="py-2.5 px-2">Jenis</th><th className="py-2.5 px-2">PIC Pemberi</th><th className="py-2.5 px-2 text-center">Deadline</th><th className="py-2.5 px-2 text-center">Dokumen</th><th className="py-2.5 px-2 text-center">Tgl Masuk</th><th className="py-2.5 px-2 text-center">Aksi</th></tr></thead>
               <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
-                {incoming.map((j) => (
+                {incoming.slice((Math.min(incPage, Math.max(1, Math.ceil(incoming.length / PJ_PAGE))) - 1) * PJ_PAGE, Math.min(incPage, Math.max(1, Math.ceil(incoming.length / PJ_PAGE))) * PJ_PAGE).map((j) => (
                   <tr key={j.id} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40 transition-opacity duration-300">
                     <td className="py-3 px-2"><span className="font-bold text-rs-900 dark:text-white block">{j.title}</span><span className="text-[10px] text-rs-400 font-normal">{j.source === "divisi" && j.requesterName ? `Sumber: Divisi · oleh ${j.requesterName}` : "Sumber: Eksternal"}</span></td>
                     <td className="py-3 px-2 font-medium text-rs-500">{legalJobEntityCell(j)}</td>
@@ -4091,49 +4113,13 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
                 ))}
               </tbody>
             </table>
+            <Pager page={incPage} total={incoming.length} size={PJ_PAGE} onPage={setIncPage} noun="permintaan" />
           </div>
         )}
       </div>
 
-      {/* ===== Board per tahap ===== */}
-      {jobView === "board" && (
-        <div className="flex gap-3 overflow-x-auto pb-2">
-          {LEGAL_STAGES.filter((st) => !["PekerjaanMasuk", "BelumDiproses"].includes(st)).map((st) => {
-            const col = mainJobs.filter((j) => legalJobDisplayStatus(j) === st);
-            if (statusFilter !== "semua" && statusFilter !== st) return null;
-            return (
-              <div key={st} className="w-64 shrink-0 rounded-2xl bg-rs-100/70 dark:bg-rs-800/40 p-2.5">
-                <div className="flex items-center justify-between px-1.5 py-1.5 mb-2">
-                  <span className="flex items-center gap-2 text-xs font-bold text-rs-700 dark:text-rs-200"><span className={`w-2 h-2 rounded-full ${LEGAL_DOT[st] || "bg-rs-400"}`} />{LEGAL_STATUS_LABEL[st]}</span>
-                  <span className="text-[10px] font-bold text-rs-400">{col.length}</span>
-                </div>
-                <div className="space-y-2.5 min-h-[60px]">
-                  {col.map((j) => (
-                    <div key={j.id} onClick={() => setDetailJob(j)} className="p-3 rounded-xl bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs hover:border-[#635BFF] transition cursor-pointer">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className={PJ_CHIP}>{j.docType}</span>
-                        {j.priority && <span className={pjPrio(j.priority)}>{j.priority}</span>}
-                      </div>
-                      <h4 className="text-xs font-bold text-rs-900 dark:text-white leading-snug">{j.title}</h4>
-                      <p className="text-[11px] text-rs-400 font-medium mt-0.5">{j.partnerName}</p>
-                      <div className="flex items-center justify-between mt-3 pt-2.5 border-t border-rs-100 dark:border-rs-800">
-                        <div className="flex items-center gap-1.5">
-                          <div className="w-5 h-5 rounded-full bg-indigo-50 dark:bg-indigo-950/50 text-[#635BFF] text-[10px] font-bold flex items-center justify-center shrink-0">{String(j.picName || "?").split(" ").map((w: string) => w[0]).slice(0, 2).join("").toUpperCase()}</div>
-                          <span className="text-[10px] font-semibold text-rs-500">{j.picName}</span>
-                        </div>
-                        <span className="text-[10px] font-bold text-rs-400 flex items-center gap-1"><Calendar className="w-3 h-3" />{fmtDateID(j.deadline)}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {/* ===== Tabel Pekerjaan Legal ===== */}
-      {jobView === "table" && (
+      {(
         <div className={PJ_CARD}>
           {mainJobs.length === 0 ? (
             <p className="py-6 text-center text-xs text-rs-400">{jobSearch.trim() ? `Tidak ada pekerjaan yang cocok dengan "${jobSearch.trim()}".` : "Belum ada pekerjaan pada status ini."}</p>
@@ -4142,7 +4128,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
               <table className="w-full text-left border-collapse plain-table">
                 <thead><tr className="border-b border-rs-100 dark:border-rs-800 text-[10px] font-bold text-rs-400 uppercase tracking-wider"><th className="py-2.5 px-2">Judul Pekerjaan</th><th className="py-2.5 px-2">Badan Hukum</th><th className="py-2.5 px-2">Jenis</th><th className="py-2.5 px-2">PIC Pemberi</th><th className="py-2.5 px-2 text-center">Status</th><th className="py-2.5 px-2 text-center">Deadline</th><th className="py-2.5 px-2 text-center">Prioritas</th><th className="py-2.5 px-2 text-center">Aksi</th></tr></thead>
                 <tbody className="divide-y divide-rs-50 dark:divide-rs-800/60 text-xs font-semibold text-rs-700 dark:text-rs-300">
-                  {mainJobs.map((j) => (
+                  {mainJobs.slice((Math.min(mainPage, Math.max(1, Math.ceil(mainJobs.length / PJ_PAGE))) - 1) * PJ_PAGE, Math.min(mainPage, Math.max(1, Math.ceil(mainJobs.length / PJ_PAGE))) * PJ_PAGE).map((j) => (
                     <tr key={j.id} className="hover:bg-rs-50/50 dark:hover:bg-rs-800/40">
                       <td className="py-3 px-2"><span className="font-bold text-rs-900 dark:text-white block">{j.title}</span><span className="text-[10px] text-rs-400 font-normal">{j.partnerName}</span></td>
                       <td className="py-3 px-2 font-medium text-rs-500">{legalJobEntityCell(j)}</td>
@@ -4168,6 +4154,7 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
                   ))}
                 </tbody>
               </table>
+              <Pager page={mainPage} total={mainJobs.length} size={PJ_PAGE} onPage={setMainPage} noun="pekerjaan" />
             </div>
           )}
         </div>
@@ -4181,12 +4168,13 @@ function PekerjaanLegalPage({ currentUser, actionPermissions, onOpenContract, on
         </div>
         {rejected.length === 0 ? (
           <p className="py-3 text-center text-xs text-rs-400">Belum ada pekerjaan yang ditolak.</p>
-        ) : rejected.map((j) => (
+        ) : rejected.slice((Math.min(rejPage, Math.max(1, Math.ceil(rejected.length / PJ_PAGE))) - 1) * PJ_PAGE, Math.min(rejPage, Math.max(1, Math.ceil(rejected.length / PJ_PAGE))) * PJ_PAGE).map((j) => (
           <div key={j.id} className="flex items-center justify-between gap-3 py-2.5 border-b border-rs-100 dark:border-rs-800 last:border-0">
             <div><h4 className="text-xs font-bold text-rs-900 dark:text-white">{j.title}</h4><p className="text-[11px] text-rs-400 font-medium">{j.partnerName} • Ditolak {j.rejectedByName}</p></div>
             <span className="text-[11px] font-medium text-rs-400 text-right" title={fmtDateTimeID(j.rejectedAt)}>{j.rejectionReason}</span>
           </div>
         ))}
+        <Pager page={rejPage} total={rejected.length} size={PJ_PAGE} onPage={setRejPage} noun="pekerjaan" />
       </div>
       {addOpen && (
         <AddLegalJobChooser onClose={() => setAddOpen(false)}
@@ -6262,11 +6250,13 @@ export default function App() {
   type DcsDoc = { id: string; documentNumber: string; title: string; docTypeCode: string; department: string; archiveCategory?: string; archiveSubFolderId?: string; versions: DcsVersion[] };
   const [dcsDocs, setDcsDocs] = useState<DcsDoc[]>([]);
   const [dcsSelectedId, setDcsSelectedId] = useState<string | null>(null);
+  const [dcsPage, setDcsPage] = useState(1);
   const [dcsSelectedVersionId, setDcsSelectedVersionId] = useState<string | null>(null);
   const [dcsHistoryOpen, setDcsHistoryOpen] = useState(false);
   const [dcsSearch, setDcsSearch] = useState("");
   // Filter jenis dokumen DCS (SOP/IK/Memo/Kebijakan/…) di dalam tab — "" = Semua.
   const [dcsTypeFilter, setDcsTypeFilter] = useState("");
+  useEffect(() => { setDcsPage(1); }, [dcsTypeFilter, dcsSearch]);
   const [dcsBusy, setDcsBusy] = useState(false);
   const [dcsCreateOpen, setDcsCreateOpen] = useState(false);
   const [dcsCreateForm, setDcsCreateForm] = useState({
@@ -9470,17 +9460,8 @@ export default function App() {
   // Approve/reject langkah approval matrix yang sedang giliran approver ybs
   // (dicek server-side; tombol ini hanya tampil kalau currentUser memang
   // approver step yang pending, tapi endpoint tetap divalidasi ulang).
-  // Aturan sesi review: ada komentar/markup baru dari saya pada sesi ini → tombol Setujui dikunci (server memvalidasi ulang).
-  const reviewActivity = useReviewActivity(
-    selectedContract && (selectedContract.status === "OnReview" || selectedContract.status === "FinalReview") ? `/api/contracts/${selectedContract.id}/review-session` : null,
-    clauseComments.length,
-  );
-  const reviewActivityNote = reviewActivity.hasActivity
-    ? `Setujui dikunci: Anda sudah ${describeReviewActivity(reviewActivity.counts) || "mengubah markup"} pada sesi review ini. Gunakan Minta Revisi.`
-    : "";
   const handleApprovalDecision = async (decision: "approved" | "rejected") => {
     if (!selectedContract) return;
-    if (decision === "approved" && reviewActivity.hasActivity) { showToast(reviewActivityNote, "warning"); return; }
     const openInternal = clauseComments.filter((c) => c.contractId === selectedContract.id && !c.parentId && !c.resolved && !c.external);
     if (decision === "rejected" && !approvalDecisionComment.trim() && openInternal.length === 0) {
       showToast("Tandai dulu bagian yang perlu direvisi di Mode Tinjau (komentar / coret / ganti), atau isi catatan revisi.", "warning");
@@ -14420,16 +14401,6 @@ export default function App() {
               </button>
             </div>
 
-            <div className="flex items-center justify-between bg-white dark:bg-rs-800 border border-rs-200/80 dark:border-rs-700/80 px-3 py-2 rounded-xl shrink-0 mb-4 cursor-pointer hover:border-rs-300">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-6 h-6 rounded-full bg-rs-900 text-white font-bold text-[10px] flex items-center justify-center shrink-0">
-                  {(currentTenant?.name || "E").trim().charAt(0).toLowerCase()}
-                </div>
-                <span className="text-xs font-bold text-rs-800 dark:text-rs-100 truncate">{currentTenant?.name || "Enterprise"}</span>
-              </div>
-              <ChevronsUpDown className="w-3.5 h-3.5 text-rs-400 shrink-0" />
-            </div>
-
             <FadeScroll className="space-y-4 -mx-1 pl-1 pr-2">
             <div>
               <p className="text-[10px] font-bold text-rs-400 dark:text-rs-500 uppercase tracking-wider px-3 mb-2">
@@ -16542,32 +16513,33 @@ export default function App() {
                 <p className="text-xs font-medium text-rs-400 mt-0.5">Atur jenis dokumen, penomoran, master data, pengguna, dan hak akses.</p>
               </div></div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              <div className="space-y-6">
               {(() => {
 
                 const { CFG_ICON, GROUPS } = getCfg();
                 const itemBtn = (id: string, label: string, Icon: any, active: boolean, onClick: () => void, ext?: boolean) => (
                   <button key={id} onClick={onClick}
-                    className={`w-full flex items-center gap-3 px-3 ${id === "beranda" ? "py-2.5" : "py-2"} rounded-xl text-xs font-semibold text-left transition-all cursor-pointer ${active ? "bg-[#EFF0FF] dark:bg-indigo-950/60 text-[#635BFF] dark:text-indigo-400 font-bold" : "text-rs-500 dark:text-rs-400 hover:bg-rs-100 dark:hover:bg-rs-800/60"}`}>
+                    className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${active ? "bg-[#EFF0FF] dark:bg-indigo-950/60 text-[#635BFF] dark:text-indigo-400 font-bold" : "text-rs-500 hover:bg-rs-100 dark:hover:bg-rs-800 hover:text-rs-900 dark:hover:text-white"}`}>
                     <Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate flex-1">{label}</span>
-                    
+                    <span>{label}</span>
                   </button>
                 );
                 return (
-                  <aside aria-label="Kategori konfigurasi" className="lg:col-span-3 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-3 self-start space-y-0.5">
-                    {itemBtn("beranda", "Beranda", CFG_ICON.beranda || LayoutDashboard, configTab === "beranda", () => setConfigTab("beranda"))}
+                  <nav aria-label="Kategori konfigurasi" className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 grid grid-cols-1 xl:grid-cols-[auto_minmax(0,5fr)_minmax(0,3fr)_minmax(0,4fr)] gap-x-6 gap-y-4">
+                    <div className="shrink-0 xl:pt-[22px]">{itemBtn("beranda", "Beranda", CFG_ICON.beranda || LayoutDashboard, configTab === "beranda", () => setConfigTab("beranda"))}</div>
                     {GROUPS.map((g) => (
-                      <React.Fragment key={g.group}>
-                        <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider px-3 pt-4 pb-1">{g.group}</div>
-                        {g.items.map((t) => itemBtn(t.k + (t.main || ""), t.label, CFG_ICON[t.k] || Settings, !t.main && configTab === t.k, () => goConfig(t.k, t.main), !!t.main))}
-                      </React.Fragment>
+                      <div key={g.group} className="min-w-0">
+                        <div className="text-[10px] font-bold text-rs-400 uppercase tracking-wider px-3 pb-1.5">{g.group}</div>
+                        <div className="flex flex-wrap gap-1">
+                          {g.items.map((t) => itemBtn(t.k + (t.main || ""), t.label, CFG_ICON[t.k] || Settings, !t.main && configTab === t.k, () => goConfig(t.k, t.main), !!t.main))}
+                        </div>
+                      </div>
                     ))}
-                  </aside>
+                  </nav>
                 );
               })()}
 
-              <div className="cfg-content lg:col-span-9 min-w-0 space-y-5 rounded-2xl bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs p-6">
+              <div className="cfg-content min-w-0 space-y-5 rounded-2xl bg-white dark:bg-rs-900 border border-rs-200/80 dark:border-rs-800 shadow-xs p-6">
               {configTab !== "beranda" && (() => {
                 const META: Record<string, [string, string]> = {
                   dcsdoctypes: ["Jenis Dokumen (Semua Modul)", "Satu tempat untuk jenis dokumen DCS, Dokumen Eksternal, dan Dokumen Karyawan."],
@@ -19307,20 +19279,18 @@ export default function App() {
                       ];
                       return (
                         <>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
+                          <div className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs grid grid-cols-2 lg:grid-cols-5 divide-x divide-y lg:divide-y-0 divide-rs-100 dark:divide-rs-800 overflow-hidden">
                             {hcards.map((h) => {
                               const on = monitorHealth === h.key;
                               return (
-                                <button key={h.label}
+                                <button key={h.label} type="button"
                                   onClick={() => { setMonitorHealth(h.key !== "" && on ? "" : h.key); setMonitorPage(1); }}
                                   title={h.key === "" ? "Tampilkan semua kontrak" : on ? "Klik lagi untuk lepas filter" : "Klik untuk saring tabel ke kontrak ini"}
-                                  style={h.color ? { borderLeftColor: h.color } : undefined}
-                                  className={`text-left bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-4 flex items-center gap-3 cursor-pointer ${h.color ? "border-l-4 hover:border-rs-300" : ""} ${on ? "ring-2 ring-[#635BFF]" : ""}`}>
-                                  <div className={`w-11 h-11 rounded-2xl flex items-center justify-center ${h.tile}`}><h.I className="w-5 h-5" /></div>
+                                  className={`text-left px-5 py-4 flex items-center gap-3 cursor-pointer transition-colors ${on ? "bg-indigo-50/70 dark:bg-indigo-950/30" : "hover:bg-rs-50 dark:hover:bg-rs-800/40"}`}>
+                                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${h.tile}`}><h.I className="w-4 h-4" /></div>
                                   <div>
                                     <span className="text-[11px] font-semibold text-rs-400 block">{h.label}</span>
-                                    <span className="text-xl font-extrabold text-rs-900 dark:text-white">{h.count.toLocaleString("en-US")}</span>
-                                    {h.sub && <span className="block text-[10px] text-rs-400 font-medium">{h.sub}</span>}
+                                    <span className="text-lg font-extrabold text-rs-900 dark:text-white tracking-tight">{h.count.toLocaleString("en-US")}</span>
                                   </div>
                                 </button>
                               );
@@ -19531,14 +19501,13 @@ export default function App() {
                               <button onClick={() => { setDcsTypeFilter(""); setDcsSearch(""); }} className="text-[#635BFF] hover:underline cursor-pointer">Reset filter</button>
                             </div>
                           )}
-                          {shown.map((d) => {
+                          {shown.slice((Math.min(dcsPage, Math.max(1, Math.ceil(shown.length / 6))) - 1) * 6, Math.min(dcsPage, Math.max(1, Math.ceil(shown.length / 6))) * 6).map((d) => {
                             const stt = state(d);
                             const eff = d.versions.find((v) => v.status === "effective");
                             return (
                               <div key={d.id}
                                 onClick={() => { setDcsSelectedId(d.id); const t = dcsBuildTree(d); setDcsSelectedVersionId(t.root?.id ?? null); setDcsHistoryOpen(false); }}
                                 className="bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs overflow-hidden flex hover:border-rs-300 transition cursor-pointer">
-                                <div className={`w-1.5 ${barOf(d.docTypeCode)}`} />
                                 <div className="p-4 flex-1 min-w-0">
                                   <div className="flex items-center justify-between mb-1.5">
                                     <span className="text-[10px] font-bold text-rs-400">{d.documentNumber}</span>
@@ -19558,6 +19527,7 @@ export default function App() {
                               </div>
                             );
                           })}
+                          <div className="md:col-span-2"><Pager page={dcsPage} total={shown.length} size={6} onPage={setDcsPage} noun="dokumen" /></div>
                         </div>
                         <div className="lg:col-span-4 bg-white dark:bg-rs-900 rounded-2xl border border-rs-200/80 dark:border-rs-800 shadow-xs p-5 self-start">
                           <div className="flex items-center justify-between mb-4">
@@ -22678,16 +22648,12 @@ export default function App() {
                                   </button>
                                   <button
                                     onClick={() => handleApprovalDecision("approved")}
-                                    disabled={isDecidingApproval || reviewActivity.hasActivity}
-                                    title={reviewActivityNote || undefined}
-                                    className="py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-600/30 transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                                    disabled={isDecidingApproval}
+                                    className="py-1.5 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-600/30 transition cursor-pointer disabled:opacity-50"
                                   >
                                     Setujui
                                   </button>
                                 </div>
-                                {reviewActivity.hasActivity && (
-                                  <p className="text-[10px] text-amber-600 leading-snug">{reviewActivityNote}</p>
-                                )}
                               </div>
                             )}
                             {selectedContract.approvalHistory && selectedContract.approvalHistory.length > 0 && (
@@ -27805,9 +27771,8 @@ export default function App() {
                   >Minta Revisi</button>
                   <button
                     onClick={() => handleApprovalDecision("approved")}
-                    disabled={isDecidingApproval || reviewActivity.hasActivity}
-                    title={reviewActivityNote || undefined}
-                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={isDecidingApproval}
+                    className="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-indigo-600 text-white hover:bg-indigo-500 cursor-pointer whitespace-nowrap disabled:opacity-50"
                   >✓ Setujui</button>
                 </div>
               )}

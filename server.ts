@@ -7,7 +7,7 @@ import {
   Clause, Variable, Template, Contract, ContractVersion, ContractStatus,
   ContractApprovalStep, AuditTrail, SystemNotification, EmployeeData, VendorData, User, UserRole,
   ClauseComment, PushSubscription as PushSub, SubFolder, ContractSharingFeeItem, ContractVendorSnapshot,
-  ContractPaymentTerm, ContractObligation, StoredDocumentRef, ContractVendorEvaluation, BudgetEntry,
+  ContractPaymentTerm, ContractObligation, StoredDocumentRef, ExternalReviewCopy, ContractVendorEvaluation, BudgetEntry,
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
   SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
@@ -31,6 +31,7 @@ import {
 import { clauseToPluginBlocks, extractImageSrcs } from "./clause-html.js";
 import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap, type LetterheadInput, type SignatureInput, type SignatureOptions, type DigitalSignatureInput, readLayout, patchLayout, type LayoutPatch, listVariables, setVariables, listTranslatable, applyTranslations, setLanguageMode, readLanguage, refreshEnglishVars, refreshRangkapTail, signaturePageText, hasTwoCopies, type DocLanguage, type BilingualLayoutMode, type LangStash, unhideLegacyLanguage } from "./template-docx.js";
 import { readChangeHistory, acceptAllChanges, hasTrackedChanges, originalTextOf } from "./review-changes.js";
+import { buildExternalCopy, mergeExternalMarkup } from "./review-isolation.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
@@ -6924,14 +6925,117 @@ async function reviewBaseBuffer(db: any, contract: Contract): Promise<{ buf: Buf
   return { buf, file, version: cur };
 }
 
-function reviewEditorConfig(oo: ReturnType<typeof onlyOfficeSettings>, contract: Contract, base: { file: StoredDocumentRef; version: number }, who: { id: string; name: string }) {
+// ---------------------------------------------------------------------------
+// PEMISAHAN MARKUP INTERNAL ↔ EKSTERNAL (lihat review-isolation.ts).
+// Berkas dokumen utama = MASTER: menyimpan SEMUA markup (internal + eksternal) dari awal sampai akhir dan hanya
+// dibuka tim internal. Pihak eksternal TIDAK PERNAH menerima master: tiap ronde dibuatkan SALINAN bersih
+// (semua perubahan diterima, komentar & daftar penulis dibuang dari dalam berkas). Markup eksternal dikerjakan
+// di salinan itu, lalu digabung kembali ke master dengan nama pengubah "(Pihak Eksternal)".
+// ---------------------------------------------------------------------------
+const externalCopyInflight = new Map<string, Promise<ExternalReviewCopy | null>>();
+
+/** Salinan eksternal ronde berjalan; dibuat dari master saat pertama dibutuhkan (satu per ronde). */
+async function ensureExternalCopy(contract: Contract): Promise<ExternalReviewCopy | null> {
+  const round = contract.externalRoundCount || 0;
+  const existing = contract.externalReviewCopy;
+  if (existing && existing.round === round) return existing;
+  const running = externalCopyInflight.get(contract.id);
+  if (running) return running;
+  const job = (async () => {
+    const base = await reviewBaseBuffer(loadDB(), contract);
+    if (!base) return null;
+    const copyBuf = await buildExternalCopy(base.buf); // melempar error bila masih ada jejak internal (fail-closed)
+    const safeId = contract.id.replace(/[^\w-]/g, "");
+    const stored = await storeFile(copyBuf, `contractdoc-${safeId}-ext-r${round}-${Date.now()}.docx`, DOCX_MIME);
+    const ref = buildDocumentRef(copyBuf, stored, base.file.fileName.replace(/\.docx$/i, "") + " (salinan eksternal).docx", "docx", "Sistem");
+    const db = loadDB();
+    const fresh = (db.contracts as Contract[]).find((c) => c.id === contract.id);
+    if (!fresh) return null;
+    if (!fresh.externalReviewCopy || fresh.externalReviewCopy.round !== round) {
+      fresh.externalReviewCopy = { round, masterVersion: base.version, masterFile: base.file, baselineFile: ref, workFile: ref };
+      saveDB(db);
+    }
+    return fresh.externalReviewCopy ?? null;
+  })().finally(() => externalCopyInflight.delete(contract.id));
+  externalCopyInflight.set(contract.id, job);
+  return job;
+}
+
+/** Berkas .docx yang boleh dilihat tamu eksternal: selalu salinan bersih, tidak pernah master. */
+async function externalSafeDocx(contract: Contract, buf: Buffer): Promise<Buffer> {
+  if (contract.status === "ReviewEksternal") {
+    const copy = await ensureExternalCopy(contract);
+    if (copy) return readStoredDocument(copy.workFile, uploadDir);
+  }
+  return buildExternalCopy(buf);
+}
+
+/** Simpan hasil review eksternal: berkas kerja eksternal selalu disimpan; markupnya digabung ke master bila bisa. */
+async function saveExternalReviewResult(
+  contract: Contract, buf: Buffer, reviewer: string, ip: string | undefined,
+): Promise<{ ok: true; message?: undefined } | { ok: false; message: string }> {
+  const copy = contract.externalReviewCopy;
+  if (!copy || copy.round !== (contract.externalRoundCount || 0)) return { ok: false, message: "Salinan eksternal ronde ini tidak ditemukan." };
+  const baselineBuf = await readStoredDocument(copy.baselineFile, uploadDir);
+  // Penjaga: tamu hanya boleh menambah jejak. Tampilan "Original" harus sama dengan salinan yang dikirim.
+  if ((await originalTextOf(buf)) !== (await originalTextOf(baselineBuf))) return { ok: false, message: "Ada perubahan di luar Track Changes. Aktifkan Lacak Perubahan lalu ulangi." };
+  const safeId = contract.id.replace(/[^\w-]/g, "");
+  const workStored = await storeFile(buf, `contractdoc-${safeId}-ext-r${copy.round}-work-${Date.now()}.docx`, DOCX_MIME);
+  const workRef = buildDocumentRef(buf, workStored, copy.baselineFile.fileName, "docx", reviewer);
+  // Selalu digabung dari master awal ronde + berkas kerja terbaru, sehingga simpan berulang tidak menggandakan markup.
+  const masterBuf = await unhideLegacyLanguage(await readStoredDocument(copy.masterFile, uploadDir));
+  const merged = await mergeExternalMarkup({ master: masterBuf, baseline: baselineBuf, returned: buf });
+  let mergedRef: StoredDocumentRef | null = null;
+  if (merged.ok) {
+    const mStored = await storeFile(merged.buf, `contractdoc-${safeId}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`, DOCX_MIME);
+    mergedRef = buildDocumentRef(merged.buf, mStored, copy.masterFile.fileName, "docx", reviewer);
+  }
+
+  const db = loadDB();
+  const c = (db.contracts as Contract[]).find((x) => x.id === contract.id);
+  if (!c || !c.externalReviewCopy || c.externalReviewCopy.round !== copy.round) return { ok: false, message: "Ronde review eksternal sudah berganti." };
+  c.externalReviewCopy.workFile = workRef;
+  const actor = { user: { id: "external", name: reviewer, role: "External" }, ip, query: { tenantId: c.tenantId }, body: {} } as unknown as AuthedRequest;
+  const now = new Date().toISOString();
+  if (merged.ok && mergedRef) {
+    const versions = uploadedDocumentVersions(db, c);
+    const cur = currentDocumentVersionNumber(c, versions);
+    const curVer = versions.find((v) => v.version === cur);
+    if (curVer && (curVer.working || curVer.editMethod === "review")) {
+      curVer.file = mergedRef; curVer.updatedAt = now; curVer.updatedBy = reviewer;
+      c.currentDocument = mergedRef; c.updatedAt = now;
+    } else {
+      pushDocumentVersion(db, actor, c, mergedRef, { comment: "Tinjauan eksternal (Track Changes) — digabung ke master", basedOnVersion: copy.masterVersion, editMethod: "review" });
+    }
+    c.externalUnmerged = (c.externalUnmerged || []).filter((u) => u.round !== copy.round);
+    pushAudit(db, actor, {
+      contractId: c.id, contractNumber: c.contractNumber, action: "Review Track Changes",
+      details: `${reviewer} menyimpan markup eksternal ronde ${copy.round}; digabung ke master (${merged.stats.inserted} sisipan, ${merged.stats.deleted} coretan, ${merged.stats.comments} komentar, ${merged.stats.paragraphsAdded} paragraf baru). SHA-256 ${mergedRef.sha256.slice(0, 16)}…`,
+    });
+  } else if (!merged.ok) {
+    c.externalUnmerged = [...(c.externalUnmerged || []).filter((u) => u.round !== copy.round), { round: copy.round, savedAt: now, by: reviewer, file: workRef, reason: merged.reason }];
+    pushAudit(db, actor, {
+      contractId: c.id, contractNumber: c.contractNumber, action: "Review Eksternal Belum Digabung",
+      details: `${reviewer} menyimpan berkas review eksternal ronde ${copy.round}, tetapi belum bisa digabung otomatis ke master: ${merged.reason}. Master tidak diubah; berkas eksternal tersimpan utuh (SHA-256 ${workRef.sha256.slice(0, 16)}…).`,
+    });
+    pushNotif(db, c.tenantId, {
+      title: "Markup Eksternal Perlu Digabung Manual",
+      message: `Berkas review eksternal kontrak "${c.title}" tersimpan, tetapi belum bisa digabung otomatis ke master (${merged.reason}).`,
+      type: "warning", contractId: c.id,
+    });
+  }
+  saveDB(db);
+  return { ok: true };
+}
+
+function reviewEditorConfig(oo: ReturnType<typeof onlyOfficeSettings>, contract: Contract, base: { file: StoredDocumentRef; version: number }, who: { id: string; name: string }, keyVariant = "rv") {
   const session = randomUUID();
   const claims = { contractId: contract.id, version: base.version, userId: who.id, tenantId: contract.tenantId, session, reviewer: who.name };
   const fileUrl = `${oo.appUrl}/api/onlyoffice/review-file/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "rfile" }, OO_FILE_TTL))}`;
   const callbackUrl = `${oo.appUrl}/api/onlyoffice/review-callback/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "rcallback" }, OO_FILE_TTL))}`;
   return buildEditorConfig(oo, {
     contractId: contract.id, fileName: base.file.fileName, version: base.version, sha256: base.file.sha256,
-    canEdit: false, review: true, keyVariant: "rv", user: who, fileUrl, callbackUrl,
+    canEdit: false, review: true, keyVariant, user: who, fileUrl, callbackUrl,
   });
 }
 
@@ -6959,12 +7063,15 @@ app.get("/api/onlyoffice/review-file/:id", async (req, res) => {
   const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
   if (!contract) return res.status(404).end();
   try {
-    const base = await reviewBaseBuffer(db, contract);
-    if (!base) return res.status(404).end();
+    // Tamu eksternal HANYA dilayani salinan bersih ronde ini — tidak pernah master yang berisi markup internal.
+    const buf = claims.userId === "external"
+      ? (contract.externalReviewCopy ? await readStoredDocument(contract.externalReviewCopy.workFile, uploadDir) : null)
+      : (await reviewBaseBuffer(db, contract))?.buf ?? null;
+    if (!buf) return res.status(404).end();
     res.setHeader("Content-Type", DOCX_MIME);
-    res.setHeader("Content-Length", base.buf.length);
+    res.setHeader("Content-Length", buf.length);
     res.setHeader("Cache-Control", "private, no-store");
-    res.send(base.buf);
+    res.send(buf);
   } catch (err) {
     logger.error({ err, contractId: contract.id }, "ONLYOFFICE: gagal membaca berkas tinjauan");
     res.status(500).end();
@@ -6993,6 +7100,14 @@ app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
     const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
     if (!contract) return fail("Kontrak tidak ditemukan");
     if (!REVIEW_DOC_STATUSES.includes(contract.status)) return fail("Dokumen tidak sedang dalam tahap tinjauan.");
+    if (claims.userId === "external") {
+      // Tamu eksternal bekerja di SALINAN bersih; markupnya digabung ke master (master tidak pernah dikirim ke tamu).
+      if (contract.status !== "ReviewEksternal") return fail("Review eksternal sedang tidak dibuka.");
+      const saved = await saveExternalReviewResult(contract, buf, claims.reviewer || "Pihak Eksternal", req.ip);
+      return saved.ok ? res.json({ error: 0 }) : fail(saved.message);
+    }
+    // Selama Review Eksternal berjalan, master dikunci: perubahan internal akan tertimpa saat markup eksternal digabung.
+    if (contract.status === "ReviewEksternal") return fail("Dokumen terkunci selama Review Eksternal berjalan. Perubahan internal bisa dilakukan setelah ronde ini selesai.");
     const base = await reviewBaseBuffer(db, contract);
     if (!base) return fail("Dokumen utama tidak ditemukan");
     // Penjaga: peninjau hanya boleh menambah jejak (Track Changes/komentar). Tampilan "Original" (semua perubahan
@@ -8670,6 +8785,17 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, requirePerm("
       : "Review eksternal hanya untuk kontrak yang sudah disetujui internal dan belum masuk proses TTD." });
   }
   const openingNewRound = contract.status === "ApprovedInternal";
+  // Gerbang kirim: yang diserahkan ke pihak eksternal harus sudah final ACC internal — tidak boleh ada
+  // komentar/usulan internal yang masih terbuka (markup yang sudah selesai tetap tersimpan sebagai riwayat di master).
+  if (openingNewRound) {
+    const openInternal = openReviewCommentIds(db, contract.id, (c) => !isExternallyVisibleComment(c));
+    if (openInternal.length) {
+      return res.status(409).json({
+        code: "OPEN_INTERNAL_REVIEW",
+        error: `Masih ada ${openInternal.length} komentar/usulan internal yang belum diselesaikan. Selesaikan dulu sebelum dikirim ke pihak eksternal.`,
+      });
+    }
+  }
   // Link yang masih berlaku dipakai ulang (jangan diputar tiap klik) supaya link
   // yang sudah dikirim ke pihak eksternal tidak mati. Putar token = disable dulu.
   const tokenStillValid = !!contract.externalReviewToken
@@ -9332,6 +9458,8 @@ app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => 
       buf = await convertedDocxFor(buf);
       mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     }
+    // Fail-closed: berkas Word untuk tamu selalu salinan bersih (tanpa markup/komentar internal), bukan master.
+    if (info.viewFormat === "docx") buf = await externalSafeDocx(contract, buf);
     res.setHeader("Content-Type", mime);
     res.setHeader("Content-Length", buf.length);
     res.setHeader("Cache-Control", "private, no-store");
@@ -9352,10 +9480,9 @@ app.get("/api/external-review/:token/review-doc/config", apiLimiter, async (req,
   if (contract.externalReviewLocked || contract.status !== "ReviewEksternal") return res.status(403).json({ error: "Review eksternal sedang tidak dibuka." });
   const name = String(req.query.name || "").replace(/[<>"]/g, "").trim().slice(0, 60);
   if (!name) return res.status(400).json({ error: "Isi nama Anda dulu supaya perubahan Anda tercatat." });
-  const db = loadDB();
-  const base = await reviewBaseBuffer(db, contract);
-  if (!base) return res.json({ enabled: false });
-  const config = reviewEditorConfig(oo, contract, base, { id: "external", name: `${name} (Pihak Eksternal)` });
+  const copy = await ensureExternalCopy(contract);
+  if (!copy) return res.json({ enabled: false });
+  const config = reviewEditorConfig(oo, contract, { file: copy.workFile, version: copy.masterVersion }, { id: "external", name: `${name} (Pihak Eksternal)` }, "rx");
   res.json({ enabled: true, documentServerUrl: oo.publicUrl, config });
 });
 
@@ -9363,8 +9490,14 @@ app.get("/api/external-review/:token/review-changes", apiLimiter, async (req, re
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
   if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
-  try { res.json(await changeHistoryOf(contract)); }
-  catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
+  try {
+    // Riwayat yang dilihat tamu dibaca dari SALINAN eksternal (hanya markup eksternal), bukan dari master.
+    const copy = contract.status === "ReviewEksternal" ? await ensureExternalCopy(contract)
+      : contract.externalReviewCopy?.round === (contract.externalRoundCount || 0) ? contract.externalReviewCopy : null;
+    if (!copy) return res.json({ hasReview: false, changes: [], comments: [] });
+    const hist = await readChangeHistory(await readStoredDocument(copy.workFile, uploadDir));
+    res.json({ hasReview: hist.changes.length + hist.comments.length > 0, updatedAt: copy.workFile.uploadedAt, ...hist });
+  } catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
 });
 
 // PUBLIK — tamu eksternal klik "OK / Setuju" (klausul sudah sesuai). Sekali

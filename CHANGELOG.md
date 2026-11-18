@@ -1,5 +1,20 @@
 # Changelog & Panduan Migrasi
 
+## [Unreleased #32] — Pemisahan markup internal ↔ eksternal (satu master, riwayat utuh)
+
+### Ringkasan
+- **Master file** = berkas dokumen utama di server. Menyimpan SEMUA markup (Track Changes + komentar) internal dan eksternal dari awal sampai akhir. Hanya dibuka tim internal; pihak eksternal **tidak pernah** menerimanya.
+- **Salinan eksternal** dibuat otomatis per ronde (`review-isolation.ts › buildExternalCopy`): semua perubahan diterima, komentar dibuang, dan bagian berkas yang menyimpan komentar/daftar penulis (`comments.xml`, `people.xml`, dst.) dihapus — karena komentar & Track Changes tersimpan DI DALAM `.docx`, menyembunyikannya di layar saja tidak cukup. Dibuat fail-closed: bila masih ada jejak internal, berkas tidak dikirim.
+- Tamu eksternal mengerjakan salinan itu (editor ONLYOFFICE, `GET /api/external-review/:token/review-doc/config`, `/document`, `/review-changes` semuanya membaca salinan). Saat berkas tersimpan, markup tamu **digabung ke master** (`mergeExternalMarkup`): sisipan, coretan, komentar, dan paragraf baru, dengan nama pengubah "(Pihak Eksternal)". Markup internal di master tidak disentuh.
+- Penggabungan **divalidasi**: "terima semua" hasil gabungan harus sama dengan berkas tamu, tampilan "Original" harus sama dengan master, dan markup internal tidak boleh berkurang. Bila gagal atau ada perubahan yang belum didukung (perubahan format, struktur tabel, paragraf dipecah/digabung, markup di header/footer), **master tidak diubah**; berkas tamu disimpan utuh di `contract.externalUnmerged`, tercatat di audit, dan Legal diberi notifikasi untuk menggabung manual.
+- **Gerbang kirim**: membuka ronde review eksternal ditolak (409, `OPEN_INTERNAL_REVIEW`) selama masih ada komentar/usulan internal yang belum diselesaikan.
+- **Master dikunci selama Review Eksternal**: simpan dari editor internal ditolak sampai ronde selesai (kalau tidak, perubahan internal tertimpa saat markup eksternal digabung).
+
+### Data & migrasi
+- Field baru opsional pada kontrak: `externalReviewCopy` ({ round, masterVersion, masterFile, baselineFile, workFile }) dan `externalUnmerged`. Tidak perlu migrasi.
+- Kontrak yang SUDAH berstatus Review Eksternal saat rilis ini dipasang: salinan dibuat otomatis saat tamu membuka link berikutnya.
+- Uji: `npx tsx scripts/review-isolation-test.ts`.
+
 ## [Unreleased #31] — Header tabel dibedakan dari isi
 
 - Semua tabel ber-`<thead>` (kecuali `.plain-table`): header kolom kini berlatar biru-ungu pucat, teks aksen tebal 12px, dan garis aksen di bawahnya — terpisah jelas dari baris data (sebelumnya abu pucat nyaris sama dengan baris).

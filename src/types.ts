@@ -579,6 +579,11 @@ export interface Contract {
   // catatan pengantar dari tim internal. Snapshot memakai bentuk yang sama
   // dengan yang dikirim ke halaman review eksternal (narasi pembuka + pasal).
   externalRounds?: ContractExternalRound[];
+  // Pemisahan markup internal ↔ eksternal (lihat review-isolation.ts). Berkas dokumen utama = MASTER (semua
+  // markup, hanya internal). Per ronde eksternal dibuat SALINAN bersih untuk tamu; markup tamu digabung balik
+  // ke master. `externalUnmerged` = berkas eksternal yang belum bisa digabung otomatis (master tidak diubah).
+  externalReviewCopy?: ExternalReviewCopy;
+  externalUnmerged?: { round: number; savedAt: string; by: string; file: StoredDocumentRef; reason: string }[];
   // Detail pihak (opsional, per-kontrak) untuk narasi pembuka & tanda tangan —
   // bukan cuma nama, tapi alamat/jabatan/nomor identitas penandatangan. Party1
   // kosong = pakai default appSettings.company* (companyAddress dst); Party2
@@ -673,6 +678,17 @@ export type StoredDocumentFormat = "pdf" | "docx" | "doc" | "image" | "other";
 
 // Referensi berkas di storage (storage.ts) + metadata yang dibutuhkan untuk
 // preview/unduh tanpa menebak dari URL.
+export interface ExternalReviewCopy {
+  round: number;
+  /** Versi master saat ronde dibuka + berkasnya (dasar penggabungan; tidak berubah selama ronde). */
+  masterVersion: number;
+  masterFile: StoredDocumentRef;
+  /** Salinan bersih yang pertama kali dikirim ke tamu. */
+  baselineFile: StoredDocumentRef;
+  /** Berkas yang sedang dikerjakan tamu (baseline + markup eksternal terbaru). */
+  workFile: StoredDocumentRef;
+}
+
 export interface StoredDocumentRef {
   key: string; // storage key (StoredFile.key) — dipakai fetchFile()
   url: string;

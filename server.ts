@@ -376,7 +376,8 @@ function withLinkedContract(db: any, job: LegalJob) {
   const linked = job.linkedContractId ? (db.contracts as Contract[]).find((x) => x.id === job.linkedContractId) : null;
   // `stage` = tahap alur 12 langkah (src/workflow.ts) — satu nilai yang sama
   // dipakai Dashboard Legal, tabel Pekerjaan Legal, dan pencarian.
-  return { ...job, linkedContract: legalJobLinkedContractInfo(db, job), stage: jobStage(job, linked) };
+  const reqUser = job.requesterId ? (db.users as User[]).find((u) => u.id === job.requesterId) : null;
+  return { ...job, requesterEmail: reqUser?.email || (job as any).requesterEmail || undefined, linkedContract: legalJobLinkedContractInfo(db, job), stage: jobStage(job, linked) };
 }
 // Filter koleksi ke tenant tertentu.
 function scoped<T extends { tenantId?: string }>(arr: T[], tid: string): T[] {
@@ -2173,6 +2174,33 @@ app.put("/api/settings", requireAuth, requirePerm("settings.manage", "settings.e
     patch.actionPermissions = cleaned;
   }
   if (patch?.masterData && "operatorGroups" in patch.masterData) patch.masterData.operatorGroups = sanitizeOperatorGroups(patch.masterData.operatorGroups);
+  if (patch?.masterData && "operatorProfiles" in patch.masterData) {
+    const cleaned: Record<string, any> = {};
+    const raw = patch.masterData.operatorProfiles && typeof patch.masterData.operatorProfiles === "object" ? patch.masterData.operatorProfiles : {};
+    const txt = (v: unknown, n: number) => String(v ?? "").trim().slice(0, n);
+    for (const [k, v] of Object.entries(raw as Record<string, any>)) {
+      const key = String(k).trim().toLowerCase().slice(0, 120);
+      if (!key || !v || typeof v !== "object") continue;
+      const mask = txt(v.numberMask, 200);
+      if (mask) {
+        const err = validateMask(mask, CONTRACT_MASK_TOKENS);
+        if (err) return res.status(400).json({ error: `Format nomor mitra "${txt(v.name, 120) || key}": ${err}` });
+      }
+      const pph = v.pphRatePercent === "" || v.pphRatePercent == null ? undefined : Math.min(100, Math.max(0, Number(v.pphRatePercent) || 0));
+      cleaned[key] = {
+        name: txt(v.name, 120),
+        picName: txt(v.picName, 120), picPhone: txt(v.picPhone, 40), email: txt(v.email, 160),
+        npwp: txt(v.npwp, 40), address: txt(v.address, 400),
+        bankAccountNumber: txt(v.bankAccountNumber, 60), bankAccountName: txt(v.bankAccountName, 120),
+        bankName: txt(v.bankName, 80), bankBranch: txt(v.bankBranch, 80),
+        ...(pph !== undefined ? { pphRatePercent: pph } : {}),
+        separateNumbering: v.separateNumbering === true,
+        numberCode: sanitizeCompanyCode(v.numberCode),
+        numberMask: mask,
+      };
+    }
+    patch.masterData.operatorProfiles = cleaned;
+  }
   const merged = withSettingsDefaults({ ...rawSettingsFor(db, tid), ...patch });
   setSettingsFor(db, tid, merged);
   pushAudit(db, req, { action: "Update Settings", details: "Memperbarui konfigurasi (perusahaan / master data)" });
@@ -2613,8 +2641,9 @@ app.get("/api/contracts/generate-number", requireAuth, (req: AuthedRequest, res)
   const tid = tenantOf(req);
   const currentYear = new Date().getFullYear().toString();
   const company = resolveNumberCompany(db, req.query.companyId)?.code;
+  const operator = (req.query.operator as string) || undefined;
   // Pratinjau: JANGAN konsumsi nomor (consume:false) — cuma tampilkan calon nomor.
-  const { number } = generateContractNumber(db, tid, category, docType, currentYear, { consume: false, platform, company });
+  const { number } = generateContractNumber(db, tid, category, docType, currentYear, { consume: false, platform, company, operator });
   res.json({ contractNumber: number });
 });
 
@@ -2640,22 +2669,36 @@ app.get("/api/contracts/:id", requireAuth, (req: AuthedRequest, res) => {
 // DCS_MASK_TOKENS) — sebelumnya hanya ada di sisi DCS tanpa alasan bisnis,
 // murni kesenjangan implementasi antara dua mesin yang sebenarnya berbagi
 // renderMask() yang sama (numbering-utils.ts).
-const CONTRACT_MASK_TOKENS = ["Prefix", "Category", "DocType", "DocTypeCode", "Platform", "Company", "Codes", "MonthRoman", "Year", "Month", "Day"];
+const CONTRACT_MASK_TOKENS = ["Prefix", "Category", "DocType", "DocTypeCode", "Platform", "Company", "Mitra", "Codes", "MonthRoman", "Year", "Month", "Day"];
 
 const CONTRACT_CODE_SEP = "/"; // pemisah antar kode tambahan (extraCodes) di {Codes}
 
 // Urutan nomor dipisah per: tenant, Jenis Dokumen, tahun, PLATFORM (selalu ada di nomor) dan PT/{Company}
 // (hanya bila format nomor memuat token {Company}; kalau tidak, dua PT akan menghasilkan nomor kembar).
 // Tanpa platform/PT, kuncinya sama dengan kunci lama, jadi counter yang sudah berjalan tetap dipakai.
-function contractScopeKey(tid: string, category: string, docType: string | undefined, year: string, platform?: string, company?: string): string {
+function contractScopeKey(tid: string, category: string, docType: string | undefined, year: string, platform?: string, company?: string, mitraCode?: string): string {
   const dtKey = (docType || "").trim() || (category || "default").trim();
   const pc = platformCode(platform);
   const cc = sanitizeCompanyCode(company);
-  return `${tid}|${dtKey}|${year}${pc ? `|p:${pc}` : ""}${cc ? `|c:${cc}` : ""}`;
+  const mc = sanitizeCompanyCode(mitraCode);
+  return `${tid}|${dtKey}|${year}${pc ? `|p:${pc}` : ""}${cc ? `|c:${cc}` : ""}${mc ? `|o:${mc}` : ""}`;
+}
+
+// Profil Mitra/Operator (Konfigurasi > Mitra / Operator). Bila "Penomoran
+// terpisah" aktif, mitra itu punya URUTAN nomor sendiri (+ format nomor sendiri
+// bila diisi) dan token {Mitra} di format nomor berisi kodenya.
+function operatorScope(db: any, tid: string, operator?: string): { code: string; mask?: string } | null {
+  const key = String(operator || "").trim().toLowerCase();
+  if (!key) return null;
+  const prof = (withSettingsDefaults(rawSettingsFor(db, tid)).masterData as any)?.operatorProfiles?.[key];
+  if (!prof || !prof.separateNumbering) return null;
+  const code = sanitizeCompanyCode(prof.numberCode || operator);
+  if (!code) return null;
+  return { code, mask: String(prof.numberMask || "").trim() || undefined };
 }
 
 // Format nomor yang berlaku untuk sebuah jenis dokumen (dipakai generate, release & klaim nomor manual).
-function contractMaskFor(db: any, tid: string, docType: string | undefined): { mask: string; dtObj: any; prefix: string; dtCode: string } {
+function contractMaskFor(db: any, tid: string, docType: string | undefined, operator?: string): { mask: string; dtObj: any; prefix: string; dtCode: string } {
   const md = withSettingsDefaults(rawSettingsFor(db, tid)).masterData;
   const dtObj = docType ? (md.docTypes || []).find((d: any) => d.name === docType) : undefined;
   const explicitCode = String(dtObj?.code || "").trim().toUpperCase();
@@ -2663,6 +2706,8 @@ function contractMaskFor(db: any, tid: string, docType: string | undefined): { m
   const prefix = dtCode || md.defaultNumberPrefix || "GA-AGR";
   let mask = dtObj?.numberMask || md.defaultNumberMask || REFERENCE_DEFAULT_MASK;
   if (mask === LEGACY_DEFAULT_MASK || mask === PREVIOUS_REFERENCE_MASK) mask = REFERENCE_DEFAULT_MASK;
+  const mitra = operatorScope(db, tid, operator);
+  if (mitra?.mask) return { mask: mitra.mask, dtObj, prefix, dtCode };
   return { mask: ensurePlatformToken(mask), dtObj, prefix, dtCode };
 }
 // PT SELALU ikut memecah urutan (TBK, GKM, dst masing-masing punya nomor urut sendiri),
@@ -2671,13 +2716,15 @@ const scopeCompany = (_mask: string, company?: string) => sanitizeCompanyCode(co
 
 // Baseline saat sebuah scope PERTAMA kali dipakai counter persisten: hitung per
 // Jenis Dokumen (docType) + tahun (atau kategori jika docType tidak ada) [+ platform / PT bila memecah urutan].
-function contractScopeBaseline(db: any, tid: string, category: string, docType: string | undefined, year: string, platform?: string, company?: string): number {
+function contractScopeBaseline(db: any, tid: string, category: string, docType: string | undefined, year: string, platform?: string, company?: string, mitraCode?: string): number {
   const dtKey = (docType || "").trim();
   const pc = platformCode(platform);
   const cc = sanitizeCompanyCode(company);
+  const mc = sanitizeCompanyCode(mitraCode);
   const inScope = scoped(db.contracts as Contract[], tid).filter((c) => {
     const cYear = (c.createdAt || "").slice(0, 4);
     if (cYear !== year) return false;
+    if (mc && operatorScope(db, tid, (c as any).operator)?.code !== mc) return false;
     if (pc && platformCode((c as any).platform) !== pc) return false;
     if (cc && sanitizeCompanyCode((c as any).companyCode) !== cc) return false;
     if (dtKey) return (c.docType || "").trim() === dtKey;
@@ -2715,11 +2762,11 @@ function captureTemplateSnapshot(db: any, tid: string, templateId: string | unde
 // ---- Nomor MANUAL (dokumen upload) ikut tercatat di urutan otomatis ----
 // Mengambil angka urut dari nomor yang diketik manual, memakai format nomor jenis dokumennya
 // (mis. "023/PKS/TBK/XI/2026" -> 23). Cadangan: hanya angka ("23"), atau angka di depan sebelum pemisah ("23/…").
-function parseManualSeq(db: any, tid: string, docType: string | undefined, manual: string, opts?: { platform?: string; company?: string; year?: string }): number | null {
+function parseManualSeq(db: any, tid: string, docType: string | undefined, manual: string, opts?: { platform?: string; company?: string; year?: string; operator?: string }): number | null {
   const text = String(manual || "").trim();
   if (!text) return null;
   try {
-    const { mask, prefix, dtCode, dtObj } = contractMaskFor(db, tid, docType);
+    const { mask, prefix, dtCode, dtObj } = contractMaskFor(db, tid, docType, opts?.operator);
     const SENT = 987654321;
     const codes = Array.isArray(dtObj?.extraCodes)
       ? dtObj.extraCodes.map((c: any) => String(c?.value || "").trim().toUpperCase()).filter(Boolean).join(CONTRACT_CODE_SEP) : "";
@@ -2727,7 +2774,7 @@ function parseManualSeq(db: any, tid: string, docType: string | undefined, manua
     const yr = Number(opts?.year) || now.getFullYear();
     const sample = renderMask(mask, {
       Prefix: prefix, Category: "", DocType: docType || "", DocTypeCode: dtCode || prefix, Platform: platformCode(opts?.platform),
-      Company: sanitizeCompanyCode(opts?.company), Codes: codes, Year: yr, Month: now.getMonth() + 1, Day: now.getDate(),
+      Company: sanitizeCompanyCode(opts?.company), Mitra: operatorScope(db, tid, opts?.operator)?.code || "", Codes: codes, Year: yr, Month: now.getMonth() + 1, Day: now.getDate(),
     }, SENT);
     const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const [pre, post] = sample.split(String(SENT)).length === 2 ? sample.split(String(SENT)) : [null, null];
@@ -2746,10 +2793,11 @@ function parseManualSeq(db: any, tid: string, docType: string | undefined, manua
 
 // Apakah angka urut ini sudah dipakai di scope (jenis + tahun + platform + PT)?
 // Dipakai menolak nomor MANUAL yang bentrok dengan nomor otomatis/manual lain.
-function seqTakenInScope(db: any, tid: string, category: string, docType: string | undefined, year: string, seq: number, opts?: { platform?: string; company?: string }): boolean {
-  const { mask } = contractMaskFor(db, tid, docType);
+function seqTakenInScope(db: any, tid: string, category: string, docType: string | undefined, year: string, seq: number, opts?: { platform?: string; company?: string; operator?: string }): boolean {
+  const { mask } = contractMaskFor(db, tid, docType, opts?.operator);
   const company = scopeCompany(mask, opts?.company);
-  const key = contractScopeKey(tid, category, docType, year, opts?.platform, company);
+  const mc = operatorScope(db, tid, opts?.operator)?.code || "";
+  const key = contractScopeKey(tid, category, docType, year, opts?.platform, company, mc);
   const rec = (db.numberCounters as any[] | undefined)?.find((r) => r.id === key);
   if (rec && Array.isArray(rec.used) && rec.used.includes(seq)) return true;
   const pc = platformCode(opts?.platform);
@@ -2759,22 +2807,24 @@ function seqTakenInScope(db: any, tid: string, category: string, docType: string
     if ((c.createdAt || "").slice(0, 4) !== year) return false;
     if (pc && platformCode((c as any).platform) !== pc) return false;
     if (cc && sanitizeCompanyCode((c as any).companyCode) !== cc) return false;
+    if (mc && operatorScope(db, tid, (c as any).operator)?.code !== mc) return false;
     if (dtKey ? (c.docType || "").trim() !== dtKey : (c.category || "").trim() !== (category || "").trim()) return false;
     return (c as any).numberSeq === seq || (c as any).manualSeq === seq;
   });
 }
 
 // Catat angka urut nomor manual sebagai "terpakai" di scope urutan otomatisnya. Mengembalikan angkanya (atau null).
-function claimManualNumber(db: any, tid: string, category: string, docType: string | undefined, year: string, manual: string, opts?: { platform?: string; company?: string }): number | null {
+function claimManualNumber(db: any, tid: string, category: string, docType: string | undefined, year: string, manual: string, opts?: { platform?: string; company?: string; operator?: string }): number | null {
   const seq = parseManualSeq(db, tid, docType, manual, { ...opts, year });
   if (!seq) return null;
-  const { mask } = contractMaskFor(db, tid, docType);
+  const { mask } = contractMaskFor(db, tid, docType, opts?.operator);
   const company = scopeCompany(mask, opts?.company);
-  const key = contractScopeKey(tid, category, docType, year, opts?.platform, company);
+  const mc = operatorScope(db, tid, opts?.operator)?.code || "";
+  const key = contractScopeKey(tid, category, docType, year, opts?.platform, company, mc);
   if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
   let rec = (db.numberCounters as any[]).find((r) => r.id === key);
   if (!rec) {
-    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year, opts?.platform, company) };
+    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year, opts?.platform, company, mc) };
     db.numberCounters.push(rec);
   }
   const used: number[] = Array.isArray(rec.used) ? rec.used : [];
@@ -2788,7 +2838,7 @@ function unclaimManualNumber(db: any, tid: string, c: Contract): void {
   const seq = (c as any).manualSeq;
   if (typeof seq !== "number") return;
   const year = (c.createdAt || new Date().toISOString()).slice(0, 4);
-  const key = contractScopeKey(tid, c.category, c.docType, year, c.platform, scopeCompany(contractMaskFor(db, tid, c.docType).mask, c.companyCode));
+  const key = contractScopeKey(tid, c.category, c.docType, year, c.platform, scopeCompany(contractMaskFor(db, tid, c.docType, (c as any).operator).mask, c.companyCode), operatorScope(db, tid, (c as any).operator)?.code || "");
   const rec = (db.numberCounters as any[] | undefined)?.find((r) => r.id === key);
   if (rec && Array.isArray(rec.used)) rec.used = rec.used.filter((n: number) => n !== seq);
 }
@@ -2800,16 +2850,17 @@ function unclaimManualNumber(db: any, tid: string, c: Contract): void {
 // Nomor manual (dokumen upload) yang sudah dipakai dilewati saat urutan sampai ke angka itu.
 function generateContractNumber(
   db: any, tid: string, category: string, docType: string | undefined, year: string,
-  opts?: { consume?: boolean; platform?: string; company?: string },
+  opts?: { consume?: boolean; platform?: string; company?: string; operator?: string },
 ): { number: string; seq: number } {
   const consume = opts?.consume !== false;
-  const { mask, dtObj, prefix, dtCode } = contractMaskFor(db, tid, docType);
+  const { mask, dtObj, prefix, dtCode } = contractMaskFor(db, tid, docType, opts?.operator);
+  const mitraCode = operatorScope(db, tid, opts?.operator)?.code || "";
 
   if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
-  const key = contractScopeKey(tid, category, docType, year, opts?.platform, scopeCompany(mask, opts?.company));
+  const key = contractScopeKey(tid, category, docType, year, opts?.platform, scopeCompany(mask, opts?.company), mitraCode);
   let rec = (db.numberCounters as any[]).find((r) => r.id === key);
   if (!rec) {
-    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year, opts?.platform, scopeCompany(mask, opts?.company)) };
+    rec = { id: key, tenantId: tid, seq: contractScopeBaseline(db, tid, category, docType, year, opts?.platform, scopeCompany(mask, opts?.company), mitraCode) };
     db.numberCounters.push(rec);
   }
   // `used` = nomor yang sudah dipakai dokumen dengan nomor MANUAL (upload). Urutan otomatis tidak
@@ -2837,7 +2888,7 @@ function generateContractNumber(
     DocTypeCode: dtCode || prefix, Platform: platformCode(opts?.platform),
     // {Company} = kode perusahaan pilihan form (tidak disisipkan otomatis —
     // hanya muncul bila admin menaruh token ini di format nomor).
-    Company: sanitizeCompanyCode(opts?.company), Codes: codes,
+    Company: sanitizeCompanyCode(opts?.company), Mitra: mitraCode, Codes: codes,
     Year: Number(year), Month: now.getMonth() + 1, Day: now.getDate(),
   }, seq);
   return { number, seq };
@@ -3428,6 +3479,7 @@ app.post("/api/contracts", requireAuth, requirePerm("contract.edit"), async (req
   // "Lainnya" (platformCustom), yang otomatis jadi folder & segmen nomor baru.
   const platformErr = validateContractPlatform(db, tid, numberCompany?.id, platform, req.body.platformCustom === true);
   if (platformErr) return res.status(400).json({ error: platformErr });
+  const bodyOperator = typeof req.body.operator === "string" && req.body.operator.trim() ? req.body.operator.trim().slice(0, 120) : undefined;
   let contractNumber: string, numberSeq: number | undefined, manualSeq: number | undefined;
   if (manualNumber) {
     contractNumber = manualNumber.slice(0, 80);
@@ -3435,15 +3487,15 @@ app.post("/api/contracts", requireAuth, requirePerm("contract.edit"), async (req
     {
       const dupText = (db.contracts as Contract[]).some((c) => c.tenantId === tid && (c.contractNumber || "").trim().toLowerCase() === contractNumber.trim().toLowerCase());
       if (dupText) return res.status(409).json({ error: `Nomor "${contractNumber}" sudah terpakai oleh dokumen lain.` });
-      const wantSeq = parseManualSeq(db, tid, req.body.docType, contractNumber, { platform, company: numberCompany?.code, year: currentYear });
-      if (wantSeq && seqTakenInScope(db, tid, req.body.category || "General", req.body.docType, currentYear, wantSeq, { platform, company: numberCompany?.code })) {
+      const wantSeq = parseManualSeq(db, tid, req.body.docType, contractNumber, { platform, company: numberCompany?.code, year: currentYear, operator: bodyOperator });
+      if (wantSeq && seqTakenInScope(db, tid, req.body.category || "General", req.body.docType, currentYear, wantSeq, { platform, company: numberCompany?.code, operator: bodyOperator })) {
         return res.status(409).json({ error: `Nomor urut ${wantSeq} sudah terpakai untuk jenis dokumen, PT, dan platform ini. Pilih nomor lain atau kosongkan agar nomor dibuat otomatis.` });
       }
     }
     // Nomor manual ikut tercatat di urutan otomatis (scope: jenis + tahun + platform [+ PT]) sebagai "terpakai".
-    manualSeq = claimManualNumber(db, tid, req.body.category || "General", req.body.docType, currentYear, contractNumber, { platform, company: numberCompany?.code }) ?? undefined;
+    manualSeq = claimManualNumber(db, tid, req.body.category || "General", req.body.docType, currentYear, contractNumber, { platform, company: numberCompany?.code, operator: bodyOperator }) ?? undefined;
   } else {
-    const gen = generateContractNumber(db, tid, req.body.category, req.body.docType, currentYear, { platform, company: numberCompany?.code });
+    const gen = generateContractNumber(db, tid, req.body.category, req.body.docType, currentYear, { platform, company: numberCompany?.code, operator: bodyOperator });
     contractNumber = gen.number;
     numberSeq = gen.seq;
   }
@@ -4230,7 +4282,13 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
   // tepat 2 — tidak cocok untuk semua perusahaan). Batas atas wajar (8) untuk
   // cegah abuse; tidak boleh kosong/berulang. Handler approval-decision sudah
   // generik memproses N langkah, jadi tak perlu diubah.
-  const approverIds: string[] = Array.isArray(req.body.approverIds) ? req.body.approverIds.filter((x: unknown) => typeof x === "string" && x) : [];
+  let approverIds: string[] = Array.isArray(req.body.approverIds) ? req.body.approverIds.filter((x: unknown) => typeof x === "string" && x) : [];
+  // Ajukan ulang hasil revisi internal: rantai reviewer ronde sebelumnya TETAP
+  // dipakai (urutan sama, mulai lagi dari reviewer pertama) — Legal tidak perlu
+  // memilih ulang. Untuk memilih rantai baru, kirim approverIds secara eksplisit.
+  if (approverIds.length < 1 && contract.status === "Draft" && contract.revisionStage && (contract.approvalSteps || []).length > 0) {
+    approverIds = [...contract.approvalSteps!].sort((x, y) => x.order - y.order).map((st) => st.approverId);
+  }
   if (approverIds.length < 1) {
     return res.status(400).json({ error: "Pilih minimal 1 penanggung jawab." });
   }
@@ -4261,6 +4319,7 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
   contract.approvalSteps = steps;
   contract.approvalRound = (contract.approvalRound || 0) + 1;
   contract.approvalSubmittedById = req.user!.id;
+  (contract as any).approvalRoundStartedAt = new Date().toISOString();
   contract.approvalSubmittedByName = req.user!.name;
   // Revisi selesai dikerjakan → tutup entri revisi yang masih terbuka dan
   // kembalikan dokumen ke Review Internal. Ini berlaku untuk revisi internal
@@ -4284,6 +4343,8 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
     title: "Kontrak Menunggu Persetujuan",
     message: `Kontrak ${contract.contractNumber} diajukan untuk persetujuan — menunggu ${steps[0].approverName}.`,
     type: "info", contractId: contract.id,
+    // Review berurutan: hanya reviewer yang sedang giliran (+ pengaju) yang diberi tahu.
+    targetUserIds: Array.from(new Set([steps[0].approverId, req.user!.id])),
   });
   saveDB(db);
   sendPushToUser(steps[0].approverId, {
@@ -4329,6 +4390,18 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
   const currentStep = steps.find((s) => s.decision === "pending");
   if (!currentStep) {
     return res.status(400).json({ error: "Tidak ada langkah persetujuan yang menunggu." });
+  }
+  // Setujui hanya terblokir oleh masukan BARU (komentar/coret/ganti internal yang dibuat
+  // sejak giliran langkah ini dimulai). Track change lama yang masih terbuka tidak
+  // memblokir — yang menentukan hanya apakah reviewer menambah masukan baru.
+  if (decision === "approved") {
+    const since = currentStep.startedAt || (contract as any).approvalRoundStartedAt || "";
+    const fresh = since
+      ? openReviewCommentIds(db, contract.id, (c) => !c.external && String(c.createdAt || "") >= since)
+      : openReviewCommentIds(db, contract.id, (c) => !c.external);
+    if (fresh.length > 0) {
+      return res.status(400).json({ error: `Belum bisa disetujui: ada ${fresh.length} masukan baru (komentar/usulan revisi) di giliran ini. Pilih "Minta Revisi", atau hapus masukan tersebut.` });
+    }
   }
   // Admin OVERRIDE: admin/super_admin boleh memutuskan langkah mana pun atas
   // nama approver yang ditunjuk (mis. approver tak tersedia) — tercatat jelas di
@@ -4398,6 +4471,7 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
       title: isFinalStage ? "Review Final: Kontrak Perlu Revisi" : "Kontrak Perlu Revisi (Internal)",
       message: `Kontrak ${contract.contractNumber} dikembalikan untuk revisi oleh ${req.user!.name}: ${revSummary}`,
       type: "warning", contractId: contract.id,
+      targetUserIds: Array.from(new Set([contract.approvalSubmittedById, contract.createdById, req.user!.id].filter(Boolean) as string[])),
     });
     saveDB(db);
     if (contract.approvalSubmittedById) {
@@ -4422,6 +4496,12 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
       contractId: contract.id, contractNumber: contract.contractNumber,
       action: "Setujui Kontrak (Approval Matrix)",
       details: `${req.user!.name} menyetujui langkah ${currentStep.order} — menunggu ${nextStep.approverName}`,
+    });
+    pushNotif(db, tid, {
+      title: "Menunggu Persetujuan Anda",
+      message: `Kontrak ${contract.contractNumber} (${contract.title}) kini menunggu review ${nextStep.approverName} setelah ${req.user!.name} menyetujui.`,
+      type: "info", contractId: contract.id,
+      targetUserIds: Array.from(new Set([nextStep.approverId, contract.approvalSubmittedById].filter(Boolean) as string[])),
     });
     saveDB(db);
     sendPushToUser(nextStep.approverId, {
@@ -4536,7 +4616,7 @@ function canReleaseContractNumber(c: Contract): { ok: boolean; reason?: string }
 function releaseContractNumber(db: any, tid: string, c: Contract): boolean {
   if (typeof c.numberSeq !== "number") return false;
   const year = (c.createdAt || new Date().toISOString()).slice(0, 4);
-  const key = contractScopeKey(tid, c.category, c.docType, year, c.platform, scopeCompany(contractMaskFor(db, tid, c.docType).mask, c.companyCode));
+  const key = contractScopeKey(tid, c.category, c.docType, year, c.platform, scopeCompany(contractMaskFor(db, tid, c.docType, (c as any).operator).mask, c.companyCode), operatorScope(db, tid, (c as any).operator)?.code || "");
   if (!Array.isArray(db.numberCounters)) db.numberCounters = [];
   const rec = (db.numberCounters as any[]).find((r) => r.id === key);
   if (!rec) return false;
@@ -4771,7 +4851,7 @@ function dsCodeState(sg: DigitalSigner): "active" | "expired" | "none" {
 }
 function dsFinalize(db: any, contract: Contract, actor: string) {
   const ds = contract.digitalSigning;
-  if (!ds || ds.completedAt || !ds.signers.every((x) => x.signedAt)) return;
+  if (!ds || ds.completedAt || !ds.externalRequested || !ds.signers.every((x) => x.signedAt)) return;
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
   ds.completedAt = now;
@@ -4782,7 +4862,7 @@ function dsFinalize(db: any, contract: Contract, actor: string) {
   if (job) { job.updatedAt = now; pushLegalTimeline(job, { label: "TTD digital lengkap", actor, detail: `${ds.signers.length} penanda tangan` }, now); }
   pushNotif(db, contract.tenantId, {
     title: "TTD Digital Lengkap",
-    message: `Semua penanda tangan kontrak ${contract.contractNumber} (${contract.title}) sudah menandatangani. Langkah berikutnya: unggah dokumen final → Arsip.`,
+    message: `Semua penanda tangan kontrak ${contract.contractNumber} (${contract.title}) sudah menandatangani. Langkah berikutnya: terbitkan dokumen TTD digital → Arsip (tanpa unggah TTD basah).`,
     type: "success", contractId: contract.id, legalJobId: job?.id,
   });
 }
@@ -4822,7 +4902,7 @@ app.post("/api/contracts/:id/digital-signing/start", requireAuth, requirePerm("s
     }
     signers.push(base);
   }
-  contract.digitalSigning = { startedAt: new Date().toISOString(), startedBy: req.user!.name, signers };
+  contract.digitalSigning = { startedAt: new Date().toISOString(), startedBy: req.user!.name, signers, externalRequested: signers.some((x) => x.kind === "external") };
   contract.updatedAt = new Date().toISOString();
   for (const sg of signers.filter((x) => x.kind === "internal")) {
     pushNotif(db, tid, {
@@ -4850,6 +4930,112 @@ app.post("/api/contracts/:id/digital-signing/sign", requireAuth, async (req: Aut
   sg.signedAt = new Date().toISOString(); sg.method = req.body?.method === "draw" ? "draw" : "upload";
   pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "TTD Digital (Internal)", details: `${sg.name} (${sg.role}) menandatangani.` });
   dsFinalize(db, contract, req.user!.name);
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+
+// Setelah SEMUA penanda tangan internal selesai, Legal mengajukan TTD digital ke pihak
+// eksternal: sistem membuat link + kode akses. Pihak eksternal hanya menandatangani
+// satu dokumen (rangkap 1).
+app.post("/api/contracts/:id/digital-signing/add-external", requireAuth, requirePerm("signing.manage"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  const ds = contract.digitalSigning;
+  if (!ds || contract.status !== "FullyApproved") return res.status(400).json({ error: "TTD digital belum dimulai." });
+  if (ds.completedAt) return res.status(400).json({ error: "TTD digital sudah lengkap." });
+  if (ds.signers.some((x) => x.kind === "internal" && !x.signedAt)) return res.status(400).json({ error: "Tunggu semua penanda tangan internal menandatangani dulu." });
+  const raw = Array.isArray(req.body?.signers) ? req.body.signers : [req.body];
+  const links: { id: string; url: string; code: string }[] = [];
+  for (const [i, r] of raw.entries()) {
+    const name = String(r?.name || "").trim().slice(0, 80);
+    if (!name) return res.status(400).json({ error: `Penanda tangan eksternal #${i + 1}: nama wajib diisi.` });
+    const days = Number(r?.codeExpiresInDays);
+    const sg: DigitalSigner = {
+      id: "sg-" + Date.now() + "-x" + i, party: 2, role: "Pihak Kedua", name, title: String(r?.title || "").trim().slice(0, 80) || undefined,
+      kind: "external", token: randomBytes(24).toString("hex"), code: String(randomInt(100000, 1000000)),
+      codeExpiresAt: Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null,
+    };
+    ds.signers.push(sg);
+    links.push({ id: sg.id, url: `${shareBaseUrl(req)}/?signToken=${sg.token}`, code: sg.code! });
+  }
+  ds.externalRequested = true;
+  contract.updatedAt = new Date().toISOString();
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Ajukan TTD Digital ke Eksternal", details: `Link TTD dibuat untuk: ${ds.signers.filter((x) => x.kind === "external").map((x) => x.name).join(", ")}` });
+  saveDB(db);
+  res.json({ success: true, contract, links });
+});
+
+async function dsReadImage(sg: DigitalSigner): Promise<Buffer | null> {
+  try {
+    if (sg.imageUrl && sg.imageUrl.startsWith("/uploads/")) {
+      const lp = path.join(uploadDir, path.basename(sg.imageUrl));
+      return fs.existsSync(lp) ? fs.readFileSync(lp) : null;
+    }
+    return sg.imageKey ? await fetchFile(sg.imageKey) : null;
+  } catch { return null; }
+}
+
+// Terbitkan dokumen TTD digital: tempel gambar tanda tangan semua penanda tangan ke dokumen
+// (rangkap 1) sebagai halaman pengesahan, simpan sebagai berkas resmi → status Arsip.
+// Tidak ada langkah unggah TTD basah.
+app.post("/api/contracts/:id/digital-signing/finalize", requireAuth, requirePerm("signing.manage"), async (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  const ds = contract.digitalSigning;
+  if (!ds || !ds.completedAt) return res.status(400).json({ error: "Semua penanda tangan harus sudah menandatangani." });
+  if (contract.status !== "FullyApproved") return res.status(400).json({ error: "Dokumen sudah tidak berada di tahap Proses TTD." });
+  let loaded: ContractFileForView;
+  try { loaded = await loadContractFileForView(contract); } catch (err: any) { return res.status(err?.status || 500).json({ error: err?.message || "Gagal membaca dokumen." }); }
+  if (!loaded.isPdf && /wordprocessingml|msword/i.test(loaded.mime)) {
+    try { loaded = { buf: await convertedPdfFor(loaded.buf), mime: "application/pdf", fileName: loaded.fileName.replace(/\.[^.]+$/, "") + ".pdf", isPdf: true }; }
+    catch { return res.status(500).json({ error: "Gagal mengonversi dokumen Word ke PDF." }); }
+  }
+  if (!loaded.isPdf) return res.status(400).json({ error: "Dokumen berformat Word/gambar — ekspor ke PDF dulu agar tanda tangan bisa ditempel, atau pakai TTD basah." });
+  const doc = await PDFDocument.load(loaded.buf);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const W = 595.28, H = 841.89, M = 56;
+  let page = doc.addPage([W, H]);
+  const t = (txt: string, x: number, y: number, size = 10, f = font) => page.drawText(sanitizeForStandardFont(txt), { x, y, size, font: f, color: rgb(0.1, 0.1, 0.1) });
+  t("LEMBAR TANDA TANGAN DIGITAL", M, H - M - 10, 14, bold);
+  t(`${contract.contractNumber} - ${contract.title}`.slice(0, 95), M, H - M - 30, 9);
+  t("Rangkap 1 - ditandatangani secara elektronik oleh para pihak berikut:", M, H - M - 46, 9);
+  let y = H - M - 80;
+  for (const sg of ds.signers.slice().sort((a, b) => a.party - b.party)) {
+    if (y < 190) { page = doc.addPage([W, H]); y = H - M - 20; }
+    t(`${sg.role}${sg.kind === "external" ? " (eksternal)" : " (internal)"}`, M, y, 9, bold);
+    const buf = await dsReadImage(sg);
+    if (buf) {
+      try {
+        const img = sg.imageKey?.endsWith(".png") || sg.imageUrl?.endsWith(".png") ? await doc.embedPng(buf) : await doc.embedJpg(buf).catch(() => doc.embedPng(buf));
+        const scale = Math.min(180 / img.width, 70 / img.height, 1);
+        page.drawImage(img, { x: M, y: y - 12 - img.height * scale, width: img.width * scale, height: img.height * scale });
+      } catch { t("[gambar tanda tangan tidak dapat dibaca]", M, y - 30, 8); }
+    }
+    t(sg.name, M, y - 100, 10, bold);
+    if (sg.title) t(sg.title, M, y - 113, 9);
+    t(`Ditandatangani: ${sg.signedAt ? new Date(sg.signedAt).toLocaleString("id-ID") : "-"} (${sg.method === "draw" ? "digambar" : "unggah gambar"})`, M, y - 126, 8);
+    y -= 150;
+  }
+  const out = Buffer.from(await doc.save());
+  const proofHash = sha256(out);
+  const fname = `${contract.contractNumber.replace(/\//g, "-")}-TTD-digital.pdf`;
+  const stored = await storeFile(out, uploadFileKey(fname), "application/pdf");
+  contract.masterPdfUrl = stored.url;
+  contract.activationProofHash = proofHash;
+  contract.activationProofKey = stored.key;
+  contract.status = "Arsip";
+  contract.updatedAt = new Date().toISOString();
+  ds.finalizedAt = contract.updatedAt; ds.finalPdfUrl = stored.url;
+  const linkedJob = ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === contract.id && j.tenantId === contract.tenantId);
+  pushAudit(db, req, {
+    contractId: contract.id, contractNumber: contract.contractNumber, action: "Activate Contract",
+    details: `Menerbitkan dokumen TTD digital "${contract.title}" (SHA-256: ${proofHash.slice(0, 16)}…) — status Arsip`,
+  });
+  applyArchiveEffects(db, req, contract, "TTD digital diterbitkan", fname, linkedJob?.id);
   saveDB(db);
   res.json({ success: true, contract });
 });
@@ -4909,7 +5095,11 @@ app.post("/api/public/sign/:token/unlock", rateLimit({ windowMs: 10 * 60 * 1000,
 app.get("/api/public/sign/:token/document", async (req, res) => {
   const f = dsGate(req, res); if (!f) return;
   try {
-    const loaded = await loadContractFileForView(f.contract);
+    let loaded = await loadContractFileForView(f.contract);
+    // Pihak eksternal selalu menerima PDF (rangkap 1): dokumen Word dikonversi dulu.
+    if (!loaded.isPdf && /wordprocessingml|msword/i.test(loaded.mime)) {
+      loaded = { buf: await convertedPdfFor(loaded.buf), mime: "application/pdf", fileName: loaded.fileName.replace(/\.[^.]+$/, "") + ".pdf", isPdf: true };
+    }
     res.setHeader("Content-Type", loaded.mime); res.setHeader("Cache-Control", "private, no-store"); res.setHeader("X-Robots-Tag", "noindex, nofollow");
     res.setHeader("Content-Disposition", contentDisposition("inline", loaded.fileName));
     res.send(loaded.buf);
@@ -4972,6 +5162,90 @@ app.post("/api/contracts/:id/signing-receipt", requireAuth, requirePerm("signing
   res.json({ success: true, contract });
 });
 
+// Efek lanjutan setelah dokumen bertanda tangan masuk Arsip (dipakai /activate = TTD basah
+// dan finalisasi TTD digital): timeline, notifikasi, addendum → induk, addendum lama
+// otomatis tidak berlaku, surat pengakhiran → induk berakhir.
+function applyArchiveEffects(db: any, req: AuthedRequest, contract: Contract, how: string, proofName: string, linkedJobId?: string) {
+  pushLinkedJobTimeline(db, contract, req, `Status → Arsip (${how})`, `Bukti TTD: ${proofName}`);
+  pushNotif(db, tenantOf(req), {
+    title: "Kontrak Masuk Arsip",
+    message: `Dokumen bertanda tangan kontrak ${contract.contractNumber} sudah diarsipkan (${how}) — status Arsip. Langkah berikutnya: umumkan rilis ke tim internal (Distribusi/Implementasi).`,
+    type: "success", contractId: contract.id, legalJobId: linkedJobId,
+  });
+
+  // Addendum: kalau mengamandemen kontrak induk & jangka waktu/nilainya
+  // beda dari induk saat ini, tempelkan perubahan itu ke induk (efek nyata
+  // "perpanjangan/perubahan via addendum"). Dibungkus try/catch supaya
+  // kegagalan di sini TIDAK membatalkan aktivasi addendum itu sendiri —
+  // induk yang somehow sudah tidak Aktif lagi cukup dilewati diam-diam.
+  if (contract.amendsContractId) {
+    try {
+      const parent = (db.contracts as Contract[]).find((c) => c.id === contract.amendsContractId && c.tenantId === contract.tenantId);
+      if (parent && isInForce(parent.status)) {
+        const changedFields: string[] = [];
+        if (contract.endDate && contract.endDate !== parent.endDate) {
+          changedFields.push(`Tanggal Berakhir: ${parent.endDate} → ${contract.endDate}`);
+          parent.endDate = contract.endDate;
+        }
+        if (contract.contractValue && contract.contractValue !== parent.contractValue) {
+          changedFields.push(`Nilai Kontrak: ${parent.contractValue} → ${contract.contractValue}`);
+          parent.contractValue = contract.contractValue;
+        }
+        if (changedFields.length > 0) {
+          parent.updatedAt = new Date().toISOString();
+          pushAudit(db, req, {
+            contractId: parent.id, contractNumber: parent.contractNumber,
+            action: "Update via Addendum",
+            details: `Diperbarui via ${contract.contractNumber}: ${changedFields.join("; ")}`,
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn({ err, contractId: contract.id }, "Gagal menerapkan addendum ke kontrak induk — aktivasi addendum tetap berhasil");
+    }
+  }
+
+  // Addendum baru yang sudah aktif menggantikan addendum sebelumnya pada induk
+  // yang sama: addendum lama otomatis "Tidak Berlaku" (Archived).
+  if (contract.amendsContractId) {
+    try {
+      const myTime = new Date(contract.createdAt).getTime();
+      for (const sib of db.contracts as Contract[]) {
+        if (sib.id === contract.id || sib.tenantId !== contract.tenantId) continue;
+        if (sib.amendsContractId !== contract.amendsContractId) continue;
+        if (new Date(sib.createdAt).getTime() >= myTime) continue;
+        if (!isInForce(sib.status) && sib.status !== "TidakAktif") continue;
+        sib.status = "Archived" as any;
+        sib.updatedAt = new Date().toISOString();
+        pushAudit(db, req, {
+          contractId: sib.id, contractNumber: sib.contractNumber,
+          action: "Superseded by Addendum",
+          details: `Addendum ${sib.contractNumber} otomatis Tidak Berlaku karena digantikan ${contract.contractNumber}`,
+        });
+      }
+    } catch (err) {
+      logger.warn({ err, contractId: contract.id }, "Gagal menandai addendum lama sebagai tidak berlaku");
+    }
+  }
+
+  // Surat Pengakhiran: begitu suratnya ditandatangani (diaktifkan), kontrak
+  // induk resmi berakhir (Terminated).
+  if (contract.terminatesContractId) {
+    try {
+      const parent = (db.contracts as Contract[]).find((c) => c.id === contract.terminatesContractId && c.tenantId === contract.tenantId);
+      if (parent && parent.status !== "Terminated") {
+        parent.status = "Terminated" as any;
+        (parent as any).terminationLetter = { number: contract.contractNumber, date: new Date().toISOString().split("T")[0], effectiveDate: contract.startDate, reason: contract.terminationReason || "", createdBy: req.user!.name, createdAt: new Date().toISOString(), letterId: contract.id };
+        parent.updatedAt = new Date().toISOString();
+        pushAudit(db, req, { contractId: parent.id, contractNumber: parent.contractNumber, action: "Terminate Contract", details: `Kontrak diakhiri via Surat Pengakhiran ${contract.contractNumber}` });
+      }
+    } catch (err) {
+      logger.warn({ err, contractId: contract.id }, "Gagal menerapkan pengakhiran ke kontrak induk");
+    }
+  }
+
+}
+
 app.post("/api/contracts/:id/activate", requireAuth, requirePerm("signing.manage"), upload.single("file"), async (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
@@ -5009,60 +5283,7 @@ app.post("/api/contracts/:id/activate", requireAuth, requirePerm("signing.manage
     action: "Activate Contract",
     details: `Mengunggah bukti TTD basah kontrak "${contract.title}" ("${req.file.originalname}", SHA-256: ${proofHash.slice(0, 16)}…) — status Arsip, terkunci dari editing & masuk monitoring masa berlaku`,
   });
-  pushLinkedJobTimeline(db, contract, req, "Status → Arsip (TTD basah diunggah)", `Bukti TTD: ${req.file.originalname}`);
-  pushNotif(db, tenantOf(req), {
-    title: "Kontrak Masuk Arsip",
-    message: `Bukti TTD basah kontrak ${contract.contractNumber} sudah diunggah — status Arsip. Langkah berikutnya: umumkan rilis ke tim internal (Distribusi/Implementasi).`,
-    type: "success", contractId: contract.id, legalJobId: linkedJobForActivation?.id,
-  });
-
-  // Addendum: kalau mengamandemen kontrak induk & jangka waktu/nilainya
-  // beda dari induk saat ini, tempelkan perubahan itu ke induk (efek nyata
-  // "perpanjangan/perubahan via addendum"). Dibungkus try/catch supaya
-  // kegagalan di sini TIDAK membatalkan aktivasi addendum itu sendiri —
-  // induk yang somehow sudah tidak Aktif lagi cukup dilewati diam-diam.
-  if (contract.amendsContractId) {
-    try {
-      const parent = (db.contracts as Contract[]).find((c) => c.id === contract.amendsContractId && c.tenantId === contract.tenantId);
-      if (parent && isInForce(parent.status)) {
-        const changedFields: string[] = [];
-        if (contract.endDate && contract.endDate !== parent.endDate) {
-          changedFields.push(`Tanggal Berakhir: ${parent.endDate} → ${contract.endDate}`);
-          parent.endDate = contract.endDate;
-        }
-        if (contract.contractValue && contract.contractValue !== parent.contractValue) {
-          changedFields.push(`Nilai Kontrak: ${parent.contractValue} → ${contract.contractValue}`);
-          parent.contractValue = contract.contractValue;
-        }
-        if (changedFields.length > 0) {
-          parent.updatedAt = new Date().toISOString();
-          pushAudit(db, req, {
-            contractId: parent.id, contractNumber: parent.contractNumber,
-            action: "Update via Addendum",
-            details: `Diperbarui via ${contract.contractNumber}: ${changedFields.join("; ")}`,
-          });
-        }
-      }
-    } catch (err) {
-      logger.warn({ err, contractId: contract.id }, "Gagal menerapkan addendum ke kontrak induk — aktivasi addendum tetap berhasil");
-    }
-  }
-
-  // Surat Pengakhiran: begitu suratnya ditandatangani (diaktifkan), kontrak
-  // induk resmi berakhir (Terminated).
-  if (contract.terminatesContractId) {
-    try {
-      const parent = (db.contracts as Contract[]).find((c) => c.id === contract.terminatesContractId && c.tenantId === contract.tenantId);
-      if (parent && parent.status !== "Terminated") {
-        parent.status = "Terminated" as any;
-        (parent as any).terminationLetter = { number: contract.contractNumber, date: new Date().toISOString().split("T")[0], effectiveDate: contract.startDate, reason: contract.terminationReason || "", createdBy: req.user!.name, createdAt: new Date().toISOString(), letterId: contract.id };
-        parent.updatedAt = new Date().toISOString();
-        pushAudit(db, req, { contractId: parent.id, contractNumber: parent.contractNumber, action: "Terminate Contract", details: `Kontrak diakhiri via Surat Pengakhiran ${contract.contractNumber}` });
-      }
-    } catch (err) {
-      logger.warn({ err, contractId: contract.id }, "Gagal menerapkan pengakhiran ke kontrak induk");
-    }
-  }
+  applyArchiveEffects(db, req, contract, "TTD basah diunggah", req.file.originalname, linkedJobForActivation?.id);
 
   saveDB(db);
   res.json({ success: true, contract });
@@ -5094,6 +5315,7 @@ app.post("/api/contracts/:id/announce-release", requireAuth, requirePerm("releas
     // /api/notifications/:id/open), lalu PDF resmi kontrak terbuka di tab baru.
     linkUrl: `/api/contracts/${contract.id}/view-pdf`,
     releaseAnnouncementId: entryId,
+    releaseNote: note || undefined,
     legalJobId: job?.id,
   });
   const notificationId = (db.notifications as SystemNotification[])[0]?.id;
@@ -5257,7 +5479,7 @@ app.post("/api/contracts/:id/addendum", requireAuth, requirePerm("contract.edit"
 
   const ADDENDUM_DOC_TYPE = "Addendum / Amandemen";
   const currentYear = new Date().getFullYear().toString();
-  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, ADDENDUM_DOC_TYPE, currentYear, { platform: parent.platform, company: parent.companyCode });
+  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, ADDENDUM_DOC_TYPE, currentYear, { platform: parent.platform, company: parent.companyCode, operator: (parent as any).operator });
 
   const newAddendum: Contract = {
     id: "ctr-" + Date.now(),
@@ -5270,6 +5492,7 @@ app.post("/api/contracts/:id/addendum", requireAuth, requirePerm("contract.edit"
     category: parent.category,
     // Addendum ikut platform kerja sama & perusahaan kontrak induknya.
     platform: parent.platform,
+    operator: (parent as any).operator,
     companyId: parent.companyId,
     companyName: parent.companyName,
     companyCode: parent.companyCode,
@@ -5349,7 +5572,7 @@ app.post("/api/contracts/:id/termination", requireAuth, requirePerm("contract.ed
   const dt = ((db as any).settings?.masterData?.docTypes || []).find?.((d: any) => d.name === DOC_TYPE);
   const templateId = req.body.templateId || dt?.defaultTemplateId || "";
   const currentYear = new Date().getFullYear().toString();
-  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, DOC_TYPE, currentYear, { platform: parent.platform, company: parent.companyCode });
+  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, DOC_TYPE, currentYear, { platform: parent.platform, company: parent.companyCode, operator: (parent as any).operator });
   const today = new Date().toISOString().split("T")[0];
   const letter: Contract = {
     id: "ctr-" + Date.now(),
@@ -7583,7 +7806,7 @@ app.post("/api/contracts/:id/renew", requireAuth, requirePerm("contract.edit"), 
     const endObj = new Date(startObj);
     endObj.setFullYear(endObj.getFullYear() + 1); // Perpanjang otomatis 1 tahun
 
-    const { number: newContractNumber, seq: newNumberSeq } = generateContractNumber(db, tid, sourceContract.category, sourceContract.docType, currentYear, { platform: sourceContract.platform, company: sourceContract.companyCode });
+    const { number: newContractNumber, seq: newNumberSeq } = generateContractNumber(db, tid, sourceContract.category, sourceContract.docType, currentYear, { platform: sourceContract.platform, company: sourceContract.companyCode, operator: (sourceContract as any).operator });
     const newStartDate = req.body.startDate || startObj.toISOString().split("T")[0];
     const newEndDate = req.body.endDate || endObj.toISOString().split("T")[0];
 

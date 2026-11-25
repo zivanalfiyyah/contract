@@ -512,6 +512,9 @@ export interface Contract {
   digitalSigning?: {
     startedAt: string; startedBy: string; completedAt?: string;
     signers: DigitalSigner[];
+    /** true setelah pihak eksternal diajukan (link+kode dibuat); TTD baru dianggap lengkap sesudahnya. */
+    externalRequested?: boolean;
+    finalizedAt?: string; finalPdfUrl?: string;
   };
   signingReceipt?: { copies: number; receivedDate: string; recordedAt: string; recordedBy: string };
   // Sharing fee opsional — kosong/tidak ada = kontrak ini tidak punya skema
@@ -568,6 +571,8 @@ export interface Contract {
   // SUDAH selesai (approve penuh maupun reject).
   approvalSteps?: ContractApprovalStep[];
   approvalRound?: number;
+  /** Waktu ronde review internal berjalan dimulai (diajukan / diajukan ulang). Masukan yang dibuat sebelum ini bukan 'masukan baru'. */
+  approvalRoundStartedAt?: string;
   approvalSubmittedById?: string;
   approvalSubmittedByName?: string;
   // Pembuat dokumen (untuk menentukan siapa yang menindaklanjuti revisi).
@@ -788,6 +793,8 @@ export interface SystemNotification {
   // Notifikasi pengumuman rilis internal — klik = penerima "sudah membuka"
   // (lihat ReleaseAnnouncement.openedBy).
   releaseAnnouncementId?: string;
+  /** Catatan penting dari pengumuman rilis (ditampilkan di popup sebelum dokumen dibuka). */
+  releaseNote?: string;
 }
 
 // Simulasi Modul Integrasi
@@ -1126,6 +1133,7 @@ export interface LegalJob {
   // Permintaan Kontrak dari divisi bisnis (source "divisi").
   requesterId?: string;
   requesterName?: string;
+  requesterEmail?: string;    // dari akun pemohon (diisi server saat dibaca)
   requestingDivision?: string;
   submitterName?: string;      // nama pengisi form eksternal (opsional)
   submitterEmail?: string;     // email pengisi, untuk notifikasi penolakan (opsional)

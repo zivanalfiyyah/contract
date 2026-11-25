@@ -82,6 +82,15 @@ export const isAdminLike = (role?: string) => role === "admin" || role === "supe
 export const isEmployeeContractLike = (c: { party2Type?: string; employmentType?: string }) =>
   c.party2Type === "Karyawan" || c.party2Type === "Employee";
 
+// Review berurutan: approver di langkah berikutnya BARU terlibat (boleh melihat
+// dokumen / menerima notifikasi) setelah langkah sebelumnya disetujui. Langkah
+// yang sudah pernah memutuskan atau sudah mulai (startedAt) juga dihitung.
+type StepLike = { approverId?: string; decidedByDelegateId?: string; order?: number; decision?: string; startedAt?: string };
+export function reachedApprovalSteps<T extends StepLike>(steps: T[] | undefined): T[] {
+  const sorted = [...(steps || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+  return sorted.filter((s, i) => i === 0 || !!s.startedAt || (!!s.decision && s.decision !== "pending") || sorted[i - 1].decision === "approved");
+}
+
 // Siapa boleh MELIHAT sebuah kontrak. Orang yang terlibat langsung (pembuat,
 // pengaju, approver di ronde mana pun) selalu boleh melihat, apa pun perannya
 // — kalau tidak, approver dari divisi lain tidak bisa membuka dokumen yang
@@ -91,8 +100,8 @@ export function canViewContract(
   c: {
     party2Type?: string; employmentType?: string; requestingDivision?: string;
     createdById?: string; approvalSubmittedById?: string;
-    approvalSteps?: { approverId?: string; decidedByDelegateId?: string }[];
-    approvalHistory?: { steps?: { approverId?: string }[] }[];
+    approvalSteps?: StepLike[];
+    approvalHistory?: { steps?: StepLike[] }[];
   },
 ): boolean {
   const role = user.role;
@@ -105,8 +114,8 @@ export function canViewContract(
   // sebagai reviewer/approver di ronde mana pun, termasuk penerima delegasi).
   if (c.createdById === user.id || c.approvalSubmittedById === user.id) return true;
   const me = [user.id, ...(user.actingForIds || [])];
-  if ((c.approvalSteps || []).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id)) return true;
-  if ((c.approvalHistory || []).some((r) => (r.steps || []).some((s) => s.approverId === user.id))) return true;
+  if (reachedApprovalSteps(c.approvalSteps).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id)) return true;
+  if ((c.approvalHistory || []).some((r) => reachedApprovalSteps(r.steps).some((s) => s.approverId === user.id))) return true;
   return false;
 }
 
@@ -214,7 +223,7 @@ export function canReviewContract(
   user: { id: string; role: string; actingForIds?: string[] },
   c: {
     status?: string; createdById?: string; approvalSubmittedById?: string;
-    approvalSteps?: { approverId?: string; decidedByDelegateId?: string }[];
+    approvalSteps?: StepLike[];
   },
   overrides?: ActionPermissions | null,
 ): boolean {
@@ -223,7 +232,7 @@ export function canReviewContract(
   const inReviewStage = c.status === "OnReview" || c.status === "FinalReview";
   if (!inReviewStage) return false;
   const me = [user.id, ...(user.actingForIds || [])];
-  return (c.approvalSteps || []).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id);
+  return reachedApprovalSteps(c.approvalSteps).some((s) => me.includes(s.approverId || "") || s.decidedByDelegateId === user.id);
 }
 
 // Default menu sidebar per peran (dipakai bila admin belum mengatur matriks

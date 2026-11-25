@@ -43,7 +43,7 @@ export function onlyOfficeSettings(env: NodeJS.ProcessEnv = process.env): OnlyOf
 
 // ---- Token tautan (file & callback) ---------------------------------------
 export interface LinkClaims {
-  kind: "file" | "callback" | "plugin" | "rfile" | "rcallback" | "tfile" | "tcallback";
+  kind: "file" | "callback" | "plugin" | "rfile" | "rcallback";
   contractId: string;
   /** Nomor versi berkas yang dibuka. */
   version: number;
@@ -138,6 +138,8 @@ export interface EditorConfigInput {
   plugin?: { configUrl: string; guid: string; options: Record<string, unknown> };
   /** Plugin "Panel CLM" (data, bahasa, tata letak). */
   panel?: { configUrl: string; guid: string; options: Record<string, unknown> };
+  /** Plugin "Asisten Hukum" (asisten AI: klik kanan teks terpilih). */
+  lawyer?: { configUrl: string; guid: string; options: Record<string, unknown> };
 }
 
 /** Kunci dokumen DS: berubah setiap isi berkas berubah (DS menyimpan cache per key). */
@@ -183,8 +185,8 @@ export function buildEditorConfig(s: OnlyOfficeSettings, i: EditorConfigInput) {
     width: "100%",
     height: "100%",
   };
-  if (i.canEdit && (i.plugin || i.panel)) {
-    const list = [i.plugin, i.panel].filter(Boolean) as { configUrl: string; guid: string; options: Record<string, unknown> }[];
+  if (i.canEdit && (i.plugin || i.panel || i.lawyer)) {
+    const list = [i.plugin, i.panel, i.lawyer].filter(Boolean) as { configUrl: string; guid: string; options: Record<string, unknown> }[];
     config.editorConfig.plugins = { pluginsData: list.map((x) => x.configUrl), options: Object.fromEntries(list.map((x) => [x.guid, x.options])) };
   }
   config.token = signDsPayload(s, config);

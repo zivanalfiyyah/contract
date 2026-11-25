@@ -41,35 +41,26 @@ interface Props {
   height?: string;
   /** Dipanggil (sekali per perubahan) setelah editor melaporkan dokumen sudah tersimpan. */
   onSaved?: () => void;
-  /** Dipanggil setiap kali status "ada perubahan belum tersimpan" berubah (true = editor baru saja diubah). */
-  onDirtyChange?: (dirty: boolean) => void;
   /** Dipanggil bila editor tidak bisa dimuat — pemanggil beralih ke editor cadangan. */
   onUnavailable?: (reason: string) => void;
-  /** Plugin "Panel CLM" mengubah data pihak/kontrak di database — pemanggil mengambil ulang kontrak. */
-  onPartyUpdated?: () => void;
 }
 
-export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onDirtyChange, onUnavailable, onPartyUpdated }: Props) {
+export default function OnlyOfficeEditor({ contractId, version, canEdit, configUrl, height, onSaved, onUnavailable }: Props) {
   const holderId = useRef(`oo-${Math.random().toString(36).slice(2, 10)}`).current;
   const editorRef = useRef<any>(null);
+  // Tempat editor dibuat manual (di luar kendali React): ONLYOFFICE mengganti elemen ini dengan iframe-nya,
+  // sehingga bila React ikut mengurusnya, render ulang (mis. tampil pesan error) bisa membuat halaman crash.
+  const hostRef = useRef<HTMLDivElement>(null);
   const [state, setState] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
   const onSavedRef = useRef(onSaved);
   const onUnavailableRef = useRef(onUnavailable);
   onSavedRef.current = onSaved;
-  const onDirtyRef = useRef(onDirtyChange);
-  onDirtyRef.current = onDirtyChange;
   onUnavailableRef.current = onUnavailable;
-  const onPartyUpdatedRef = useRef(onPartyUpdated);
-  onPartyUpdatedRef.current = onPartyUpdated;
   // Plugin "Panel CLM" (di dalam editor) meminta muat ulang setelah mengubah tata letak/bahasa di server.
   const [reloadTick, setReloadTick] = useState(0);
   useEffect(() => {
-    const onMsg = (e: MessageEvent) => {
-      const m = e.data && (e.data as any).clm;
-      if (m === "reload") setReloadTick((n) => n + 1);
-      else if (m === "party-updated") onPartyUpdatedRef.current?.();
-    };
+    const onMsg = (e: MessageEvent) => { if (e.data && (e.data as any).clm === "reload") setReloadTick((n) => n + 1); };
     window.addEventListener("message", onMsg);
     return () => window.removeEventListener("message", onMsg);
   }, []);
@@ -78,11 +69,15 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
     let cancelled = false;
     let modified = false;
     setState("loading");
+    const holder = document.createElement("div");
+    holder.id = holderId;
+    holder.style.cssText = "width:100%;height:100%";
+    hostRef.current?.appendChild(holder);
     (async () => {
       try {
         const r = await fetch(configUrl || `/api/contracts/${contractId}/onlyoffice/config?version=${version}${canEdit ? "" : "&mode=view"}`);
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(data.error || `Gagal menyiapkan editor (HTTP ${r.status})`);
+        if (!r.ok) { const err: any = new Error(data.error || `Gagal menyiapkan editor (HTTP ${r.status})`); err.fileMissing = data.code === "FILE_MISSING"; throw err; }
         if (!data.enabled) throw new Error("Editor Word belum diaktifkan di server");
         await loadDocsApi(data.documentServerUrl);
         if (cancelled) return;
@@ -92,13 +87,13 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
             onAppReady: () => { if (!cancelled) setState("ready"); },
             onDocumentStateChange: (e: { data: boolean }) => {
               // true = ada perubahan belum tersimpan, false = sudah tersimpan di server.
-              if (e.data) { modified = true; onDirtyRef.current?.(true); return; }
-              onDirtyRef.current?.(false);
+              if (e.data) { modified = true; return; }
               if (modified) { modified = false; setTimeout(() => { if (!cancelled) onSavedRef.current?.(); }, 1500); }
             },
             onError: (e: any) => {
               if (cancelled) return;
-              setError(`Editor melaporkan kesalahan: ${e?.data?.errorDescription || e?.data || "tidak diketahui"}`);
+              const desc = String(e?.data?.errorDescription || e?.data || "");
+              setError(/download|unduh|file/i.test(desc) ? "File dokumen tidak ada di server Anda." : `Editor melaporkan kesalahan: ${desc || "tidak diketahui"}`);
               setState("error");
             },
           },
@@ -108,18 +103,20 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
         if (cancelled) return;
         setError(e?.message || "Editor Word tidak bisa dimuat");
         setState("error");
-        onUnavailableRef.current?.(e?.message || "");
+        if (!e?.fileMissing) onUnavailableRef.current?.(e?.message || "");
       }
     })();
     return () => {
       cancelled = true;
       try { editorRef.current?.destroyEditor?.(); } catch { /* noop */ }
       editorRef.current = null;
+      try { holder.remove(); } catch { /* noop */ }
     };
   }, [contractId, version, canEdit, configUrl, holderId, reloadTick]);
 
   return (
     <div className="relative bg-white" style={{ height: height || "88vh", minHeight: 560 }} data-testid="onlyoffice-editor">
+      <div ref={hostRef} style={{ width: "100%", height: "100%" }} />
       {state === "loading" && (
         <div className="absolute inset-0 z-10 flex items-center justify-center text-slate-500 text-xs gap-2 bg-white/80 pointer-events-none">
           <Loader2 className="w-4 h-4 animate-spin" /> Memuat editor Word…
@@ -130,7 +127,6 @@ export default function OnlyOfficeEditor({ contractId, version, canEdit, configU
           <AlertTriangle className="w-4 h-4 shrink-0" /> {error}
         </div>
       )}
-      <div id={holderId} style={{ width: "100%", height: "100%" }} />
     </div>
   );
 }

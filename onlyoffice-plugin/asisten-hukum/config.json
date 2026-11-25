@@ -1,0 +1,23 @@
+{
+  "name": "Asisten Hukum",
+  "nameLocale": { "id": "Asisten Hukum", "en": "Legal Assistant" },
+  "guid": "asc.{C7A1D3E9-52B4-4F08-9E6A-8B1D4F70A2C5}",
+  "version": "1.0.0",
+  "variations": [
+    {
+      "description": "Asisten AI hukum: pilih teks lalu klik kanan untuk menjelaskan, menulis ulang, atau menganalisis risiko",
+      "descriptionLocale": { "id": "Asisten AI hukum: pilih teks lalu klik kanan untuk menjelaskan, menulis ulang, atau menganalisis risiko" },
+      "url": "index.html",
+      "icons": ["icon.png", "icon2x.png"],
+      "isViewer": false,
+      "EditorsSupport": ["word"],
+      "isVisual": true,
+      "isModal": false,
+      "isInsideMode": true,
+      "initDataType": "none",
+      "initData": "",
+      "buttons": [],
+      "events": ["onContextMenuShow"]
+    }
+  ]
+}

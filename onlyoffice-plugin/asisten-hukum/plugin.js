@@ -71,6 +71,20 @@
     });
   }
 
+  // Klik kanan -> "Asisten AI" -> "Buka chat Asisten AI": langsung ke halaman chat, teks terpilih
+  // ikut dibawa; pengguna tinggal pilih tombol cepat atau mengetik pertanyaannya.
+  function openChat() {
+    getSelection(function (t) {
+      err("");
+      if (t) { lastSel = t; var box = $("sel"); box.style.display = "block"; box.textContent = "Teks terpilih: " + t; }
+      var log = $("log");
+      var tip = document.createElement("div"); tip.className = "hint"; tip.style.marginTop = "6px";
+      tip.textContent = t ? "Teks terpilih siap. Pilih tombol cepat di atas atau ketik pertanyaan Anda tentang teks ini." : "Ketik pertanyaan Anda, atau pilih teks di dokumen lalu klik kanan lagi.";
+      log.appendChild(tip); log.scrollTop = log.scrollHeight;
+      try { $("q").focus(); } catch (e) {}
+    });
+  }
+
   function initUi() {
     var d = $("doc").querySelectorAll("button");
     for (var i = 0; i < d.length; i++) d[i].onclick = (function (b) { return function () { run(b.getAttribute("data-a"), b.textContent, "", ""); }; })(d[i]);
@@ -95,9 +109,10 @@
     window.Asc.plugin.attachEvent("onContextMenuShow", function (options) {
       if (!options || options.type !== "Selection") return;
       try {
-        window.Asc.plugin.executeMethod("AddContextMenuItem", [{ guid: window.Asc.plugin.guid, items: [{ id: "ah_menu", text: "Asisten AI", items: ACTIONS.map(function (a) { return { id: "ah_" + a.id, text: a.text }; }) }] }]);
+        window.Asc.plugin.executeMethod("AddContextMenuItem", [{ guid: window.Asc.plugin.guid, items: [{ id: "ah_menu", text: "Asisten AI", items: [{ id: "ah_open_chat", text: "Buka chat Asisten AI…" }].concat(ACTIONS.map(function (a) { return { id: "ah_" + a.id, text: a.text }; })) }] }]);
       } catch (e) {}
     });
+    try { window.Asc.plugin.attachContextMenuClickEvent("ah_open_chat", openChat); } catch (e) {}
     ACTIONS.forEach(function (a) {
       try { window.Asc.plugin.attachContextMenuClickEvent("ah_" + a.id, function () { runOnSelection(a.id, a.text); }); } catch (e) {}
     });

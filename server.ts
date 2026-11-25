@@ -1,16 +1,17 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { randomBytes, randomUUID, createHash, randomInt, timingSafeEqual } from "crypto";
+import { randomBytes, randomUUID, createHash, createHmac, randomInt, timingSafeEqual } from "crypto";
 import dotenv from "dotenv";
 import {
   Clause, Variable, Template, Contract, ContractVersion, ContractStatus,
   ContractApprovalStep, AuditTrail, SystemNotification, EmployeeData, VendorData, User, UserRole,
   ClauseComment, PushSubscription as PushSub, SubFolder, ContractSharingFeeItem, ContractVendorSnapshot,
-  ContractPaymentTerm, ContractObligation, StoredDocumentRef, ExternalReviewCopy, ContractVendorEvaluation, BudgetEntry,
+  ContractPaymentTerm, ContractObligation, StoredDocumentRef, ContractVendorEvaluation, BudgetEntry,
   LegalJob, LegalJobStatus, LegalJobPriority, LegalJobDocument, LegalJobNote,
   LegalJobTimelineEntry, LegalFormLink, LEGAL_JOB_WORKFLOW_STATUSES,
   SignatureFormat, SIGNATURE_FORMATS, DigitalSignatureInfo,
+  DigitalSigner,
 } from "./src/types";
 import { isFullAccessRole, isPermAllowed, sanitizeActionPermissions, canViewContract, canReviewContract, canBeApprover, isDivisionRole, DIVISION_ROLES, roleLabelOf } from "./src/roles";
 import { contractStage, jobStage, isInForce, wasEverInForce, unifiedStatusLabel, UnifiedStatus, LEGAL_STAGES } from "./src/workflow";
@@ -31,12 +32,6 @@ import {
 import { clauseToPluginBlocks, extractImageSrcs } from "./clause-html.js";
 import { applyLocks, checkTemplateEdit, buildTemplateDocx, CLAUSE_OVERRIDE_ROLES, type PolicyMap, type LetterheadInput, type SignatureInput, type SignatureOptions, type DigitalSignatureInput, readLayout, patchLayout, type LayoutPatch, listVariables, setVariables, listTranslatable, applyTranslations, setLanguageMode, readLanguage, refreshEnglishVars, refreshRangkapTail, signaturePageText, hasTwoCopies, type DocLanguage, type BilingualLayoutMode, type LangStash, unhideLegacyLanguage } from "./template-docx.js";
 import { readChangeHistory, acceptAllChanges, hasTrackedChanges, originalTextOf } from "./review-changes.js";
-import { buildExternalCopy, mergeExternalMarkup } from "./review-isolation.js";
-import {
-  summarizeReviewActivity, EMPTY_ACTIVITY, addedByAuthor, savedChangesDetails,
-  REVIEW_EDITOR_AUDIT_ACTION, REVIEW_SAVED_AUDIT_ACTION, COMMENT_EDIT_AUDIT_ACTION, COMMENT_DELETE_AUDIT_ACTION,
-  type SessionReviewer, type ReviewSessionActivity,
-} from "./review-session.js";
 import { convertDocToDocx, convertDocxToPdf, isOfficeConverterAvailable } from "./office-convert.js";
 import { extractPdfLayout, applyPdfEdits } from "./pdf-text-edit.js";
 import { convertPdfToDocx } from "./pdf-to-docx.js";
@@ -216,7 +211,7 @@ app.use("/onlyoffice-plugins", (_req, res, next) => {
   next();
 });
 // index.html plugin: alamat Document Server disisipkan agar skrip editor diambil dari sana (tanpa bergantung internet luar).
-app.get("/onlyoffice-plugins/:name(sisipkan-pasal|panel-clm)/index.html", (req, res, next) => {
+app.get("/onlyoffice-plugins/:name(sisipkan-pasal|panel-clm|asisten-hukum)/index.html", (req, res, next) => {
   try {
     const html = fs.readFileSync(path.join(ooPluginDir, String(req.params.name), "index.html"), "utf8");
     res.setHeader("Cache-Control", "no-store");
@@ -348,11 +343,11 @@ function startFinalInternalReview(db: any, contract: Contract): ContractApproval
   }
   return steps;
 }
-function legalJobLinkedContractInfo(db: any, job: LegalJob): { id: string; title: string; contractNumber: string; status: UnifiedLegalStatus; rawStatus: ContractStatus; signingDispatch?: Contract["signingDispatch"]; signingReceipt?: Contract["signingReceipt"] } | null {
+function legalJobLinkedContractInfo(db: any, job: LegalJob): { id: string; title: string; contractNumber: string; status: UnifiedLegalStatus; rawStatus: ContractStatus; signingDispatch?: Contract["signingDispatch"]; signingReceipt?: Contract["signingReceipt"]; digitalSigning?: any } | null {
   if (!job.linkedContractId) return null;
   const c = (db.contracts as Contract[]).find((x) => x.id === job.linkedContractId);
   if (!c) return null;
-  return { id: c.id, title: c.title, contractNumber: c.contractNumber, status: computeUnifiedLegalStatus(c), rawStatus: c.status, signingDispatch: c.signingDispatch, signingReceipt: c.signingReceipt };
+  return { id: c.id, title: c.title, contractNumber: c.contractNumber, status: computeUnifiedLegalStatus(c), rawStatus: c.status, signingDispatch: c.signingDispatch, signingReceipt: c.signingReceipt, digitalSigning: c.digitalSigning ? { ...c.digitalSigning, signers: c.digitalSigning.signers.map(({ token: _t, code: _c, ...rest }) => rest) } : undefined };
 }
 // Link Dokumen (mis. Google Drive) di formulir Pekerjaan Legal — opsional,
 // boleh bersama/tanpa unggah berkas. Hanya http(s); nilai lain = error.
@@ -1402,6 +1397,8 @@ app.use('/uploads', (_req, res) => {
 // Applied ahead of every /api/ai/* route: fails fast with a clear message
 // instead of each of the 10+ handlers below needing its own pre-flight check.
 app.use("/api/ai/", (req, res, next) => {
+  // Asisten Hukum boleh jalan lewat model lokal tanpa Gemini; endpoint status selalu boleh.
+  if (req.path.startsWith("/lawyer-assistant") && (req.path.endsWith("/status") || process.env.LEGAL_LLM_URL)) return next();
   if (!isGeminiConfigured()) {
     return res.status(503).json({ error: "Fitur AI belum tersedia — GEMINI_API_KEY belum dikonfigurasi di server. Hubungi admin." });
   }
@@ -2668,8 +2665,9 @@ function contractMaskFor(db: any, tid: string, docType: string | undefined): { m
   if (mask === LEGACY_DEFAULT_MASK || mask === PREVIOUS_REFERENCE_MASK) mask = REFERENCE_DEFAULT_MASK;
   return { mask: ensurePlatformToken(mask), dtObj, prefix, dtCode };
 }
-// PT hanya ikut memecah urutan bila token {Company} ada di format nomor.
-const scopeCompany = (mask: string, company?: string) => (/\{Company\}/.test(mask) ? sanitizeCompanyCode(company) : "");
+// PT SELALU ikut memecah urutan (TBK, GKM, dst masing-masing punya nomor urut sendiri),
+// terlepas dari ada/tidaknya token {Company} di format nomor.
+const scopeCompany = (_mask: string, company?: string) => sanitizeCompanyCode(company);
 
 // Baseline saat sebuah scope PERTAMA kali dipakai counter persisten: hitung per
 // Jenis Dokumen (docType) + tahun (atau kategori jika docType tidak ada) [+ platform / PT bila memecah urutan].
@@ -2743,6 +2741,27 @@ function parseManualSeq(db: any, tid: string, docType: string | undefined, manua
   if (m) return Number(m[1]) || null;
   m = text.match(/^0*(\d{1,6})\s*[\/\-.]/);
   return m ? Number(m[1]) || null : null;
+}
+
+
+// Apakah angka urut ini sudah dipakai di scope (jenis + tahun + platform + PT)?
+// Dipakai menolak nomor MANUAL yang bentrok dengan nomor otomatis/manual lain.
+function seqTakenInScope(db: any, tid: string, category: string, docType: string | undefined, year: string, seq: number, opts?: { platform?: string; company?: string }): boolean {
+  const { mask } = contractMaskFor(db, tid, docType);
+  const company = scopeCompany(mask, opts?.company);
+  const key = contractScopeKey(tid, category, docType, year, opts?.platform, company);
+  const rec = (db.numberCounters as any[] | undefined)?.find((r) => r.id === key);
+  if (rec && Array.isArray(rec.used) && rec.used.includes(seq)) return true;
+  const pc = platformCode(opts?.platform);
+  const cc = sanitizeCompanyCode(company);
+  const dtKey = (docType || "").trim();
+  return scoped(db.contracts as Contract[], tid).some((c) => {
+    if ((c.createdAt || "").slice(0, 4) !== year) return false;
+    if (pc && platformCode((c as any).platform) !== pc) return false;
+    if (cc && sanitizeCompanyCode((c as any).companyCode) !== cc) return false;
+    if (dtKey ? (c.docType || "").trim() !== dtKey : (c.category || "").trim() !== (category || "").trim()) return false;
+    return (c as any).numberSeq === seq || (c as any).manualSeq === seq;
+  });
 }
 
 // Catat angka urut nomor manual sebagai "terpakai" di scope urutan otomatisnya. Mengembalikan angkanya (atau null).
@@ -3413,6 +3432,14 @@ app.post("/api/contracts", requireAuth, requirePerm("contract.edit"), async (req
   if (manualNumber) {
     contractNumber = manualNumber.slice(0, 80);
     numberSeq = undefined;
+    {
+      const dupText = (db.contracts as Contract[]).some((c) => c.tenantId === tid && (c.contractNumber || "").trim().toLowerCase() === contractNumber.trim().toLowerCase());
+      if (dupText) return res.status(409).json({ error: `Nomor "${contractNumber}" sudah terpakai oleh dokumen lain.` });
+      const wantSeq = parseManualSeq(db, tid, req.body.docType, contractNumber, { platform, company: numberCompany?.code, year: currentYear });
+      if (wantSeq && seqTakenInScope(db, tid, req.body.category || "General", req.body.docType, currentYear, wantSeq, { platform, company: numberCompany?.code })) {
+        return res.status(409).json({ error: `Nomor urut ${wantSeq} sudah terpakai untuk jenis dokumen, PT, dan platform ini. Pilih nomor lain atau kosongkan agar nomor dibuat otomatis.` });
+      }
+    }
     // Nomor manual ikut tercatat di urutan otomatis (scope: jenis + tahun + platform [+ PT]) sebagai "terpakai".
     manualSeq = claimManualNumber(db, tid, req.body.category || "General", req.body.docType, currentYear, contractNumber, { platform, company: numberCompany?.code }) ?? undefined;
   } else {
@@ -3630,6 +3657,9 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
   const oldContract = db.contracts[idx];
 
   if (req.body.status !== undefined && req.body.status !== oldContract.status) {
+    if (req.body.status === "Terminated") {
+      return res.status(400).json({ error: "Kontrak hanya bisa diakhiri lewat Surat Pengakhiran: klik Akhiri Kontrak, buat suratnya, lalu tandatangani & aktifkan." });
+    }
     const allowed = CONTRACT_PUT_TRANSITIONS[oldContract.status] || [];
     if (!allowed.includes(req.body.status)) {
       const hint = oldContract.status === "Draft" && req.body.status === "Aktif"
@@ -3722,6 +3752,9 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
       customOpeningParagraph: req.body.customOpeningParagraph !== undefined ? (req.body.customOpeningParagraph || undefined) : oldContract.customOpeningParagraph,
     } : {}),
     status: req.body.status !== undefined ? req.body.status : oldContract.status,
+    terminationLetter: req.body.status === "Terminated" && oldContract.status !== "Terminated"
+      ? { number: String(req.body.terminationLetter.number).trim(), date: String(req.body.terminationLetter.date), effectiveDate: String(req.body.terminationLetter.effectiveDate), reason: String(req.body.terminationLetter.reason).trim(), notes: String(req.body.terminationLetter.notes || "").trim() || undefined, createdBy: req.user!.name, createdAt: new Date().toISOString() }
+      : (oldContract as any).terminationLetter,
     // Divisi peminta — hanya Legal/Admin yang menandai (menentukan divisi
     // mana yang ikut melihat dokumen ini).
     requestingDivision: req.body.requestingDivision !== undefined && ["admin", "legal", "super_admin"].includes(req.user!.role)
@@ -3765,6 +3798,15 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
     signatureFormat: req.body.signatureFormat !== undefined
       ? (parseSignatureFormat(req.body.signatureFormat) ?? oldContract.signatureFormat)
       : oldContract.signatureFormat,
+    // Jumlah rangkap fisik (pelacakan scan per rangkap) ikut Format TTD selama belum ada rangkap yang diunggah/diproses.
+    copies: (() => {
+      const fmt = req.body.signatureFormat !== undefined ? parseSignatureFormat(req.body.signatureFormat) : null;
+      const cur = (oldContract as any).copies as any[] | undefined;
+      if (!fmt || !Array.isArray(cur) || cur.some((cp) => cp.fileUrl || (cp.status && cp.status !== "Disimpan"))) return cur;
+      const want = fmt === "dua_rangkap" ? 2 : 1;
+      if (cur.length === want) return cur;
+      return buildContractCopies(want, fmt === "dua_rangkap" || cur.some((cp) => !!cp.materaiOn));
+    })(),
     // useDigitalSignature (tombol "TTD Digital"): preferensi tampilan juga —
     // hanya menaruh gambar tanda tangan Pihak Pertama di kolom TTD, bukan isi
     // naskah. Aturan izin & status SAMA dengan Format TTD di atas.
@@ -3786,7 +3828,7 @@ app.put("/api/contracts/:id", requireAuth, requirePerm("contract.edit"), (req: A
   };
   pushAudit(db, req, {
     contractId: oldContract.id, contractNumber: oldContract.contractNumber,
-    action: canEditContent ? "Modify Clause / Details" : "Update Status/Location",
+    action: req.body.status === "Terminated" && oldContract.status !== "Terminated" ? "Terminate Contract" : canEditContent ? "Modify Clause / Details" : "Update Status/Location",
     details: canEditContent
       ? `Mengubah draf kontrak dan memperbarui ke versi ${newVersionNum}`
       : `Memperbarui status dan/atau lokasi arsip kontrak`,
@@ -4134,7 +4176,7 @@ app.post("/api/contracts/bulk-reminder", requireAuth, requirePerm("contract.bulk
 
     const sisa = Math.ceil((new Date(c.endDate).getTime() - Date.now()) / 86400000);
     const konteks = isInternalApprovalStage(c.status) && langkah
-      ? `menunggu keputusan ${langkah.approverName}`
+      ? `menunggu persetujuan ${langkah.approverName}`
       : Number.isFinite(sisa)
         ? (sisa < 0 ? `sudah lewat masa berlaku ${Math.abs(sisa)} hari` : `berakhir dalam ${sisa} hari`)
         : `berstatus ${c.status}`;
@@ -4254,77 +4296,6 @@ app.post("/api/contracts/:id/submit-review", requireAuth, requirePerm("contract.
   res.json({ success: true, contract });
 });
 
-// ---------------------------------------------------------------------------
-// ATURAN SESI REVIEW: reviewer (internal & eksternal) hanya boleh "Setujui" bila pada SESI review yang sedang
-// berjalan ia tidak menambah komentar/balasan, mengedit atau menghapus komentar, membuat usulan coret/ganti,
-// maupun Track Changes di berkas Word. Ada satu saja → Setujui ditolak (409); "Minta/Ajukan Revisi" tetap bisa.
-// Hanya membuka/membaca dokumen BUKAN aktivitas. Logika murni ada di review-session.ts; di sini hanya membaca
-// data (komentar + jejak audit) — tidak ada riwayat yang dihapus atau diubah.
-// Sesi = satu putaran: internal mulai saat dokumen diajukan (giliran langkah pertama), eksternal mulai saat
-// ronde dibuka. Pengajuan ulang/ronde baru = sesi baru.
-// ---------------------------------------------------------------------------
-function reviewSessionStartOf(contract: Contract, kind: "internal" | "external"): string | null {
-  if (kind === "external") {
-    const round = (contract.externalRounds || []).find((r) => r.round === contract.externalRoundCount);
-    return round?.sentAt || null;
-  }
-  const starts = (contract.approvalSteps || []).map((st) => st.startedAt).filter((x): x is string => !!x).sort();
-  return starts[0] || null;
-}
-/** Gagal teknis TIDAK memblokir persetujuan (dicatat di log); yang memblokir hanya aktivitas yang benar-benar terdeteksi. */
-function loadReviewActivity(db: any, contract: Contract, reviewer: SessionReviewer): ReviewSessionActivity {
-  const sessionStart = reviewSessionStartOf(contract, reviewer.kind);
-  try {
-    return summarizeReviewActivity({
-      reviewer, sessionStart,
-      comments: ((db.clauseComments as ClauseComment[]) || []).filter((c) => c.contractId === contract.id),
-      audits: ((db.audits as AuditTrail[]) || []).filter((a) => a.contractId === contract.id),
-    });
-  } catch (err) {
-    logger.warn({ err, contractId: contract.id }, "Gagal memeriksa aktivitas sesi review — persetujuan tidak diblokir");
-    return EMPTY_ACTIVITY(sessionStart);
-  }
-}
-const REVIEW_ACTIVITY_MSG = "Anda sudah menambah/mengubah markup pada sesi review ini, jadi tombol Setujui dikunci. Gunakan \"Minta Revisi\" (internal) atau \"Ajukan Revisi\" (eksternal).";
-
-/** Berkas tinjauan tersimpan berisi perubahan/komentar BARU → catat per penulis (dasar aktivitas "tersimpan"). */
-async function recordSavedReviewChanges(
-  db: any, contract: Contract, actor: AuthedRequest, claims: { iat?: number }, prevBuf: Buffer, nextBuf: Buffer,
-) {
-  const kind = contract.status === "ReviewEksternal" ? "external" : isInternalApprovalStage(contract.status) ? "internal" : null;
-  if (!kind) return;
-  // Penjaga editor lama: editor yang dibuka SEBELUM sesi ini mulai (token `iat`) tidak dihitung sebagai aktivitas sesi ini.
-  const start = reviewSessionStartOf(contract, kind);
-  const iatMs = Number(claims.iat) * 1000;
-  if (start && Number.isFinite(iatMs) && iatMs < Date.parse(start)) return;
-  const added = addedByAuthor(await readChangeHistory(prevBuf), await readChangeHistory(nextBuf));
-  for (const [author, n] of added) {
-    pushAudit(db, actor, { contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_SAVED_AUDIT_ACTION, details: savedChangesDetails(author, n) });
-  }
-}
-
-// Aktivitas sesi reviewer yang sedang login (dipakai tampilan untuk menonaktifkan tombol Setujui).
-app.get("/api/contracts/:id/review-session", requireAuth, (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Contract not found" });
-  res.json(loadReviewActivity(db, contract, { kind: "internal", userId: req.user!.id, name: req.user!.name }));
-});
-// Editor Word melaporkan reviewer baru mengubah dokumen (berkas baru tersimpan setelah editor ditutup, jadi
-// penandanya dicatat SEGERA — satu per sesi per reviewer).
-app.post("/api/contracts/:id/review-session/activity", requireAuth, (req: AuthedRequest, res) => {
-  const db = loadDB();
-  const contract = findOwnedContract(db, req, req.params.id);
-  if (!contract) return res.status(404).json({ error: "Contract not found" });
-  if (!isInternalApprovalStage(contract.status)) return res.json({ recorded: false });
-  if (!canReviewContract(viewerOf(db, req), contract, actionOverridesFor(db, contract.tenantId))) return res.status(403).json({ error: "Anda belum ditunjuk untuk meninjau dokumen ini." });
-  const act = loadReviewActivity(db, contract, { kind: "internal", userId: req.user!.id, name: req.user!.name });
-  if (act.counts.editorChanges > 0) return res.json({ recorded: false });
-  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_EDITOR_AUDIT_ACTION, details: `${req.user!.name} mengubah dokumen di editor Word pada sesi review ini (belum tersimpan).` });
-  saveDB(db);
-  res.json({ recorded: true });
-});
-
 // Approve/reject step approval matrix yang sedang giliran approver ybs.
 app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedRequest, res) => {
   const db = loadDB();
@@ -4373,13 +4344,6 @@ app.post("/api/contracts/:id/approval-decision", requireAuth, (req: AuthedReques
     && (req.user!.role === "admin" || req.user!.role === "super_admin");
   if (!isOwnTurn && !isDelegate && !isAdminOverride) {
     return res.status(403).json({ error: "Bukan giliran Anda menyetujui dokumen ini." });
-  }
-  // Aturan sesi review: ada markup/komentar baru dari orang yang menekan tombol pada sesi ini → Setujui ditolak.
-  const revisionActivity = decision === "approved"
-    ? loadReviewActivity(db, contract, { kind: "internal", userId: req.user!.id, name: req.user!.name })
-    : null;
-  if (revisionActivity?.hasActivity) {
-    return res.status(409).json({ code: "REVIEW_ACTIVITY_DETECTED", error: REVIEW_ACTIVITY_MSG, activity: revisionActivity });
   }
 
   const overrideNote = isDelegate
@@ -4779,6 +4743,199 @@ app.post("/api/contracts/:id/signing-dispatch", requireAuth, requirePerm("signin
   res.json({ success: true, contract });
 });
 
+
+// ===== TTD DIGITAL (alternatif TTD basah) =====
+// Legal memilih penanda tangan per pihak. Internal = akun (login lalu tanda tangani); eksternal =
+// link publik + KODE OTOMATIS (6 digit) yang wajib diinput. Tanda tangan = gambar yang diunggah atau
+// digambar langsung. Setelah semua menandatangani, tahap Pengiriman & Dokumen Kembali tercatat otomatis.
+const signCookieName = (t: string) => `sgc_${String(t).slice(0, 12)}`;
+const DS_MAX_IMG = 1_500_000;
+function dsImageFromDataUrl(v: unknown): { buf: Buffer; mime: string; ext: string } | null {
+  const m = typeof v === "string" ? v.match(/^data:(image\/(png|jpeg));base64,([A-Za-z0-9+/=]+)$/) : null;
+  if (!m) return null;
+  const buf = Buffer.from(m[3], "base64");
+  if (!buf.length || buf.length > DS_MAX_IMG) return null;
+  return { buf, mime: m[1], ext: m[2] === "png" ? "png" : "jpg" };
+}
+function dsFindByToken(db: any, token: string): { contract: Contract; signer: DigitalSigner } | null {
+  if (!token) return null;
+  for (const c of db.contracts as Contract[]) {
+    const sg = c.digitalSigning?.signers?.find((x) => x.token === token);
+    if (sg) return { contract: c, signer: sg };
+  }
+  return null;
+}
+function dsCodeState(sg: DigitalSigner): "active" | "expired" | "none" {
+  if (!sg.code) return "none";
+  return sg.codeExpiresAt && new Date(sg.codeExpiresAt) < new Date() ? "expired" : "active";
+}
+function dsFinalize(db: any, contract: Contract, actor: string) {
+  const ds = contract.digitalSigning;
+  if (!ds || ds.completedAt || !ds.signers.every((x) => x.signedAt)) return;
+  const now = new Date().toISOString();
+  const today = now.slice(0, 10);
+  ds.completedAt = now;
+  if (!contract.signingDispatch) contract.signingDispatch = { copies: 1, sentDate: today, medium: "TTD Digital", recordedAt: now, recordedBy: actor };
+  contract.signingReceipt = { copies: 1, receivedDate: today, recordedAt: now, recordedBy: actor };
+  contract.updatedAt = now;
+  const job = ((db.legalJobs || []) as LegalJob[]).find((j) => j.linkedContractId === contract.id && j.tenantId === contract.tenantId);
+  if (job) { job.updatedAt = now; pushLegalTimeline(job, { label: "TTD digital lengkap", actor, detail: `${ds.signers.length} penanda tangan` }, now); }
+  pushNotif(db, contract.tenantId, {
+    title: "TTD Digital Lengkap",
+    message: `Semua penanda tangan kontrak ${contract.contractNumber} (${contract.title}) sudah menandatangani. Langkah berikutnya: unggah dokumen final → Arsip.`,
+    type: "success", contractId: contract.id, legalJobId: job?.id,
+  });
+}
+async function dsStoreImage(contract: Contract, signer: DigitalSigner, img: { buf: Buffer; mime: string; ext: string }) {
+  const key = `digsig-${contract.id.replace(/[^\w-]/g, "")}-${signer.id}-${Date.now()}.${img.ext}`;
+  const stored = await storeFile(img.buf, key, img.mime);
+  signer.imageKey = stored.key || key; signer.imageUrl = stored.url;
+}
+
+app.post("/api/contracts/:id/digital-signing/start", requireAuth, requirePerm("signing.manage"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  if (contract.status !== "FullyApproved") return res.status(400).json({ error: "TTD digital hanya bisa dimulai pada tahap Proses TTD (kontrak sudah disetujui penuh)." });
+  if (contract.signingReceipt) return res.status(400).json({ error: "Dokumen sudah dicatat kembali." });
+  if (contract.digitalSigning?.signers?.some((x) => x.signedAt)) return res.status(400).json({ error: "Sudah ada penanda tangan yang menandatangani — daftar tidak bisa diganti." });
+  const raw = Array.isArray(req.body?.signers) ? req.body.signers : [];
+  if (raw.length < 1 || raw.length > 8) return res.status(400).json({ error: "Tambahkan 1–8 penanda tangan." });
+  const tid = tenantOf(req);
+  const signers: DigitalSigner[] = [];
+  for (const [i, r] of raw.entries()) {
+    const party: 1 | 2 = Number(r?.party) === 2 ? 2 : 1;
+    const kind: "internal" | "external" = r?.kind === "external" ? "external" : "internal";
+    const base: DigitalSigner = { id: "sg-" + Date.now() + "-" + i, party, role: party === 1 ? "Pihak Pertama" : "Pihak Kedua", name: "", title: String(r?.title || "").trim().slice(0, 80) || undefined, kind };
+    if (kind === "internal") {
+      const u = (db.users as User[]).find((x) => x.id === r?.userId && x.tenantId === tid && x.active);
+      if (!u) return res.status(400).json({ error: `Penanda tangan internal #${i + 1}: pilih pengguna yang valid.` });
+      base.userId = u.id; base.name = u.name;
+    } else {
+      const name = String(r?.name || "").trim().slice(0, 80);
+      if (!name) return res.status(400).json({ error: `Penanda tangan eksternal #${i + 1}: nama wajib diisi.` });
+      const days = Number(r?.codeExpiresInDays);
+      base.name = name;
+      base.token = randomBytes(24).toString("hex");
+      base.code = String(randomInt(100000, 1000000));
+      base.codeExpiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null;
+    }
+    signers.push(base);
+  }
+  contract.digitalSigning = { startedAt: new Date().toISOString(), startedBy: req.user!.name, signers };
+  contract.updatedAt = new Date().toISOString();
+  for (const sg of signers.filter((x) => x.kind === "internal")) {
+    pushNotif(db, tid, {
+      title: "Permintaan Tanda Tangan Digital",
+      message: `Anda diminta menandatangani kontrak ${contract.contractNumber} (${contract.title}) sebagai ${sg.role}. Buka Pekerjaan Legal → detail pekerjaan → TTD Digital.`,
+      type: "info", contractId: contract.id, targetUserIds: [sg.userId],
+    });
+  }
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Mulai TTD Digital", details: `${signers.length} penanda tangan (${signers.filter((x) => x.kind === "external").length} eksternal).` });
+  saveDB(db);
+  res.json({ success: true, contract, links: signers.filter((x) => x.token).map((x) => ({ id: x.id, url: `${shareBaseUrl(req)}/?signToken=${x.token}`, code: x.code })) });
+});
+
+app.post("/api/contracts/:id/digital-signing/sign", requireAuth, async (req: AuthedRequest, res) => {
+  const img = dsImageFromDataUrl(req.body?.image);
+  if (!img) return res.status(400).json({ error: "Gambar tanda tangan tidak valid (PNG/JPG, maks 1,5 MB)." });
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  const sg = contract.digitalSigning?.signers?.find((x) => x.id === req.body?.signerId);
+  if (!sg || sg.kind !== "internal") return res.status(404).json({ error: "Penanda tangan tidak ditemukan." });
+  if (sg.userId !== req.user!.id) return res.status(403).json({ error: "Hanya " + sg.name + " yang boleh menandatangani bagian ini." });
+  if (sg.signedAt) return res.status(400).json({ error: "Sudah menandatangani." });
+  await dsStoreImage(contract, sg, img);
+  sg.signedAt = new Date().toISOString(); sg.method = req.body?.method === "draw" ? "draw" : "upload";
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "TTD Digital (Internal)", details: `${sg.name} (${sg.role}) menandatangani.` });
+  dsFinalize(db, contract, req.user!.name);
+  saveDB(db);
+  res.json({ success: true, contract });
+});
+
+// Kode & link penanda tangan eksternal: kedaluwarsakan sekarang / buat ulang (token + kode baru).
+app.post("/api/contracts/:id/digital-signing/:signerId/code", requireAuth, requirePerm("signing.manage"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  const sg = contract?.digitalSigning?.signers?.find((x) => x.id === req.params.signerId);
+  if (!contract || !sg || sg.kind !== "external") return res.status(404).json({ error: "Penanda tangan eksternal tidak ditemukan." });
+  if (sg.signedAt) return res.status(400).json({ error: "Sudah menandatangani." });
+  if (req.body?.action === "expire") sg.codeExpiresAt = new Date(Date.now() - 1000).toISOString();
+  else {
+    const days = Number(req.body?.codeExpiresInDays);
+    sg.token = randomBytes(24).toString("hex"); sg.code = String(randomInt(100000, 1000000));
+    sg.codeExpiresAt = Number.isFinite(days) && days > 0 ? new Date(Date.now() + days * 86400000).toISOString() : null;
+  }
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: req.body?.action === "expire" ? "Kedaluwarsa Kode TTD" : "Kode TTD Dibuat Ulang", details: `Penanda tangan ${sg.name}.` });
+  saveDB(db);
+  res.json({ success: true, contract, url: `${shareBaseUrl(req)}/?signToken=${sg.token}`, code: sg.code });
+});
+
+// --- Publik (tanpa login): halaman tanda tangan eksternal ---
+function dsGate(req: express.Request, res: express.Response): { contract: Contract; signer: DigitalSigner } | null {
+  const db = loadDB();
+  const f = dsFindByToken(db, String(req.params.token || ""));
+  if (!f) { res.status(404).json({ error: "Link tanda tangan tidak valid atau sudah diganti." }); return null; }
+  if (f.contract.status !== "FullyApproved") { res.status(410).json({ error: "Dokumen ini tidak lagi menunggu tanda tangan." }); return null; }
+  const st = dsCodeState(f.signer);
+  if (st !== "active") { res.status(403).json({ error: "Kode akses sudah kedaluwarsa. Minta kode baru ke tim Legal.", codeExpired: true }); return null; }
+  const got = String((req as any).cookies?.[signCookieName(req.params.token)] || "");
+  const want = reviewCodeProof("sig:" + req.params.token, f.signer.code!);
+  if (!(got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want)))) { res.status(401).json({ error: "Masukkan kode akses.", codeRequired: true }); return null; }
+  return f;
+}
+app.get("/api/public/sign/:token", (req, res) => {
+  const f = dsFindByToken(loadDB(), String(req.params.token || ""));
+  if (!f) return res.status(404).json({ error: "Link tanda tangan tidak valid atau sudah diganti." });
+  const st = dsCodeState(f.signer);
+  if (st === "expired") return res.status(403).json({ error: "Kode akses sudah kedaluwarsa. Minta kode baru ke tim Legal.", codeExpired: true });
+  const got = String((req as any).cookies?.[signCookieName(req.params.token)] || "");
+  const want = f.signer.code ? reviewCodeProof("sig:" + req.params.token, f.signer.code) : "";
+  const unlocked = !!want && got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want));
+  if (!unlocked) return res.status(401).json({ error: "Masukkan kode akses.", codeRequired: true });
+  res.json({ title: f.contract.title, number: f.contract.contractNumber, signerName: f.signer.name, role: f.signer.role, signed: !!f.signer.signedAt });
+});
+app.post("/api/public/sign/:token/unlock", rateLimit({ windowMs: 10 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Terlalu banyak percobaan kode. Coba lagi beberapa menit lagi." } }), (req, res) => {
+  const f = dsFindByToken(loadDB(), String(req.params.token || ""));
+  if (!f) return res.status(404).json({ error: "Link tanda tangan tidak valid atau sudah diganti." });
+  if (dsCodeState(f.signer) !== "active") return res.status(403).json({ error: "Kode akses sudah kedaluwarsa. Minta kode baru ke tim Legal.", codeExpired: true });
+  const a = Buffer.from(String(req.body?.code || "").trim().toLowerCase()), b = Buffer.from(String(f.signer.code).toLowerCase());
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Kode salah." });
+  const maxAge = f.signer.codeExpiresAt ? Math.max(1000, new Date(f.signer.codeExpiresAt).getTime() - Date.now()) : 7 * 86400000;
+  res.cookie(signCookieName(req.params.token), reviewCodeProof("sig:" + req.params.token, f.signer.code!), { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge, path: `/api/public/sign/${req.params.token}` });
+  res.json({ success: true });
+});
+app.get("/api/public/sign/:token/document", async (req, res) => {
+  const f = dsGate(req, res); if (!f) return;
+  try {
+    const loaded = await loadContractFileForView(f.contract);
+    res.setHeader("Content-Type", loaded.mime); res.setHeader("Cache-Control", "private, no-store"); res.setHeader("X-Robots-Tag", "noindex, nofollow");
+    res.setHeader("Content-Disposition", contentDisposition("inline", loaded.fileName));
+    res.send(loaded.buf);
+  } catch (err: any) { res.status(err?.status || 500).json({ error: err?.message || "Dokumen belum tersedia." }); }
+});
+app.post("/api/public/sign/:token/submit", async (req, res) => {
+  const f = dsGate(req, res); if (!f) return;
+  if (f.signer.signedAt) return res.status(400).json({ error: "Anda sudah menandatangani." });
+  const img = dsImageFromDataUrl(req.body?.image);
+  if (!img) return res.status(400).json({ error: "Gambar tanda tangan tidak valid (PNG/JPG, maks 1,5 MB)." });
+  const db = loadDB();
+  const again = dsFindByToken(db, String(req.params.token));
+  if (!again || again.signer.signedAt) return res.status(400).json({ error: "Sudah menandatangani." });
+  await dsStoreImage(again.contract, again.signer, img);
+  again.signer.signedAt = new Date().toISOString(); again.signer.method = req.body?.method === "draw" ? "draw" : "upload";
+  db.audits.unshift({
+    id: "aud-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6), tenantId: again.contract.tenantId,
+    userId: "external", userName: again.signer.name, userRole: "external", timestamp: new Date().toISOString(), ipAddress: req.ip || "127.0.0.1",
+    contractId: again.contract.id, contractNumber: again.contract.contractNumber, action: "TTD Digital (Eksternal)",
+    details: `${again.signer.name} (${again.signer.role}) menandatangani lewat link.`,
+  });
+  dsFinalize(db, again.contract, again.signer.name);
+  saveDB(db);
+  res.json({ success: true });
+});
+
 app.post("/api/contracts/:id/signing-receipt", requireAuth, requirePerm("signing.manage"), (req: AuthedRequest, res) => {
   const db = loadDB();
   const contract = findOwnedContract(db, req, req.params.id);
@@ -4891,6 +5048,22 @@ app.post("/api/contracts/:id/activate", requireAuth, requirePerm("signing.manage
     }
   }
 
+  // Surat Pengakhiran: begitu suratnya ditandatangani (diaktifkan), kontrak
+  // induk resmi berakhir (Terminated).
+  if (contract.terminatesContractId) {
+    try {
+      const parent = (db.contracts as Contract[]).find((c) => c.id === contract.terminatesContractId && c.tenantId === contract.tenantId);
+      if (parent && parent.status !== "Terminated") {
+        parent.status = "Terminated" as any;
+        (parent as any).terminationLetter = { number: contract.contractNumber, date: new Date().toISOString().split("T")[0], effectiveDate: contract.startDate, reason: contract.terminationReason || "", createdBy: req.user!.name, createdAt: new Date().toISOString(), letterId: contract.id };
+        parent.updatedAt = new Date().toISOString();
+        pushAudit(db, req, { contractId: parent.id, contractNumber: parent.contractNumber, action: "Terminate Contract", details: `Kontrak diakhiri via Surat Pengakhiran ${contract.contractNumber}` });
+      }
+    } catch (err) {
+      logger.warn({ err, contractId: contract.id }, "Gagal menerapkan pengakhiran ke kontrak induk");
+    }
+  }
+
   saveDB(db);
   res.json({ success: true, contract });
 });
@@ -4980,6 +5153,10 @@ app.post("/api/contracts/:id/announce-release-external", requireAuth, requirePer
   }
   const note = String(req.body?.note || "").trim().slice(0, 1000);
   if (!contract.releaseShareToken) contract.releaseShareToken = randomBytes(24).toString("hex");
+  // Kode akses otomatis (6 digit) — baru di setiap pengumuman eksternal; link tetap sama.
+  contract.releaseAccessCode = String(randomInt(100000, 1000000));
+  const relDays = Number(req.body?.codeExpiresInDays);
+  contract.releaseCodeExpiresAt = Number.isFinite(relDays) && relDays > 0 ? new Date(Date.now() + relDays * 86400000).toISOString() : null;
   const url = releaseShareUrl(req, contract.releaseShareToken);
   const entry = {
     id: "rel-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6),
@@ -4996,7 +5173,17 @@ app.post("/api/contracts/:id/announce-release-external", requireAuth, requirePer
     details: `Membuat link rilis eksternal kontrak "${contract.title}"${note ? ` — Keterangan: ${note}` : ""}`,
   });
   saveDB(db);
-  res.json({ success: true, url, contract });
+  res.json({ success: true, url, accessCode: contract.releaseAccessCode, codeExpiresAt: contract.releaseCodeExpiresAt || null, contract });
+});
+
+app.post("/api/contracts/:id/release-external/code/expire", requireAuth, requirePerm("release.announce"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Contract not found" });
+  contract.releaseCodeExpiresAt = new Date(Date.now() - 1000).toISOString();
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Expire Release Code", details: "Kode akses link rilis eksternal dikedaluwarsakan." });
+  saveDB(db);
+  res.json({ success: true, contract });
 });
 
 // Hitung urutan addendum ("Addendum Kesebelas") + referensi addendum terakhir
@@ -5139,6 +5326,74 @@ app.post("/api/contracts/:id/addendum", requireAuth, requirePerm("contract.edit"
   });
   saveDB(db);
   res.json({ success: true, contract: newAddendum });
+});
+
+// Buat Surat Pengakhiran: dokumen SATELIT (seperti Addendum) yang diedit lewat
+// editor yang sama dan melewati alur review/TTD. Saat surat diaktifkan
+// (/activate), kontrak induk otomatis berstatus Terminated.
+app.post("/api/contracts/:id/termination", requireAuth, requirePerm("contract.edit"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const tid = tenantOf(req);
+  const parent = findOwnedContract(db, req, req.params.id);
+  if (!parent) return res.status(404).json({ error: "Contract not found" });
+  if (!isInForce(parent.status) && parent.status !== "TidakAktif") {
+    return res.status(400).json({ error: "Surat Pengakhiran hanya bisa dibuat untuk kontrak yang sudah berlaku (Arsip / Distribusi / Aktif) atau Tidak Aktif." });
+  }
+  if (parent.status === "Terminated") return res.status(400).json({ error: "Kontrak ini sudah diakhiri." });
+  const open = (db.contracts as Contract[]).find((c) => c.terminatesContractId === parent.id && c.tenantId === tid && !["Terminated", "Archived"].includes(c.status) && c.status !== "Aktif");
+  if (open) return res.status(409).json({ error: `Sudah ada Surat Pengakhiran yang sedang diproses (${open.contractNumber}). Selesaikan atau gunakan surat tersebut.` });
+  const reason = String(req.body.reason || "").trim();
+  const effectiveDate = String(req.body.effectiveDate || "").trim();
+  if (!reason || !effectiveDate) return res.status(400).json({ error: "Alasan dan tanggal efektif pengakhiran wajib diisi." });
+  const DOC_TYPE = "Surat Pengakhiran/Pemutusan";
+  const dt = ((db as any).settings?.masterData?.docTypes || []).find?.((d: any) => d.name === DOC_TYPE);
+  const templateId = req.body.templateId || dt?.defaultTemplateId || "";
+  const currentYear = new Date().getFullYear().toString();
+  const { number: contractNumber, seq: numberSeq } = generateContractNumber(db, tid, parent.category, DOC_TYPE, currentYear, { platform: parent.platform, company: parent.companyCode });
+  const today = new Date().toISOString().split("T")[0];
+  const letter: Contract = {
+    id: "ctr-" + Date.now(),
+    tenantId: tid,
+    templateId,
+    templateSnapshot: captureTemplateSnapshot(db, tid, templateId),
+    contractNumber, numberSeq,
+    title: req.body.title || `Surat Pengakhiran ${parent.title}`,
+    category: parent.category,
+    platform: parent.platform,
+    companyId: parent.companyId, companyName: parent.companyName, companyCode: parent.companyCode,
+    party1Name: parent.party1Name, party2Name: parent.party2Name, party2Type: parent.party2Type,
+    parties: parent.parties,
+    startDate: effectiveDate,
+    endDate: effectiveDate,
+    contractValue: 0,
+    currency: parent.currency,
+    status: "Draft",
+    reminderDaysBefore: parent.reminderDaysBefore,
+    isAutoRenew: false,
+    variables: { ...parent.variables },
+    clauses: Array.isArray(req.body.clauses) ? req.body.clauses : [],
+    masterPdfUrl: null,
+    docType: DOC_TYPE,
+    terminatesContractId: parent.id,
+    terminationReason: reason,
+    copies: buildContractCopies(Number(req.body.copyCount) || 2, req.body.hasMaterai !== false),
+    vendorSnapshot: parent.vendorSnapshot,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as Contract;
+  db.contracts.push(letter);
+  pushAudit(db, req, {
+    contractId: letter.id, contractNumber: letter.contractNumber,
+    action: "Create Termination Letter",
+    details: `Membuat Surat Pengakhiran untuk kontrak "${parent.title}" (${parent.contractNumber}), efektif ${effectiveDate}. Alasan: ${reason}`,
+  });
+  pushAudit(db, req, {
+    contractId: parent.id, contractNumber: parent.contractNumber,
+    action: "Create Termination Letter",
+    details: `Surat Pengakhiran ${letter.contractNumber} dibuat (menunggu penandatanganan).`,
+  });
+  saveDB(db);
+  res.json({ success: true, contract: letter });
 });
 
 // Resolve base URL untuk tautan yang dibagikan keluar (email/WA)
@@ -5355,6 +5610,24 @@ function releaseLinkErrorPage(res: express.Response, status: number, title: stri
   res.status(status).type("html").send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head><body style="font-family:system-ui,sans-serif;background:#f4f6fb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px"><div style="background:#fff;border-radius:20px;padding:32px;max-width:420px;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.08)"><h1 style="font-size:18px;margin:0 0 8px;color:#0f172a">${esc(title)}</h1><p style="font-size:14px;color:#64748b;margin:0;line-height:1.5">${esc(message)}</p></div></body></html>`);
 }
 
+const reviewCodeProof = (token: string, code: string) =>
+  createHmac("sha256", process.env.JWT_SECRET || "dev-only-insecure-secret-change-me").update(`${token}:${code}`).digest("hex");
+const releaseCookieName = (token: string) => `rlc_${String(token).slice(0, 12)}`;
+function releaseCodePage(res: express.Response, token: string) {
+  res.status(401).type("html").send(`<!doctype html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Masukkan Kode Akses</title></head><body style="font-family:system-ui,sans-serif;background:#f4f6fb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:16px"><form id="f" style="background:#fff;border-radius:20px;padding:32px;max-width:380px;width:100%;text-align:center;box-shadow:0 10px 30px rgba(15,23,42,.08)"><h1 style="font-size:18px;margin:0 0 8px;color:#0f172a">Masukkan Kode Akses</h1><p style="font-size:13px;color:#64748b;margin:0 0 16px;line-height:1.5">Dokumen ini dilindungi. Masukkan kode yang dikirim oleh tim Legal.</p><input id="c" autocomplete="off" autofocus style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:18px;letter-spacing:4px;text-align:center"><p id="e" style="color:#e11d48;font-size:12px;min-height:16px;margin:8px 0"></p><button style="width:100%;padding:12px;border:0;border-radius:999px;background:#635BFF;color:#fff;font-weight:700;cursor:pointer">Buka Dokumen</button></form><script>document.getElementById("f").onsubmit=async function(ev){ev.preventDefault();var r=await fetch("/api/public/release/${token}/unlock",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({code:document.getElementById("c").value})});var d=await r.json().catch(function(){return{}});if(r.ok)location.reload();else document.getElementById("e").textContent=d.error||"Gagal"}</script></body></html>`);
+}
+app.post("/api/public/release/:token/unlock", rateLimit({ windowMs: 10 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Terlalu banyak percobaan kode. Coba lagi beberapa menit lagi." } }), (req, res) => {
+  const token = String(req.params.token || "");
+  const contract = token ? (loadDB().contracts as Contract[]).find((c) => c.releaseShareToken === token) : undefined;
+  if (!contract || !contract.releaseAccessCode) return res.status(404).json({ error: "Link tidak valid." });
+  if (contract.releaseCodeExpiresAt && new Date(contract.releaseCodeExpiresAt) < new Date()) return res.status(403).json({ error: "Kode akses sudah kedaluwarsa. Minta kode baru ke tim Legal." });
+  const a = Buffer.from(String(req.body?.code || "").trim().toLowerCase()), b = Buffer.from(contract.releaseAccessCode.toLowerCase());
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Kode salah." });
+  const maxAge = contract.releaseCodeExpiresAt ? Math.max(1000, new Date(contract.releaseCodeExpiresAt).getTime() - Date.now()) : 30 * 86400000;
+  res.cookie(releaseCookieName(token), reviewCodeProof("rel:" + token, contract.releaseAccessCode), { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge, path: `/api/public/release/${token}` });
+  res.json({ success: true });
+});
+
 app.get("/api/public/release/:token", async (req, res) => {
   const token = String(req.params.token || "");
   const db = loadDB();
@@ -5362,6 +5635,15 @@ app.get("/api/public/release/:token", async (req, res) => {
   if (!contract) return releaseLinkErrorPage(res, 404, "Link tidak valid", "Link dokumen ini tidak ditemukan atau sudah tidak berlaku.");
   if (!isInForce(contract.status)) {
     return releaseLinkErrorPage(res, 410, "Dokumen tidak lagi berlaku", "Kontrak ini sudah tidak berstatus aktif, sehingga link publiknya dinonaktifkan.");
+  }
+  if (!contract.releaseAccessCode) return releaseLinkErrorPage(res, 403, "Kode akses belum diterbitkan", "Minta tim Legal membuat ulang link rilis untuk mendapatkan kode akses.");
+  if (contract.releaseCodeExpiresAt && new Date(contract.releaseCodeExpiresAt) < new Date()) {
+    return releaseLinkErrorPage(res, 403, "Kode akses kedaluwarsa", "Kode akses dokumen ini sudah tidak berlaku. Minta kode baru ke tim Legal.");
+  }
+  {
+    const got = String((req as any).cookies?.[releaseCookieName(token)] || "");
+    const want = reviewCodeProof("rel:" + token, contract.releaseAccessCode);
+    if (!(got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want)))) return releaseCodePage(res, token);
   }
   try {
     const loaded = await loadContractFileForView(contract);
@@ -6135,6 +6417,37 @@ async function panelProxy(req: express.Request, res: express.Response) {
     res.status(502).json({ error: "Gagal menghubungi server." });
   }
 }
+// Plugin "Asisten Hukum": meneruskan /ask & /status ke Asisten Hukum utama (/api/ai/lawyer-assistant) atas nama pembuka editor.
+const OO_LAWYER_GUID = "asc.{C7A1D3E9-52B4-4F08-9E6A-8B1D4F70A2C5}";
+app.options("/api/onlyoffice/plugin/lawyer/:id/:action", (_req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*"); res.setHeader("Access-Control-Allow-Headers", "content-type"); res.status(204).end();
+});
+async function lawyerProxy(req: express.Request, res: express.Response) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  const oo = onlyOfficeSettings();
+  if (!oo.enabled) return res.status(404).end();
+  const claims = verifyLink(oo, req.query.t, "plugin", req.params.id);
+  if (!claims) return res.status(401).json({ error: "Tautan tidak valid atau kedaluwarsa." });
+  const db = loadDB();
+  const user = (db.users as any[]).find((u) => u.id === claims.userId && u.tenantId === claims.tenantId);
+  if (!user) return res.status(401).json({ error: "Pengguna tidak ditemukan." });
+  const action = req.params.action;
+  if (!["ask", "status"].includes(action)) return res.status(404).json({ error: "Aksi tidak dikenal." });
+  const isAsk = action === "ask";
+  try {
+    const r = await fetch(`http://127.0.0.1:${PORT}/api/ai/lawyer-assistant${isAsk ? "" : "/status"}`, {
+      method: isAsk ? "POST" : "GET",
+      headers: { "Content-Type": "application/json", Cookie: `${AUTH_COOKIE}=${signToken(user)}` },
+      body: isAsk ? JSON.stringify(req.body || {}) : undefined,
+    });
+    res.status(r.status).type("application/json").send(await r.text());
+  } catch (err: any) {
+    logger.warn({ err }, "Asisten Hukum plugin: gagal meneruskan permintaan");
+    res.status(502).json({ error: "Gagal menghubungi server." });
+  }
+}
+app.get("/api/onlyoffice/plugin/lawyer/:id/:action", lawyerProxy);
+app.post("/api/onlyoffice/plugin/lawyer/:id/:action", lawyerProxy);
 app.get("/api/onlyoffice/plugin/panel/:id/:action?", panelProxy);
 app.post("/api/onlyoffice/plugin/panel/:id/:action?", panelProxy);
 
@@ -6157,6 +6470,10 @@ app.get("/api/contracts/:id/onlyoffice/config", requireAuth, async (req: AuthedR
   const ver = versions.find((v) => v.version === wanted);
   if (!ver?.file) return res.status(404).json({ error: `Versi dokumen ${q} tidak ditemukan.` });
   if (ver.file.format !== "docx") return res.json({ enabled: false });
+  // Berkas fisiknya harus ada: kalau hilang dari penyimpanan, Document Server gagal
+  // mengunduh lalu editor refresh/blank sendiri. Beri pesan jelas sebelum editor dibuka.
+  try { await readStoredDocument(ver.file, uploadDir); }
+  catch { return res.status(410).json({ error: "File dokumen tidak ada di server Anda.", code: "FILE_MISSING" }); }
   // Boleh mengedit hanya: versi aktif, kontrak Draft, punya izin edit, dan diminta mode edit.
   const canEdit = req.query.mode !== "view" && wanted === current && (
     (contract.status === "Draft" && hasPerm(req, "contract.edit")) ||
@@ -6174,6 +6491,14 @@ app.get("/api/contracts/:id/onlyoffice/config", requireAuth, async (req: AuthedR
       guid: OO_PANEL_GUID,
       options: {
         panelUrl: `${ooPluginBase(req)}/api/onlyoffice/plugin/panel/${contract.id}`,
+        token: signLink(oo, { ...claims, kind: "plugin" }, OO_FILE_TTL),
+      },
+    },
+    lawyer: {
+      configUrl: `${ooPluginBase(req)}/onlyoffice-plugins/asisten-hukum/config.json`,
+      guid: OO_LAWYER_GUID,
+      options: {
+        panelUrl: `${ooPluginBase(req)}/api/onlyoffice/plugin/lawyer/${contract.id}`,
         token: signLink(oo, { ...claims, kind: "plugin" }, OO_FILE_TTL),
       },
     },
@@ -7008,119 +7333,14 @@ async function reviewBaseBuffer(db: any, contract: Contract): Promise<{ buf: Buf
   return { buf, file, version: cur };
 }
 
-// ---------------------------------------------------------------------------
-// PEMISAHAN MARKUP INTERNAL ↔ EKSTERNAL (lihat review-isolation.ts).
-// Berkas dokumen utama = MASTER: menyimpan SEMUA markup (internal + eksternal) dari awal sampai akhir dan hanya
-// dibuka tim internal. Pihak eksternal TIDAK PERNAH menerima master: tiap ronde dibuatkan SALINAN bersih
-// (semua perubahan diterima, komentar & daftar penulis dibuang dari dalam berkas). Markup eksternal dikerjakan
-// di salinan itu, lalu digabung kembali ke master dengan nama pengubah "(Pihak Eksternal)".
-// ---------------------------------------------------------------------------
-const externalCopyInflight = new Map<string, Promise<ExternalReviewCopy | null>>();
-
-/** Salinan eksternal ronde berjalan; dibuat dari master saat pertama dibutuhkan (satu per ronde). */
-async function ensureExternalCopy(contract: Contract): Promise<ExternalReviewCopy | null> {
-  const round = contract.externalRoundCount || 0;
-  const existing = contract.externalReviewCopy;
-  if (existing && existing.round === round) return existing;
-  const running = externalCopyInflight.get(contract.id);
-  if (running) return running;
-  const job = (async () => {
-    const base = await reviewBaseBuffer(loadDB(), contract);
-    if (!base) return null;
-    const copyBuf = await buildExternalCopy(base.buf); // melempar error bila masih ada jejak internal (fail-closed)
-    const safeId = contract.id.replace(/[^\w-]/g, "");
-    const stored = await storeFile(copyBuf, `contractdoc-${safeId}-ext-r${round}-${Date.now()}.docx`, DOCX_MIME);
-    const ref = buildDocumentRef(copyBuf, stored, base.file.fileName.replace(/\.docx$/i, "") + " (salinan eksternal).docx", "docx", "Sistem");
-    const db = loadDB();
-    const fresh = (db.contracts as Contract[]).find((c) => c.id === contract.id);
-    if (!fresh) return null;
-    if (!fresh.externalReviewCopy || fresh.externalReviewCopy.round !== round) {
-      fresh.externalReviewCopy = { round, masterVersion: base.version, masterFile: base.file, baselineFile: ref, workFile: ref };
-      saveDB(db);
-    }
-    return fresh.externalReviewCopy ?? null;
-  })().finally(() => externalCopyInflight.delete(contract.id));
-  externalCopyInflight.set(contract.id, job);
-  return job;
-}
-
-/** Berkas .docx yang boleh dilihat tamu eksternal: selalu salinan bersih, tidak pernah master. */
-async function externalSafeDocx(contract: Contract, buf: Buffer): Promise<Buffer> {
-  if (contract.status === "ReviewEksternal") {
-    const copy = await ensureExternalCopy(contract);
-    if (copy) return readStoredDocument(copy.workFile, uploadDir);
-  }
-  return buildExternalCopy(buf);
-}
-
-/** Simpan hasil review eksternal: berkas kerja eksternal selalu disimpan; markupnya digabung ke master bila bisa. */
-async function saveExternalReviewResult(
-  contract: Contract, buf: Buffer, reviewer: string, ip: string | undefined, iat?: number,
-): Promise<{ ok: true; message?: undefined } | { ok: false; message: string }> {
-  const copy = contract.externalReviewCopy;
-  if (!copy || copy.round !== (contract.externalRoundCount || 0)) return { ok: false, message: "Salinan eksternal ronde ini tidak ditemukan." };
-  const baselineBuf = await readStoredDocument(copy.baselineFile, uploadDir);
-  // Penjaga: tamu hanya boleh menambah jejak. Tampilan "Original" harus sama dengan salinan yang dikirim.
-  if ((await originalTextOf(buf)) !== (await originalTextOf(baselineBuf))) return { ok: false, message: "Ada perubahan di luar Track Changes. Aktifkan Lacak Perubahan lalu ulangi." };
-  const safeId = contract.id.replace(/[^\w-]/g, "");
-  const prevWorkBuf = await readStoredDocument(copy.workFile, uploadDir);
-  const workStored = await storeFile(buf, `contractdoc-${safeId}-ext-r${copy.round}-work-${Date.now()}.docx`, DOCX_MIME);
-  const workRef = buildDocumentRef(buf, workStored, copy.baselineFile.fileName, "docx", reviewer);
-  // Selalu digabung dari master awal ronde + berkas kerja terbaru, sehingga simpan berulang tidak menggandakan markup.
-  const masterBuf = await unhideLegacyLanguage(await readStoredDocument(copy.masterFile, uploadDir));
-  const merged = await mergeExternalMarkup({ master: masterBuf, baseline: baselineBuf, returned: buf });
-  let mergedRef: StoredDocumentRef | null = null;
-  if (merged.ok) {
-    const mStored = await storeFile(merged.buf, `contractdoc-${safeId}-${Date.now()}-${Math.round(Math.random() * 1e9)}.docx`, DOCX_MIME);
-    mergedRef = buildDocumentRef(merged.buf, mStored, copy.masterFile.fileName, "docx", reviewer);
-  }
-
-  const db = loadDB();
-  const c = (db.contracts as Contract[]).find((x) => x.id === contract.id);
-  if (!c || !c.externalReviewCopy || c.externalReviewCopy.round !== copy.round) return { ok: false, message: "Ronde review eksternal sudah berganti." };
-  c.externalReviewCopy.workFile = workRef;
-  const actor = { user: { id: "external", name: reviewer, role: "External" }, ip, query: { tenantId: c.tenantId }, body: {} } as unknown as AuthedRequest;
-  const now = new Date().toISOString();
-  await recordSavedReviewChanges(db, c, actor, { iat }, prevWorkBuf, buf);
-  if (merged.ok && mergedRef) {
-    const versions = uploadedDocumentVersions(db, c);
-    const cur = currentDocumentVersionNumber(c, versions);
-    const curVer = versions.find((v) => v.version === cur);
-    if (curVer && (curVer.working || curVer.editMethod === "review")) {
-      curVer.file = mergedRef; curVer.updatedAt = now; curVer.updatedBy = reviewer;
-      c.currentDocument = mergedRef; c.updatedAt = now;
-    } else {
-      pushDocumentVersion(db, actor, c, mergedRef, { comment: "Tinjauan eksternal (Track Changes) — digabung ke master", basedOnVersion: copy.masterVersion, editMethod: "review" });
-    }
-    c.externalUnmerged = (c.externalUnmerged || []).filter((u) => u.round !== copy.round);
-    pushAudit(db, actor, {
-      contractId: c.id, contractNumber: c.contractNumber, action: "Review Track Changes",
-      details: `${reviewer} menyimpan markup eksternal ronde ${copy.round}; digabung ke master (${merged.stats.inserted} sisipan, ${merged.stats.deleted} coretan, ${merged.stats.comments} komentar, ${merged.stats.paragraphsAdded} paragraf baru). SHA-256 ${mergedRef.sha256.slice(0, 16)}…`,
-    });
-  } else if (!merged.ok) {
-    c.externalUnmerged = [...(c.externalUnmerged || []).filter((u) => u.round !== copy.round), { round: copy.round, savedAt: now, by: reviewer, file: workRef, reason: merged.reason }];
-    pushAudit(db, actor, {
-      contractId: c.id, contractNumber: c.contractNumber, action: "Review Eksternal Belum Digabung",
-      details: `${reviewer} menyimpan berkas review eksternal ronde ${copy.round}, tetapi belum bisa digabung otomatis ke master: ${merged.reason}. Master tidak diubah; berkas eksternal tersimpan utuh (SHA-256 ${workRef.sha256.slice(0, 16)}…).`,
-    });
-    pushNotif(db, c.tenantId, {
-      title: "Markup Eksternal Perlu Digabung Manual",
-      message: `Berkas review eksternal kontrak "${c.title}" tersimpan, tetapi belum bisa digabung otomatis ke master (${merged.reason}).`,
-      type: "warning", contractId: c.id,
-    });
-  }
-  saveDB(db);
-  return { ok: true };
-}
-
-function reviewEditorConfig(oo: ReturnType<typeof onlyOfficeSettings>, contract: Contract, base: { file: StoredDocumentRef; version: number }, who: { id: string; name: string }, keyVariant = "rv") {
+function reviewEditorConfig(oo: ReturnType<typeof onlyOfficeSettings>, contract: Contract, base: { file: StoredDocumentRef; version: number }, who: { id: string; name: string }) {
   const session = randomUUID();
   const claims = { contractId: contract.id, version: base.version, userId: who.id, tenantId: contract.tenantId, session, reviewer: who.name };
   const fileUrl = `${oo.appUrl}/api/onlyoffice/review-file/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "rfile" }, OO_FILE_TTL))}`;
   const callbackUrl = `${oo.appUrl}/api/onlyoffice/review-callback/${contract.id}?t=${encodeURIComponent(signLink(oo, { ...claims, kind: "rcallback" }, OO_FILE_TTL))}`;
   return buildEditorConfig(oo, {
     contractId: contract.id, fileName: base.file.fileName, version: base.version, sha256: base.file.sha256,
-    canEdit: false, review: true, keyVariant, user: who, fileUrl, callbackUrl,
+    canEdit: false, review: true, keyVariant: "rv", user: who, fileUrl, callbackUrl,
   });
 }
 
@@ -7148,15 +7368,12 @@ app.get("/api/onlyoffice/review-file/:id", async (req, res) => {
   const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
   if (!contract) return res.status(404).end();
   try {
-    // Tamu eksternal HANYA dilayani salinan bersih ronde ini — tidak pernah master yang berisi markup internal.
-    const buf = claims.userId === "external"
-      ? (contract.externalReviewCopy ? await readStoredDocument(contract.externalReviewCopy.workFile, uploadDir) : null)
-      : (await reviewBaseBuffer(db, contract))?.buf ?? null;
-    if (!buf) return res.status(404).end();
+    const base = await reviewBaseBuffer(db, contract);
+    if (!base) return res.status(404).end();
     res.setHeader("Content-Type", DOCX_MIME);
-    res.setHeader("Content-Length", buf.length);
+    res.setHeader("Content-Length", base.buf.length);
     res.setHeader("Cache-Control", "private, no-store");
-    res.send(buf);
+    res.send(base.buf);
   } catch (err) {
     logger.error({ err, contractId: contract.id }, "ONLYOFFICE: gagal membaca berkas tinjauan");
     res.status(500).end();
@@ -7185,14 +7402,6 @@ app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
     const contract = (db.contracts as Contract[]).find((c) => c.id === claims.contractId && c.tenantId === claims.tenantId);
     if (!contract) return fail("Kontrak tidak ditemukan");
     if (!REVIEW_DOC_STATUSES.includes(contract.status)) return fail("Dokumen tidak sedang dalam tahap tinjauan.");
-    if (claims.userId === "external") {
-      // Tamu eksternal bekerja di SALINAN bersih; markupnya digabung ke master (master tidak pernah dikirim ke tamu).
-      if (contract.status !== "ReviewEksternal") return fail("Review eksternal sedang tidak dibuka.");
-      const saved = await saveExternalReviewResult(contract, buf, claims.reviewer || "Pihak Eksternal", req.ip, (claims as { iat?: number }).iat);
-      return saved.ok ? res.json({ error: 0 }) : fail(saved.message);
-    }
-    // Selama Review Eksternal berjalan, master dikunci: perubahan internal akan tertimpa saat markup eksternal digabung.
-    if (contract.status === "ReviewEksternal") return fail("Dokumen terkunci selama Review Eksternal berjalan. Perubahan internal bisa dilakukan setelah ronde ini selesai.");
     const base = await reviewBaseBuffer(db, contract);
     if (!base) return fail("Dokumen utama tidak ditemukan");
     // Penjaga: peninjau hanya boleh menambah jejak (Track Changes/komentar). Tampilan "Original" (semua perubahan
@@ -7221,7 +7430,6 @@ app.post("/api/onlyoffice/review-callback/:id", async (req, res) => {
       contractId: contract.id, contractNumber: contract.contractNumber, action: "Review Track Changes",
       details: `${claims.reviewer || "Peninjau"} menyimpan perubahan tinjauan (Track Changes) · SHA-256 ${file.sha256.slice(0, 16)}…`,
     });
-    await recordSavedReviewChanges(db, contract, { user: { id: claims.userId, name: claims.reviewer || "Peninjau", role: "User" }, ip: req.ip, query: { tenantId: claims.tenantId }, body: {} } as unknown as AuthedRequest, claims as { iat?: number }, base.buf, buf);
     saveDB(db);
     res.json({ error: 0 });
   } catch (err: any) {
@@ -7407,6 +7615,9 @@ app.post("/api/contracts/:id/renew", requireAuth, requirePerm("contract.edit"), 
       externalReviewToken: undefined,
       externalReviewExpiresAt: null,
       externalReviewLocked: false,
+      externalAccessCode: undefined,
+      externalCodeExpiresAt: null,
+      terminationLetter: undefined,
       externalApprovals: undefined,
       externalRoundCount: undefined,
       externalRounds: undefined,
@@ -8239,6 +8450,27 @@ app.post("/api/ai/generate-contract-draft", requireAuth, async (req, res) => {
   }
 });
 
+// Catatan implikasi untuk Matriks Sandingan (bandingkan dua dokumen). Hanya baris yang berubah dikirim.
+app.post("/api/ai/compare-matrix-notes", requireAuth, async (req, res) => {
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows.slice(0, 40) : [];
+  if (rows.length === 0) return res.json({ notes: {} });
+  try {
+    const list = rows.map((r: any, i: number) => `#${i}\nStatus: ${r.status}\nLAMA: ${String(r.oldText || "-").slice(0, 900)}\nBARU: ${String(r.newText || "-").slice(0, 900)}`).join("\n\n");
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: `Anda analis hukum kontrak Indonesia. Untuk tiap pasal di bawah, tulis SATU kalimat implikasi hukum/bisnis dari perubahannya (Bahasa Indonesia, ringkas, tanpa mengarang dasar hukum). Balas JSON: {"notes":[{"i":0,"note":"..."}]}.\n\n${list}`,
+      config: { responseMimeType: "application/json" },
+    });
+    const out: any = parseAiJson(response.text);
+    const notes: Record<string, string> = {};
+    for (const n of Array.isArray(out?.notes) ? out.notes : []) { const r = rows[Number(n?.i)]; if (r?.key && n?.note) notes[String(r.key)] = String(n.note); }
+    res.json({ notes });
+  } catch (err: any) {
+    logger.error({ err }, "AI compare-matrix-notes failed");
+    aiErrorResponse(res, err, "Gagal membuat catatan implikasi.");
+  }
+});
+
 // AI 7: AI Legal Copilot Chat — real multi-turn memory. Previously this
 // only ever sent the latest question, so follow-ups like "jelaskan lebih
 // detail soal itu" had nothing to refer back to from the AI's side (the
@@ -8274,6 +8506,95 @@ app.post("/api/ai/copilot", requireAuth, async (req, res) => {
   } catch (err: any) {
     logger.error({ err }, "AI copilot failed");
     aiErrorResponse(res, err, "Copilot gagal merespon.");
+  }
+});
+
+// AI 8: Asisten Hukum (editor). Tiga sumber, semuanya opsional kecuali Gemini:
+//  - Metodologi review kontrak ala ai-legal-claude (review/risks/missing/negotiate/plain)
+//    → dipetakan ke prompt berbahasa Indonesia di LAWYER_ACTIONS.
+//  - Model hukum Indonesia lokal (Azzindani/Deepseek_ID_Legal_Preview_GGUF) lewat server
+//    OpenAI-compatible (llama.cpp / Ollama): set LEGAL_LLM_URL (+ LEGAL_LLM_MODEL).
+//  - Basis pengetahuan peraturan (peraturan.go.id, tidak punya API publik): jalankan
+//    pembungkus kecil di atas `customkb query` lalu set REGULATION_KB_URL — server
+//    akan POST {query, top_k} dan mengharapkan {chunks:[{text, source}]}.
+//    Tanpa itu, jawaban memakai daftar regulasi bawaan aplikasi.
+const LAWYER_ACTIONS: Record<string, string> = {
+  review: "Lakukan REVIEW KONTRAK menyeluruh. Beri Skor Keamanan Kontrak 0-100 beserta grade huruf, dengan bobot: Analisis Klausul 20%, Penilaian Risiko 25%, Kepatuhan Hukum Indonesia 20%, Pemetaan Istilah/Definisi 15%, Rekomendasi 20%. Tampilkan skor tiap aspek, jumlah klausul risiko tinggi/sedang/rendah, lalu 5 tindakan prioritas.",
+  risks: "Lakukan ANALISIS RISIKO per klausul: beri tingkat keparahan (Tinggi/Sedang/Rendah) tiap klausul yang bermasalah, alasan singkat, dan perkiraan eksposur finansial/hukum bila ada.",
+  missing: "Identifikasi PERLINDUNGAN YANG HILANG: klausul yang lazim ada pada jenis kontrak ini menurut praktik hukum Indonesia tetapi belum ada. Beri usulan judul pasal dan inti isinya.",
+  negotiate: "Susun USULAN NEGOSIASI: untuk tiap klausul yang merugikan pihak kita, beri kalimat pengganti (counter-proposal) yang siap ditempel.",
+  plain: "Terjemahkan tiap pasal ke BAHASA AWAM yang mudah dipahami non-hukum, singkat per pasal.",
+  // Aksi pada TEKS TERPILIH (klik kanan di editor) — fokus hanya pada kutipan terpilih.
+  sel_ask: "Jelaskan arti hukum dan implikasi dari TEKS TERPILIH berikut dalam konteks dokumen ini.",
+  sel_rewrite: "Tulis ulang TEKS TERPILIH agar lebih jelas, tegas, dan formal tanpa mengubah maksud hukumnya. Keluarkan HANYA teks pengganti tanpa pengantar atau penjelasan.",
+  sel_simplify: "Sederhanakan TEKS TERPILIH ke bahasa awam yang mudah dipahami, tetap akurat.",
+  sel_risk: "Analisis risiko TEKS TERPILIH bagi pihak kita: tingkat risiko, alasan, dan usulan perbaikan kalimat.",
+  sel_en: "Terjemahkan TEKS TERPILIH ke Bahasa Inggris hukum yang formal. Keluarkan HANYA terjemahannya.",
+  sel_law: "Sebutkan dasar hukum Indonesia yang relevan dengan TEKS TERPILIH dan apakah isinya sejalan dengan ketentuan tersebut.",
+};
+const LAWYER_SYSTEM = `Anda adalah Asisten Lawyer untuk tim legal perusahaan di Indonesia. Dasarkan jawaban pada hukum Indonesia (KUHPerdata, UU Cipta Kerja, UU PDP, UU ITE, dan peraturan turunannya). Jawab dalam Bahasa Indonesia yang jelas, terstruktur, ringkas. Sebut dasar hukum (pasal/peraturan) hanya bila Anda yakin; bila ragu katakan perlu diverifikasi. Jangan mengarang nomor peraturan. Akhiri dengan pengingat singkat bahwa keputusan akhir perlu ditinjau lawyer berwenang.
+
+RUANG LINGKUP: Anda HANYA membahas hal yang berkaitan dengan hukum, kontrak, perizinan, kepatuhan/regulasi, dan pekerjaan tim legal. Pengguna boleh bertanya bebas (tidak harus memakai tombol cepat) selama masih seputar hukum/legal. Bila pertanyaan di luar itu (mis. resep, coding, hiburan, urusan pribadi non-hukum), tolak dengan sopan dalam 1-2 kalimat dan arahkan kembali ke topik hukum.
+TEKS TERPILIH: bila ada blok "TEKS TERPILIH", jawab HANYA tentang teks itu; isi dokumen lainnya hanya latar belakang, jangan dianalisis ulang atau diringkas kecuali diminta.`;
+
+async function lawyerKbLookup(query: string): Promise<{ text: string; source: string }[]> {
+  const url = process.env.REGULATION_KB_URL;
+  if (url) {
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ query, top_k: 8 }), signal: AbortSignal.timeout(15000) });
+      if (r.ok) {
+        const j: any = await r.json();
+        if (Array.isArray(j?.chunks)) return j.chunks.slice(0, 8).map((c: any) => ({ text: String(c.text || "").slice(0, 1200), source: String(c.source || "peraturan.go.id") }));
+      }
+    } catch (err) { logger.warn({ err }, "REGULATION_KB_URL gagal — memakai regulasi bawaan"); }
+  }
+  const q = query.toLowerCase();
+  return defaultRegulations
+    .filter((r) => [r.title, r.category, r.summary].join(" ").toLowerCase().split(/\W+/).some((w) => w.length > 4 && q.includes(w)) || r.id === "reg-4")
+    .slice(0, 4)
+    .map((r) => ({ text: `${r.title}. ${r.summary} ${r.obligations.join(" ")}`, source: "Regulasi bawaan aplikasi" }));
+}
+
+app.get("/api/ai/lawyer-assistant/status", requireAuth, (_req, res) => {
+  res.json({ gemini: isGeminiConfigured(), local: !!process.env.LEGAL_LLM_URL, kb: !!process.env.REGULATION_KB_URL, actions: Object.keys(LAWYER_ACTIONS) });
+});
+
+app.post("/api/ai/lawyer-assistant", requireAuth, async (req, res) => {
+  const { question, action, context, history, engine, selection } = req.body || {};
+  const selText = String(selection || "").trim().slice(0, 6000);
+  const instruction = LAWYER_ACTIONS[String(action || "")] || "";
+  const q = String(question || "").trim() || instruction;
+  if (!q) return res.status(400).json({ error: "Pertanyaan tidak boleh kosong." });
+  const useLocal = engine === "local" && !!process.env.LEGAL_LLM_URL;
+  if (!useLocal && !isGeminiConfigured()) return res.status(503).json({ error: "Asisten belum tersedia — GEMINI_API_KEY belum dikonfigurasi (atau set LEGAL_LLM_URL untuk model lokal)." });
+  const kb = await lawyerKbLookup(`${q} ${String(context || "").slice(0, 300)}`);
+  const kbText = kb.length ? `\n\nRujukan peraturan (gunakan bila relevan):\n${kb.map((c, i) => `[${i + 1}] (${c.source}) ${c.text}`).join("\n")}` : "";
+  const system = `${LAWYER_SYSTEM}\n\nKonteks dokumen yang sedang dibuka:\n${String(context || "(tidak ada)").slice(0, 24000)}${kbText}`;
+  const selBlock = selText ? `\n\nTEKS TERPILIH:\n"""\n${selText}\n"""` : "";
+  const userMsg = (instruction && String(question || "").trim() ? `${instruction}\n\nCatatan tambahan: ${question}` : q) + selBlock;
+  const prior: { q: string; a: string }[] = Array.isArray(history) ? history.slice(-8) : [];
+  try {
+    let answer = "";
+    if (useLocal) {
+      const msgs: any[] = [{ role: "system", content: system }];
+      for (const t of prior) { if (t?.q && t?.a) { msgs.push({ role: "user", content: t.q }, { role: "assistant", content: t.a }); } }
+      msgs.push({ role: "user", content: userMsg });
+      const r = await fetch(String(process.env.LEGAL_LLM_URL).replace(/\/$/, "") + "/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ model: process.env.LEGAL_LLM_MODEL || "legal", messages: msgs, temperature: 0.3 }), signal: AbortSignal.timeout(120000) });
+      if (!r.ok) throw new Error(`Model lokal menjawab ${r.status}`);
+      const j: any = await r.json();
+      answer = String(j?.choices?.[0]?.message?.content || "").replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+    } else {
+      const contents: { role: string; parts: { text: string }[] }[] = [];
+      for (const t of prior) { if (t?.q && t?.a) { contents.push({ role: "user", parts: [{ text: t.q }] }, { role: "model", parts: [{ text: t.a }] }); } }
+      contents.push({ role: "user", parts: [{ text: userMsg }] });
+      const response = await ai.models.generateContent({ model: "gemini-3.5-flash", contents, config: { systemInstruction: system } });
+      answer = String(response.text || "").trim();
+    }
+    res.json({ answer, engine: useLocal ? "local" : "gemini", sources: kb.map((c) => c.source).filter((v, i, a) => a.indexOf(v) === i) });
+  } catch (err: any) {
+    logger.error({ err }, "AI lawyer-assistant failed");
+    if (useLocal) return res.status(502).json({ error: "Model lokal tidak merespon. Pastikan server llama.cpp/Ollama berjalan di LEGAL_LLM_URL." });
+    aiErrorResponse(res, err, "Asisten Hukum gagal merespon.");
   }
 });
 
@@ -8784,7 +9105,6 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
   // resolving a thread is a collaborative action (Google-Docs style: anyone
   // who addressed the feedback should be able to mark it resolved, not just
   // whoever originally wrote it) — gating both the same way blocked that.
-  const beforeEdit = { text: comment.text, anchor: JSON.stringify(comment.anchor || null) };
   if (req.body.text !== undefined) {
     if (!isOwnerOrPrivileged) return res.status(403).json({ error: "Tidak dapat mengedit teks komentar orang lain" });
     comment.text = req.body.text.trim();
@@ -8827,14 +9147,6 @@ app.put("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest, re
     }
   }
   comment.updatedAt = new Date().toISOString();
-  // Komentar yang ISI/sorotannya diubah dicatat (isi sebelum & sesudah) — jejak ini juga menandai aktivitas sesi review.
-  if (comment.text !== beforeEdit.text || JSON.stringify(comment.anchor || null) !== beforeEdit.anchor) {
-    const parent = (db.contracts as Contract[]).find((c) => c.id === comment.contractId && c.tenantId === tid);
-    pushAudit(db, req, {
-      contractId: comment.contractId, contractNumber: parent?.contractNumber, action: COMMENT_EDIT_AUDIT_ACTION,
-      details: `${req.user!.name} mengubah komentar pada "${comment.clauseTitle}". Sebelum: "${beforeEdit.text.slice(0, 300)}" → Sesudah: "${comment.text.slice(0, 300)}"`,
-    });
-  }
   saveDB(db);
   res.json({ success: true, comment });
 });
@@ -8851,11 +9163,6 @@ app.delete("/api/contracts/:id/comments/:cid", requireAuth, (req: AuthedRequest,
   if (comment.userId !== req.user!.id && !["admin", "legal", "super_admin"].includes(req.user!.role)) {
     return res.status(403).json({ error: "Tidak dapat menghapus komentar orang lain" });
   }
-  const parentOfDeleted = (db.contracts as Contract[]).find((c) => c.id === comment.contractId && c.tenantId === tid);
-  pushAudit(db, req, {
-    contractId: comment.contractId, contractNumber: parentOfDeleted?.contractNumber, action: COMMENT_DELETE_AUDIT_ACTION,
-    details: `${req.user!.name} menghapus komentar pada "${comment.clauseTitle}" (penulis: ${comment.userName}). Isi: "${String(comment.text || "").slice(0, 300)}"`,
-  });
   db.clauseComments.splice(idx, 1);
   saveDB(db);
   res.json({ success: true });
@@ -8885,17 +9192,6 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, requirePerm("
       : "Review eksternal hanya untuk kontrak yang sudah disetujui internal dan belum masuk proses TTD." });
   }
   const openingNewRound = contract.status === "ApprovedInternal";
-  // Gerbang kirim: yang diserahkan ke pihak eksternal harus sudah final ACC internal — tidak boleh ada
-  // komentar/usulan internal yang masih terbuka (markup yang sudah selesai tetap tersimpan sebagai riwayat di master).
-  if (openingNewRound) {
-    const openInternal = openReviewCommentIds(db, contract.id, (c) => !isExternallyVisibleComment(c));
-    if (openInternal.length) {
-      return res.status(409).json({
-        code: "OPEN_INTERNAL_REVIEW",
-        error: `Masih ada ${openInternal.length} komentar/usulan internal yang belum diselesaikan. Selesaikan dulu sebelum dikirim ke pihak eksternal.`,
-      });
-    }
-  }
   // Link yang masih berlaku dipakai ulang (jangan diputar tiap klik) supaya link
   // yang sudah dikirim ke pihak eksternal tidak mati. Putar token = disable dulu.
   const tokenStillValid = !!contract.externalReviewToken
@@ -8907,6 +9203,14 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, requirePerm("
   const days = Number(req.body?.expiresInDays);
   contract.externalReviewExpiresAt = Number.isFinite(days) && days > 0
     ? new Date(Date.now() + days * 86400000).toISOString() : null;
+  // Kode akses: ronde baru → kode baru (diinput atau otomatis 6 digit). Ambil ulang link
+  // di ronde yang sama → kode lama dipertahankan kecuali kode baru dikirim.
+  // Kode SELALU dibuat otomatis oleh server (input manual diabaikan).
+  if (openingNewRound || !contract.externalAccessCode) {
+    contract.externalAccessCode = String(randomInt(100000, 1000000));
+  }
+  const codeDays = Number(req.body?.codeExpiresInDays);
+  contract.externalCodeExpiresAt = Number.isFinite(codeDays) && codeDays > 0 ? new Date(Date.now() + codeDays * 86400000).toISOString() : null;
   if (openingNewRound) {
     // Ronde eksternal baru (pertama kali, atau setelah revisi eksternal yang
     // sudah lolos review internal): status → Review Eksternal dan akses tamu
@@ -8927,12 +9231,27 @@ app.post("/api/contracts/:id/external-review/enable", requireAuth, requirePerm("
       clauses: shown.clauses,
       documentVersion: shown.documentVersion,
       documentName: shown.documentName,
-    });
+      accessCode: contract.externalAccessCode,
+      accessCodeExpiresAt: contract.externalCodeExpiresAt || null,
+    } as any);
   }
   contract.updatedAt = new Date().toISOString();
   pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: openingNewRound ? "Kirim ke Review Pihak Kedua" : "Enable External Review", details: `${openingNewRound ? `Membuka Review Pihak Kedua ronde ${contract.externalRoundCount}` : "Membuat link review pihak kedua"}${contract.externalReviewExpiresAt ? ` (kadaluarsa ${new Date(contract.externalReviewExpiresAt).toLocaleDateString("id-ID")})` : ""}.` });
   saveDB(db);
-  res.json({ success: true, token: contract.externalReviewToken, expiresAt: contract.externalReviewExpiresAt, url: `${shareBaseUrl(req)}/?reviewToken=${contract.externalReviewToken}`, contract });
+  res.json({ success: true, token: contract.externalReviewToken, expiresAt: contract.externalReviewExpiresAt, accessCode: contract.externalAccessCode, codeExpiresAt: contract.externalCodeExpiresAt || null, url: `${shareBaseUrl(req)}/?reviewToken=${contract.externalReviewToken}`, contract });
+});
+
+// Kedaluwarsakan kode akses sekarang (link tetap, tapi tamu tidak bisa masuk sampai kode baru dibuat).
+app.post("/api/contracts/:id/external-review/code/expire", requireAuth, requirePerm("review.send_external"), (req: AuthedRequest, res) => {
+  const db = loadDB();
+  const contract = findOwnedContract(db, req, req.params.id);
+  if (!contract) return res.status(404).json({ error: "Kontrak tidak ditemukan" });
+  if (!contract.externalAccessCode) return res.status(409).json({ error: "Kontrak ini belum punya kode akses." });
+  contract.externalCodeExpiresAt = new Date().toISOString();
+  contract.updatedAt = new Date().toISOString();
+  pushAudit(db, req, { contractId: contract.id, contractNumber: contract.contractNumber, action: "Expire External Review Code", details: "Kode akses review pihak kedua dikedaluwarsakan manual." });
+  saveDB(db);
+  res.json({ success: true, contract });
 });
 
 // Tandai Review Eksternal butuh REVISI (dipicu staf internal, mis. revisi
@@ -9436,6 +9755,42 @@ app.post("/api/contracts/:id/translate", requireAuth, requirePerm("contract.edit
 });
 
 
+// ===== Kode akses review pihak kedua =====
+// Tiap ronde revisi eksternal punya kode (diinput/otomatis) + masa berlaku sendiri.
+// Pihak eksternal memasukkan kode sekali; server memberi cookie bukti (HMAC), lalu
+// semua endpoint /api/external-review/:token/* (termasuk unduhan dokumen) dijaga.
+const reviewCookieName = (token: string) => `rvc_${String(token).slice(0, 12)}`;
+function reviewCodeState(contract: Contract): "none" | "active" | "expired" {
+  if (!contract.externalAccessCode) return "none";
+  if (contract.externalCodeExpiresAt && new Date(contract.externalCodeExpiresAt) < new Date()) return "expired";
+  return "active";
+}
+app.use("/api/external-review/:token", (req, res, next) => {
+  if (req.path === "/unlock") return next();
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return next(); // route yang bersangkutan menjawab 404
+  const st = reviewCodeState(contract);
+  if (st === "none") return res.status(403).json({ error: "Kode akses belum diterbitkan. Minta tim kami mengirim ulang link review.", codeExpired: true });
+  if (st === "expired") return res.status(403).json({ error: "Kode akses sudah kedaluwarsa. Minta kode baru ke tim kami.", codeExpired: true });
+  const got = String((req as any).cookies?.[reviewCookieName(req.params.token)] || "");
+  const want = reviewCodeProof(req.params.token, contract.externalAccessCode!);
+  if (got.length === want.length && timingSafeEqual(Buffer.from(got), Buffer.from(want))) return next();
+  return res.status(401).json({ error: "Masukkan kode akses untuk membuka dokumen.", codeRequired: true });
+});
+app.post("/api/external-review/:token/unlock", rateLimit({ windowMs: 10 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Terlalu banyak percobaan kode. Coba lagi beberapa menit lagi." } }), (req, res) => {
+  const contract = resolveExternalReview(req.params.token);
+  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
+  const st = reviewCodeState(contract);
+  if (st === "expired") return res.status(403).json({ error: "Kode akses sudah kedaluwarsa. Minta kode baru ke tim kami.", codeExpired: true });
+  if (st === "none") return res.status(403).json({ error: "Kode akses belum diterbitkan. Minta tim kami mengirim ulang link review.", codeExpired: true });
+  const given = String(req.body?.code || "").trim();
+  const a = Buffer.from(given.toLowerCase()), b = Buffer.from(String(contract.externalAccessCode).toLowerCase());
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return res.status(401).json({ error: "Kode salah." });
+  const maxAge = contract.externalCodeExpiresAt ? Math.max(1000, new Date(contract.externalCodeExpiresAt).getTime() - Date.now()) : 30 * 86400000;
+  res.cookie(reviewCookieName(req.params.token), reviewCodeProof(req.params.token, contract.externalAccessCode!), { httpOnly: true, sameSite: "lax", secure: req.secure, maxAge, path: `/api/external-review/${req.params.token}` });
+  res.json({ success: true });
+});
+
 app.get("/api/external-review/:token", apiLimiter, (req, res) => {
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
@@ -9558,8 +9913,6 @@ app.get("/api/external-review/:token/document", apiLimiter, async (req, res) => 
       buf = await convertedDocxFor(buf);
       mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
     }
-    // Fail-closed: berkas Word untuk tamu selalu salinan bersih (tanpa markup/komentar internal), bukan master.
-    if (info.viewFormat === "docx") buf = await externalSafeDocx(contract, buf);
     res.setHeader("Content-Type", mime);
     res.setHeader("Content-Length", buf.length);
     res.setHeader("Cache-Control", "private, no-store");
@@ -9580,9 +9933,10 @@ app.get("/api/external-review/:token/review-doc/config", apiLimiter, async (req,
   if (contract.externalReviewLocked || contract.status !== "ReviewEksternal") return res.status(403).json({ error: "Review eksternal sedang tidak dibuka." });
   const name = String(req.query.name || "").replace(/[<>"]/g, "").trim().slice(0, 60);
   if (!name) return res.status(400).json({ error: "Isi nama Anda dulu supaya perubahan Anda tercatat." });
-  const copy = await ensureExternalCopy(contract);
-  if (!copy) return res.json({ enabled: false });
-  const config = reviewEditorConfig(oo, contract, { file: copy.workFile, version: copy.masterVersion }, { id: "external", name: `${name} (Pihak Eksternal)` }, "rx");
+  const db = loadDB();
+  const base = await reviewBaseBuffer(db, contract);
+  if (!base) return res.json({ enabled: false });
+  const config = reviewEditorConfig(oo, contract, base, { id: "external", name: `${name} (Pihak Eksternal)` });
   res.json({ enabled: true, documentServerUrl: oo.publicUrl, config });
 });
 
@@ -9590,36 +9944,8 @@ app.get("/api/external-review/:token/review-changes", apiLimiter, async (req, re
   const contract = resolveExternalReview(req.params.token);
   if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
   if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
-  try {
-    // Riwayat yang dilihat tamu dibaca dari SALINAN eksternal (hanya markup eksternal), bukan dari master.
-    const copy = contract.status === "ReviewEksternal" ? await ensureExternalCopy(contract)
-      : contract.externalReviewCopy?.round === (contract.externalRoundCount || 0) ? contract.externalReviewCopy : null;
-    if (!copy) return res.json({ hasReview: false, changes: [], comments: [] });
-    const hist = await readChangeHistory(await readStoredDocument(copy.workFile, uploadDir));
-    res.json({ hasReview: hist.changes.length + hist.comments.length > 0, updatedAt: copy.workFile.uploadedAt, ...hist });
-  } catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
-});
-
-// PUBLIK (dijaga token) — aktivitas sesi tamu; tampilan memakainya untuk menonaktifkan tombol Setujui.
-app.get("/api/external-review/:token/review-session", apiLimiter, (req, res) => {
-  const contract = resolveExternalReview(req.params.token);
-  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
-  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
-  res.json(loadReviewActivity(loadDB(), contract, { kind: "external" }));
-});
-app.post("/api/external-review/:token/review-session/activity", apiLimiter, (req, res) => {
-  const contract = resolveExternalReview(req.params.token);
-  if (!contract) return res.status(404).json({ error: "Link review tidak valid atau sudah kadaluarsa." });
-  if (externalReviewPaused(contract)) return res.status(423).json({ error: EXTERNAL_PAUSED_MSG, paused: true });
-  if (contract.status !== "ReviewEksternal" || contract.externalReviewLocked) return res.json({ recorded: false });
-  const db = loadDB();
-  const act = loadReviewActivity(db, contract, { kind: "external" });
-  if (act.counts.editorChanges > 0) return res.json({ recorded: false });
-  const name = String(req.body?.name || "").replace(/[<>"]/g, "").trim().slice(0, 60) || "Pihak Eksternal";
-  const actor = { user: { id: "external", name, role: "External" }, ip: req.ip, query: { tenantId: contract.tenantId }, body: {} } as unknown as AuthedRequest;
-  pushAudit(db, actor, { contractId: contract.id, contractNumber: contract.contractNumber, action: REVIEW_EDITOR_AUDIT_ACTION, details: `${name} (pihak eksternal) mengubah dokumen di editor Word pada sesi review ini (belum tersimpan).` });
-  saveDB(db);
-  res.json({ recorded: true });
+  try { res.json(await changeHistoryOf(contract)); }
+  catch (err: any) { res.status(500).json({ error: err?.message || "Gagal membaca riwayat perubahan." }); }
 });
 
 // PUBLIK — tamu eksternal klik "OK / Setuju" (klausul sudah sesuai). Sekali
@@ -9636,11 +9962,6 @@ app.post("/api/external-review/:token/approve", apiLimiter, (req, res) => {
   if (!name) return res.status(400).json({ error: "Nama wajib diisi." });
   const db = loadDB();
   const live = (db.contracts as Contract[]).find((c) => c.id === contract.id)!;
-  // Aturan sesi review: tamu yang sudah memberi markup/komentar pada sesi ini tidak bisa Setujui.
-  const activity = loadReviewActivity(db, live, { kind: "external" });
-  if (activity.hasActivity) {
-    return res.status(409).json({ code: "REVIEW_ACTIVITY_DETECTED", error: REVIEW_ACTIVITY_MSG, activity });
-  }
   if (!live.externalApprovals) live.externalApprovals = [];
   live.externalApprovals.push({ name: name.slice(0, 80), approvedAt: new Date().toISOString(), note: String(req.body?.note || "").slice(0, 300) || undefined });
   live.externalReviewLocked = true;

@@ -263,6 +263,8 @@ export interface ContractExternalRound {
   clauses?: { id: string; title: string; content: string }[];
   documentVersion?: number | null;
   documentName?: string;
+  accessCode?: string;
+  accessCodeExpiresAt?: string | null;
 }
 
 export interface ContractParty {
@@ -280,6 +282,23 @@ export interface ContractParty {
 // pihak memegang satu rangkap asli. Setiap rangkap dilacak terpisah:
 // label posisi meterai, siapa pemegangnya, status fisiknya (disimpan /
 // dikirim / di-assign), dan scan berkasnya masing-masing.
+export interface DigitalSigner {
+  id: string;
+  party: 1 | 2;
+  role: string;            // "Pihak Pertama" / "Pihak Kedua"
+  name: string;
+  title?: string;
+  kind: "internal" | "external";
+  userId?: string;         // internal: akun yang harus menandatangani
+  token?: string;          // eksternal: token link
+  code?: string;           // eksternal: kode akses (otomatis)
+  codeExpiresAt?: string | null;
+  signedAt?: string;
+  method?: "upload" | "draw";
+  imageUrl?: string;
+  imageKey?: string;
+}
+
 export interface ContractCopy {
   index: number;          // 1 atau 2
   label: string;          // e.g. "Rangkap 1 — Meterai pada Pihak Pertama"
@@ -343,6 +362,8 @@ export interface Contract {
   // Token rahasia link rilis eksternal (/api/public/release/:token) — dibuat
   // sekali saat "Umumkan Rilis untuk Eksternal" pertama kali, lalu dipakai ulang.
   releaseShareToken?: string;
+  releaseAccessCode?: string;
+  releaseCodeExpiresAt?: string | null;
   templateId: string;
   contractNumber: string;
   title: string;
@@ -466,6 +487,11 @@ export interface Contract {
   // Nomor urut addendum ("Addendum Kesebelas") DIHITUNG dari data (count
   // kontrak lain dengan amendsContractId sama), bukan disimpan di sini.
   amendsContractId?: string;
+  // Dokumen ini adalah Surat Pengakhiran untuk kontrak (id) ini; saat surat diaktifkan, kontrak tsb otomatis Terminated.
+  terminatesContractId?: string;
+  terminationReason?: string;
+  // Surat Pengakhiran (wajib sebelum status Terminated).
+  terminationLetter?: { number: string; date: string; effectiveDate: string; reason: string; notes?: string; createdBy?: string; createdAt?: string };
   // Lampiran rincian opsional pada Addendum (mis. tabel perhitungan biaya).
   // Kosong/tidak ada = section lampiran tidak dicetak sama sekali di preview.
   amendmentAttachments?: { label: string; satuan?: string; jumlah?: string; keterangan?: string }[];
@@ -482,6 +508,11 @@ export interface Contract {
   // penerimaannya kembali (tahap "Dokumen Kembali"). Diisi dari Detail
   // Pekerjaan Legal. Aktivasi baru boleh setelah signingReceipt terisi.
   signingDispatch?: { copies: number; sentDate: string; medium: string; recordedAt: string; recordedBy: string };
+  // TTD Digital (alternatif TTD basah): daftar penanda tangan internal (akun) & eksternal (link + kode otomatis).
+  digitalSigning?: {
+    startedAt: string; startedBy: string; completedAt?: string;
+    signers: DigitalSigner[];
+  };
   signingReceipt?: { copies: number; receivedDate: string; recordedAt: string; recordedBy: string };
   // Sharing fee opsional — kosong/tidak ada = kontrak ini tidak punya skema
   // bagi hasil (mayoritas kontrak internal/Employment memang tidak perlu ini).
@@ -552,6 +583,9 @@ export interface Contract {
   // SEBELUM matriks approval — pihak kedua bisa komentar/coret klausul atau setuju.
   externalReviewToken?: string;
   externalReviewExpiresAt?: string | null;
+  // Kode akses review pihak kedua: dibuat per ronde revisi eksternal, bisa diberi masa berlaku / dikedaluwarsakan manual.
+  externalAccessCode?: string;
+  externalCodeExpiresAt?: string | null;
   externalApprovals?: { name: string; approvedAt: string; note?: string }[];
   // Sudah tanda-tangan eksternal terkunci setelah "Setuju/OK" (lihat
   // externalApprovals) — pemilik dokumen harus klik "Buka Akses Kembali"
@@ -579,11 +613,6 @@ export interface Contract {
   // catatan pengantar dari tim internal. Snapshot memakai bentuk yang sama
   // dengan yang dikirim ke halaman review eksternal (narasi pembuka + pasal).
   externalRounds?: ContractExternalRound[];
-  // Pemisahan markup internal ↔ eksternal (lihat review-isolation.ts). Berkas dokumen utama = MASTER (semua
-  // markup, hanya internal). Per ronde eksternal dibuat SALINAN bersih untuk tamu; markup tamu digabung balik
-  // ke master. `externalUnmerged` = berkas eksternal yang belum bisa digabung otomatis (master tidak diubah).
-  externalReviewCopy?: ExternalReviewCopy;
-  externalUnmerged?: { round: number; savedAt: string; by: string; file: StoredDocumentRef; reason: string }[];
   // Detail pihak (opsional, per-kontrak) untuk narasi pembuka & tanda tangan —
   // bukan cuma nama, tapi alamat/jabatan/nomor identitas penandatangan. Party1
   // kosong = pakai default appSettings.company* (companyAddress dst); Party2
@@ -678,17 +707,6 @@ export type StoredDocumentFormat = "pdf" | "docx" | "doc" | "image" | "other";
 
 // Referensi berkas di storage (storage.ts) + metadata yang dibutuhkan untuk
 // preview/unduh tanpa menebak dari URL.
-export interface ExternalReviewCopy {
-  round: number;
-  /** Versi master saat ronde dibuka + berkasnya (dasar penggabungan; tidak berubah selama ronde). */
-  masterVersion: number;
-  masterFile: StoredDocumentRef;
-  /** Salinan bersih yang pertama kali dikirim ke tamu. */
-  baselineFile: StoredDocumentRef;
-  /** Berkas yang sedang dikerjakan tamu (baseline + markup eksternal terbaru). */
-  workFile: StoredDocumentRef;
-}
-
 export interface StoredDocumentRef {
   key: string; // storage key (StoredFile.key) — dipakai fetchFile()
   url: string;
